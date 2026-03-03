@@ -79,9 +79,17 @@ if [ ! -f "${ESTIMATE_FILE}" ]; then
 fi
 python3 /scripts/openvins_to_tum.py "${ESTIMATE_FILE}" "${TUM_EST_FILE}"
 
-# [5/5] Validate trajectory
+# [5/6] Evaluate accuracy with evo
 echo ""
-echo "[5/5] Validating trajectory..."
+echo "[5/6] Evaluating trajectory accuracy (evo_ape)..."
+evo_ape euroc "${GT_CSV}" "${TUM_EST_FILE}" \
+    -vas \
+    --save_results "${RESULTS_DIR}/evo_ape_results.zip" \
+    2>&1 | tee "${RESULTS_DIR}/evo_ape_output.txt"
+
+# [6/6] Validate trajectory
+echo ""
+echo "[6/6] Validating trajectory..."
 python3 /scripts/validate_trajectory.py "${TUM_EST_FILE}" "${GT_CSV}"
 
 echo ""
