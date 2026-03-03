@@ -1,0 +1,5 @@
+# Dataset files (large, downloaded separately)
+state_estimation/data/
+
+# VIO evaluation results
+state_estimation/results/

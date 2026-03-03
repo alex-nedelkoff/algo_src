@@ -1,0 +1,12 @@
+services:
+  openvins:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: corvidx/openvins:latest
+    volumes:
+      - ./data/euroc:/data/euroc:ro
+      - ./results:/results
+    network_mode: none
+    stdin_open: true
+    tty: true
