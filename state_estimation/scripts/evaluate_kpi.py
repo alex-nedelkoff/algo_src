@@ -14,17 +14,32 @@ import json
 import os
 import sys
 
+import copy
+
 import numpy as np
-from evo.core import metrics, sync, trajectory
+from evo.core import metrics, sync
+from evo.core.geometry import umeyama_alignment
 from evo.core.metrics import PoseRelation, Unit
 from evo.tools import file_interface
 
 
+def align_trajectory(traj_est, traj_gt):
+    """Align estimate to ground truth via Umeyama (rotation + translation + scale)."""
+    r, t, s = umeyama_alignment(
+        traj_est.positions_xyz.T, traj_gt.positions_xyz.T, with_scale=True
+    )
+    aligned = copy.deepcopy(traj_est)
+    aligned.scale(s)
+    aligned.transform(np.vstack([
+        np.hstack([r, t.reshape(3, 1)]),
+        [0, 0, 0, 1],
+    ]))
+    return aligned
+
+
 def compute_ate_translation(traj_est, traj_gt):
     """ATE translation RMSE after SE(3) Umeyama alignment with scale correction."""
-    traj_est_aligned = trajectory.align_trajectory(
-        traj_est, traj_gt, correct_scale=True
-    )
+    traj_est_aligned = align_trajectory(traj_est, traj_gt)
     data = (traj_est_aligned, traj_gt)
     ape_metric = metrics.APE(PoseRelation.translation_part)
     ape_metric.process_data(data)
@@ -40,10 +55,10 @@ def compute_ate_rotation(traj_est_aligned, traj_gt):
 
 
 def compute_rpe_translation(traj_est_aligned, traj_gt):
-    """RPE translation RMSE at 1-second delta."""
+    """RPE translation RMSE at ~1s delta (20 frames at 20Hz)."""
     data = (traj_est_aligned, traj_gt)
     rpe_metric = metrics.RPE(
-        PoseRelation.translation_part, delta=1, delta_unit=Unit.seconds
+        PoseRelation.translation_part, delta=20, delta_unit=Unit.frames
     )
     rpe_metric.process_data(data)
     return rpe_metric.get_statistic(metrics.StatisticsType.rmse)
