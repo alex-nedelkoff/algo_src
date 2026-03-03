@@ -5,8 +5,10 @@ services:
       dockerfile: Dockerfile
     image: corvidx/openvins:latest
     volumes:
-      - ./data/euroc:/data/euroc:ro
+      - ./data/euroc:/data/euroc
       - ./results:/results
+      - ./configs:/configs:ro
+      - ./scripts:/scripts:ro
     network_mode: none
     stdin_open: true
     tty: true
