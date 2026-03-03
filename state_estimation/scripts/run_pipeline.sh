@@ -14,23 +14,23 @@ echo "========================================="
 echo " OpenVINS Monocular Pipeline - MH_01_easy"
 echo "========================================="
 
-# [1/5] Convert EuRoC ASL to ROS2 bag (idempotent)
+# [1/6] Convert EuRoC ASL to ROS2 bag (idempotent)
 if [ -d "${BAG_DIR}" ] && [ -f "${BAG_DIR}/metadata.yaml" ]; then
-    echo "[1/5] ROS2 bag already exists at ${BAG_DIR}, skipping conversion."
+    echo "[1/6] ROS2 bag already exists at ${BAG_DIR}, skipping conversion."
 else
-    echo "[1/5] Converting EuRoC ASL to ROS2 bag..."
+    echo "[1/6] Converting EuRoC ASL to ROS2 bag..."
     python3 /scripts/euroc_to_rosbag2.py "${EUROC_DIR}" "${BAG_DIR}"
 fi
-echo "[1/5] Bag info:"
+echo "[1/6] Bag info:"
 ros2 bag info "${BAG_DIR}"
 
-# [2/5] Launch OpenVINS in background
+# [2/6] Launch OpenVINS in background
 # NOTE: We use ros2 run instead of ros2 launch because the launch file does not
 # forward filepath_est/filepath_std parameters to the node. Without these, the
 # node defaults to relative paths whose empty parent causes
 # boost::filesystem::create_directories to throw "Invalid argument".
 echo ""
-echo "[2/5] Launching OpenVINS (monocular mode)..."
+echo "[2/6] Launching OpenVINS (monocular mode)..."
 ros2 run ov_msckf run_subscribe_msckf --ros-args \
     -r __ns:=/ov_msckf \
     -r /ov_msckf/imu0:=/imu0 \
@@ -49,9 +49,9 @@ OPENVINS_PID=$!
 echo "Waiting for OpenVINS to initialize..."
 sleep 5
 
-# [3/5] Play the ROS2 bag
+# [3/6] Play the ROS2 bag
 echo ""
-echo "[3/5] Playing ROS2 bag (this takes ~3 minutes at real-time rate)..."
+echo "[3/6] Playing ROS2 bag (this takes ~3 minutes at real-time rate)..."
 ros2 bag play "${BAG_DIR}"
 echo "Bag playback complete."
 
@@ -69,9 +69,9 @@ kill -9 -${OPENVINS_PID} 2>/dev/null || kill -9 ${OPENVINS_PID} 2>/dev/null || t
 wait ${OPENVINS_PID} 2>/dev/null || true
 echo "OpenVINS stopped."
 
-# [4/5] Convert output to TUM format
+# [4/6] Convert output to TUM format
 echo ""
-echo "[4/5] Converting OpenVINS output to TUM format..."
+echo "[4/6] Converting OpenVINS output to TUM format..."
 if [ ! -f "${ESTIMATE_FILE}" ]; then
     echo "ERROR: OpenVINS estimate file not found at ${ESTIMATE_FILE}"
     echo "OpenVINS may have failed to initialize or produce output."
@@ -79,13 +79,14 @@ if [ ! -f "${ESTIMATE_FILE}" ]; then
 fi
 python3 /scripts/openvins_to_tum.py "${ESTIMATE_FILE}" "${TUM_EST_FILE}"
 
-# [5/6] Evaluate accuracy with evo
+# [5/6] Evaluate KPIs
 echo ""
-echo "[5/6] Evaluating trajectory accuracy (evo_ape)..."
-evo_ape euroc "${GT_CSV}" "${TUM_EST_FILE}" \
-    -vas \
-    --save_results "${RESULTS_DIR}/evo_ape_results.zip" \
-    2>&1 | tee "${RESULTS_DIR}/evo_ape_output.txt"
+echo "[5/6] Evaluating VIO KPIs..."
+python3 /scripts/evaluate_kpi.py \
+    --estimate "${TUM_EST_FILE}" \
+    --groundtruth "${GT_CSV}" \
+    --estimate-raw "${ESTIMATE_FILE}" \
+    --output-dir "${RESULTS_DIR}"
 
 # [6/6] Validate trajectory
 echo ""
