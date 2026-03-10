@@ -1,0 +1,2 @@
+# Pure state training — no perception noise or dropout
+enabled: false

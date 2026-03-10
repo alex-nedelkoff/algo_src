@@ -1,0 +1,70 @@
+services:
+  # ---------- Simulator (CPU-only) ----------
+  sim:
+    build:
+      context: .
+      dockerfile: docker/sim.Dockerfile
+    profiles: ["full-stack"]
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data:ro
+      - ./outputs:/app/outputs
+    networks:
+      - algo-net
+
+  # ---------- Control / local dev & test (CPU) ----------
+  control-cpu:
+    build:
+      context: .
+      dockerfile: docker/control-cpu.Dockerfile
+    profiles: ["test", "dev"]
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data:ro
+      - ./outputs:/app/outputs
+    networks:
+      - algo-net
+
+  # ---------- Control / RL training (GPU) ----------
+  control:
+    build:
+      context: .
+      dockerfile: docker/control.Dockerfile
+    profiles: ["train", "full-stack"]
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data:ro
+      - ./outputs:/app/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - algo-net
+
+  # ---------- Perception training (GPU) ----------
+  perception:
+    build:
+      context: .
+      dockerfile: docker/perception.Dockerfile
+    profiles: ["train-perception", "full-stack"]
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data:ro
+      - ./outputs:/app/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - algo-net
+
+networks:
+  algo-net:
+    driver: bridge

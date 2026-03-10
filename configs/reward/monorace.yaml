@@ -1,0 +1,6 @@
+# Reward weights for core.rewards.monorace_reward
+weights:
+  gate_progress: 1.0
+  attitude_penalty: 0.1
+  speed_bonus: 0.05
+  action_smoothness: 0.01

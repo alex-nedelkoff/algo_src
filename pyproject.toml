@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "algo-src"
+version = "0.1.0"
+description = "Autonomous drone racing algorithm stack for the Anduril AI Grand Prix"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "hydra-core",
+    "omegaconf",
+]
+
+[project.optional-dependencies]
+sim = [
+    "gymnasium",
+    "pybullet",
+]
+control = [
+    "torch",
+    "stable-baselines3",
+    "tensorboard",
+    "gymnasium",
+    "onnx",
+    "onnxruntime",
+    "onnxscript",
+]
+perception = [
+    "torch",
+    "torchvision",
+    "opencv-python-headless",
+    "onnx",
+    "onnxruntime-gpu",
+    "albumentations",
+]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+    "pre-commit",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["control", "perception", "sim"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = []
+
+[tool.ruff.lint.isort]
+known-first-party = ["control", "perception", "sim", "training", "evaluation"]

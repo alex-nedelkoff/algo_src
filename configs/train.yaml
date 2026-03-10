@@ -1,0 +1,16 @@
+defaults:
+  - sim: numpy_quad
+  - control: ppo
+  - perception: none
+  - reward: monorace
+  - domain_rand: uniform_30pct
+  - logging: wandb
+  - _self_
+
+seed: 42
+device: auto  # auto, cpu, cuda
+total_timesteps: 10_000_000
+eval_freq: 50_000
+n_eval_episodes: 10
+checkpoint_freq: 100_000
+output_dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

@@ -1,0 +1,16 @@
+defaults:
+  - sim: numpy_quad
+  - control: ppo
+  - perception: none
+  - reward: monorace
+  - domain_rand: none
+  - logging: tensorboard
+  - _self_
+
+seed: 0
+device: auto
+checkpoint_path: ???  # must be provided at runtime
+n_eval_episodes: 100
+deterministic: true
+render: false
+output_dir: eval_outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

@@ -1,0 +1,18 @@
+_target_: sim.envs.gate_race_env.GateRaceEnv
+
+dt: 0.01
+n_envs: 100
+max_steps: 1000
+observation_dim: 24
+action_dim: 4
+gravity: 9.81
+
+# Quadrotor physical defaults
+mass: 0.752
+arm_length: 0.17
+motor_constant: 8.54858e-06
+inertia: [0.0025, 0.0025, 0.0045]
+
+# Track
+n_gates: 5
+gate_passage_radius: 1.0
