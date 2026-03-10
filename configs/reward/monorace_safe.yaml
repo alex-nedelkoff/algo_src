@@ -1,0 +1,15 @@
+# Reward weights aligned with MonoRace paper M23 (safest policy, 88.4% success)
+# Paper ref: arXiv:2601.15222, Table: lambda_gate=1.5, lambda_offset=1.5, lambda_prog=1
+#
+# M23 uses delta-based progress reward with v_max=10 m/s clipping.
+# NOTE: gate_passage bonus (lambda_gate=1.5) is handled by COR-43, not here.
+# This config covers the per-step shaping terms only.
+weights:
+  gate_progress: 1.0       # delta-based, clipped by v_max*dt
+  gate_offset: 1.5         # off-center gate penalty
+  attitude_penalty: 0.1
+  speed_bonus: 0.0         # M23 does not use speed bonus
+  action_smoothness: 0.01
+
+# Clip delta-progress at v_max=10 m/s (conservative for safer trajectories)
+v_max: 10.0
