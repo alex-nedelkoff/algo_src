@@ -1,0 +1,27 @@
+# Version control
+.git/
+.gitignore
+
+# State estimation (has its own Docker setup)
+state_estimation/data/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+
+# Experiment tracking / outputs
+wandb/
+outputs/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
