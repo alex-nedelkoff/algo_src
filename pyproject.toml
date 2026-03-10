@@ -22,11 +22,16 @@ sim = [
 control = [
     "torch",
     "stable-baselines3",
+    "tensorboard",
+    "gymnasium",
 ]
 perception = [
     "torch",
     "torchvision",
-    "opencv-python",
+    "opencv-python-headless",
+    "onnx",
+    "onnxruntime-gpu",
+    "albumentations",
 ]
 dev = [
     "pytest",
@@ -51,4 +56,4 @@ select = ["E", "F", "I", "N", "W", "UP"]
 ignore = []
 
 [tool.ruff.lint.isort]
-known-first-party = ["core", "control", "perception", "sim", "state_estimation"]
+known-first-party = ["control", "perception", "sim", "training", "evaluation"]

@@ -3,10 +3,7 @@
 FROM algo-src-base AS sim
 
 # Install sim-specific dependencies (CPU-only)
-RUN uv pip install --python /app/.venv/bin/python \
-        numpy \
-        scipy \
-        gymnasium
+RUN uv pip install --python /app/.venv/bin/python -e ".[sim]"
 
 WORKDIR /app
 
