@@ -1,12 +1,12 @@
 # Reward weights aligned with MonoRace paper M16 (fastest policy, 28.2 m/s)
-# Paper ref: arXiv:2601.15222, Table: lambda_gate=30, lambda_offset=2, lambda_prog=0
-#
-# NOTE: gate_passage bonus (lambda_gate=30) is handled by COR-43, not here.
-# This config covers the per-step shaping terms only.
+# Paper ref: arXiv:2601.15222
 weights:
-  gate_progress: 0.0       # M16 used no progress reward
-  gate_offset: 2.0         # off-center gate penalty
-  attitude_penalty: 0.1
-  speed_bonus: 0.05
-  action_smoothness: 0.01
   gate_passage: 30.0
+  gate_progress: 0.0
+  gate_offset: 2.0
+  body_rate: 0.001
+  action_smoothness: 0.1
+  crash_penalty: 10.0
+
+v_max: 30.0
+action_smoothness_threshold: 0.5

@@ -2,28 +2,37 @@ enabled: true
 stages:
   - timestep: 0
     reward_weights:
-      gate_progress: 1.0       # start with delta-progress for learning signal
-      gate_offset: 0.5         # light offset penalty early on
-      attitude_penalty: 0.3    # heavy attitude penalty early
-      speed_bonus: 0.0
-      action_smoothness: 0.05
-    dr_scale: 0.0              # no DR initially
-    gate_distance: 0.5         # start close
+      gate_passage: 1.5
+      gate_progress: 1.0
+      gate_offset: 1.0
+      body_rate: 0.001
+      action_smoothness: 0.0
+      crash_penalty: 10.0
+    v_max: 10.0
+    action_smoothness_threshold: 0.0
+    dr_scale: 0.0
+    gate_distance: 0.5
   - timestep: 1_000_000
     reward_weights:
-      gate_progress: 0.5       # reduce progress, rely more on gate passage
-      gate_offset: 1.5         # increase offset penalty
-      attitude_penalty: 0.1
-      speed_bonus: 0.03
-      action_smoothness: 0.01
+      gate_passage: 10.0
+      gate_progress: 0.5
+      gate_offset: 1.5
+      body_rate: 0.001
+      action_smoothness: 0.05
+      crash_penalty: 10.0
+    v_max: 20.0
+    action_smoothness_threshold: 0.5
     dr_scale: 0.5
     gate_distance: 0.75
   - timestep: 5_000_000
     reward_weights:
-      gate_progress: 0.0       # M16-style: gate passage bonus alone drives learning
-      gate_offset: 2.0         # full offset penalty
-      attitude_penalty: 0.1
-      speed_bonus: 0.05
-      action_smoothness: 0.01
+      gate_passage: 30.0
+      gate_progress: 0.0
+      gate_offset: 2.0
+      body_rate: 0.001
+      action_smoothness: 0.1
+      crash_penalty: 10.0
+    v_max: 30.0
+    action_smoothness_threshold: 0.5
     dr_scale: 1.0
     gate_distance: 1.0
