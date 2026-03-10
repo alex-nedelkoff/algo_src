@@ -1,0 +1,28 @@
+_target_: control.algorithms.ppo.PPO
+
+# SB3 PPO hyperparameters
+learning_rate: 3e-4
+n_steps: 2048
+batch_size: 64
+n_epochs: 10
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.01
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+# Network architecture — privileged critic
+policy_type: MlpPolicy
+net_arch:
+  pi: [256, 256]
+  vf: [512, 256, 128]
+activation_fn: tanh
+
+# Asymmetric critic settings
+asymmetric_critic: true
+critic_obs_dim: 48  # privileged state: full sim state + gate info
+actor_obs_dim: 24   # policy observation (what the drone sees)
+
+# Exploration
+use_sde: false

@@ -1,0 +1,8 @@
+# Perception-aware reward: penalises losing sight of gates
+weights:
+  gate_progress: 1.0
+  attitude_penalty: 0.1
+  speed_bonus: 0.03
+  action_smoothness: 0.01
+  gate_visibility: 0.2      # bonus for keeping gate in FOV
+  detection_confidence: 0.1  # bonus for high-confidence detections

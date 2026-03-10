@@ -1,0 +1,17 @@
+# @package _global_
+# MonoRace baseline: PPO + gate racing + full domain randomization
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: none
+  - override /reward: monorace
+  - override /domain_rand: uniform_30pct
+  - override /logging: wandb
+
+seed: 42
+total_timesteps: 10_000_000
+
+logging:
+  tags: [monorace, baseline]
+  group: monorace_baseline

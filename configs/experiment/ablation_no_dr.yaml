@@ -1,0 +1,17 @@
+# @package _global_
+# Ablation: no domain randomization (measure DR impact)
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: none
+  - override /reward: monorace
+  - override /domain_rand: none
+  - override /logging: wandb
+
+seed: 42
+total_timesteps: 10_000_000
+
+logging:
+  tags: [ablation, no_domain_rand]
+  group: ablation_no_dr
