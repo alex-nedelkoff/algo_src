@@ -1,11 +1,11 @@
-"""Tests for core.types module."""
+"""Tests for sim.types module."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from core.types import Action, ActionMode, GateState, QuadState
+from sim.types import Action, ActionMode, GateState, QuadState
 
 
 class TestQuadState:

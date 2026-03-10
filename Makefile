@@ -4,9 +4,9 @@
 COMPOSE := docker compose
 BASE_TAG := algo-src-base
 
-.PHONY: build-base build-sim build-control build-perception \
+.PHONY: build-base build-sim build-control build-control-cpu build-perception \
         train train-perception full-stack \
-        test-sim lint jetson-export help
+        test test-sim lint jetson-export help
 
 # ---------- Docker image builds ----------
 
@@ -16,8 +16,11 @@ build-base: ## Build the base Docker image
 build-sim: build-base ## Build the simulator image
 	docker build -t algo-src-sim -f docker/sim.Dockerfile .
 
-build-control: build-base ## Build the control/RL training image
+build-control: build-base ## Build the control/RL training image (GPU)
 	docker build -t algo-src-control -f docker/control.Dockerfile .
+
+build-control-cpu: build-base ## Build the control image (CPU-only, fast)
+	docker build -t algo-src-control-cpu -f docker/control-cpu.Dockerfile .
 
 build-perception: build-base ## Build the perception training image
 	docker build -t algo-src-perception -f docker/perception.Dockerfile .
@@ -35,8 +38,11 @@ full-stack: build-base ## Start all containers
 
 # ---------- Testing & linting ----------
 
+test: build-control-cpu ## Run all tests in CPU container
+	docker run --rm algo-src-control-cpu python -m pytest tests/ -v
+
 test-sim: build-sim ## Run sim unit tests in container
-	docker run --rm algo-src-sim python -m pytest sim/ -v
+	docker run --rm algo-src-sim python -m pytest tests/test_sim/ -v
 
 lint: build-base ## Run ruff + mypy in container
 	docker run --rm $(BASE_TAG) sh -c "uv pip install ruff mypy && ruff check . && mypy --ignore-missing-imports ."

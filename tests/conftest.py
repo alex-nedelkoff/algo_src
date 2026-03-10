@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from core.tracks import Track
-from core.types import GateState, QuadState
+from sim.tracks import Track
+from sim.types import GateState, QuadState
 
 
 @pytest.fixture

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from core.types import GateState, QuadState
+from sim.types import GateState, QuadState
 
 
 class Track:

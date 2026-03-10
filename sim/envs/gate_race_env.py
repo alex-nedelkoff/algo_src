@@ -1,6 +1,6 @@
 """Gate racing Gymnasium environment.
 
-Wraps NumpyQuadDynamics with a Track from core.tracks to provide a
+Wraps NumpyQuadDynamics with a Track from sim.tracks to provide a
 Gymnasium-compatible RL training environment for single-drone racing.
 """
 
@@ -13,9 +13,9 @@ import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
 
-from core.rewards import monorace_reward
-from core.tracks import Track
-from core.types import Action, GateState, QuadState
+from sim.rewards import monorace_reward
+from sim.tracks import Track
+from sim.types import Action, GateState, QuadState
 from sim.dynamics.numpy_quad import (
     GRAVITY,
     MOTOR,

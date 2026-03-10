@@ -24,6 +24,9 @@ control = [
     "stable-baselines3",
     "tensorboard",
     "gymnasium",
+    "onnx",
+    "onnxruntime",
+    "onnxscript",
 ]
 perception = [
     "torch",
@@ -39,6 +42,9 @@ dev = [
     "mypy",
     "pre-commit",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["control", "perception", "sim"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

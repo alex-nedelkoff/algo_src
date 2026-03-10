@@ -9,8 +9,7 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from core.interfaces import Detector
-from perception.detectors.base import GateDetection
+from perception.detectors.base import Detector, GateDetection
 
 
 class MockDetector(Detector):

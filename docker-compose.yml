@@ -12,6 +12,19 @@ services:
     networks:
       - algo-net
 
+  # ---------- Control / local dev & test (CPU) ----------
+  control-cpu:
+    build:
+      context: .
+      dockerfile: docker/control-cpu.Dockerfile
+    profiles: ["test", "dev"]
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data:ro
+      - ./outputs:/app/outputs
+    networks:
+      - algo-net
+
   # ---------- Control / RL training (GPU) ----------
   control:
     build:

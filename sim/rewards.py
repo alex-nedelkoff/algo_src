@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from core.types import Action, GateState, QuadState
+from sim.types import Action, GateState, QuadState
 
 # Default reward weights
 DEFAULT_WEIGHTS: dict[str, float] = {

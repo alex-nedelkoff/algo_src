@@ -30,12 +30,14 @@ WORKDIR /app
 # Copy project metadata for dependency resolution
 COPY pyproject.toml ./
 
-# Create venv and install base project (no extras)
+# Create venv and install base deps only (source not yet available)
 RUN uv venv /app/.venv --python python3.11 \
-    && uv pip install --python /app/.venv/bin/python -e "."
+    && uv pip install --python /app/.venv/bin/python \
+        numpy scipy hydra-core omegaconf
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV VIRTUAL_ENV="/app/.venv"
 
-# Copy full source tree
+# Copy full source tree, then do editable install
 COPY . .
+RUN uv pip install --python /app/.venv/bin/python -e "."

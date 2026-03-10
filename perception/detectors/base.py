@@ -1,20 +1,34 @@
 """Base detector interface and GateDetection dataclass.
 
-Re-exports ``core.interfaces.Detector`` and defines the lightweight
-``GateDetection`` data structure that is the canonical output of every
-detector in the perception pipeline.
+Defines the ``Detector`` ABC and the lightweight ``GateDetection`` data
+structure that is the canonical output of every detector in the perception
+pipeline.
 """
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
 
-from core.interfaces import Detector
-
 __all__ = ["Detector", "GateDetection"]
+
+
+class Detector(ABC):
+    """Abstract gate detector for the perception pipeline."""
+
+    @abstractmethod
+    def detect(self, image: NDArray[np.uint8]) -> list[GateDetection]:
+        """Detect gates in an image.
+
+        Args:
+            image: Input image as a uint8 numpy array (H, W, C).
+
+        Returns:
+            List of detected gates.
+        """
 
 
 @dataclass

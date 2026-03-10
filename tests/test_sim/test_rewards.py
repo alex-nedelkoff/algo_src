@@ -1,4 +1,4 @@
-"""Tests for core.rewards module.
+"""Tests for sim.rewards module.
 
 Contains 3 hand-computed test cases for monorace_reward plus component tests.
 """
@@ -8,13 +8,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from core.rewards import (
+from sim.rewards import (
     action_smoothness_penalty,
     attitude_penalty,
     gate_progress_reward,
     monorace_reward,
 )
-from core.types import Action, GateState, QuadState
+from sim.types import Action, GateState, QuadState
 
 
 class TestGateProgressReward:
