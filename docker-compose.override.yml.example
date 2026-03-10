@@ -1,0 +1,49 @@
+# docker-compose.override.yml.example
+# ====================================
+# Copy this file to docker-compose.override.yml for local development.
+# Values here are merged on top of docker-compose.yml automatically.
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Customize the settings below to match your local environment.
+
+services:
+  control:
+    volumes:
+      # Mount source code for live reloading during development
+      - ./control:/app/control
+      - ./sim:/app/sim
+      # Persist training outputs outside the container
+      - ./outputs:/app/outputs
+    environment:
+      # Weights & Biases API key for experiment tracking
+      - WANDB_API_KEY=${WANDB_API_KEY}
+      # Enable debug logging
+      - LOG_LEVEL=DEBUG
+    ports:
+      # debugpy remote debugger
+      - "5678:5678"
+
+  perception:
+    volumes:
+      # Mount source code for live reloading during development
+      - ./perception:/app/perception
+      # Persist training outputs outside the container
+      - ./outputs:/app/outputs
+    environment:
+      # Weights & Biases API key for experiment tracking
+      - WANDB_API_KEY=${WANDB_API_KEY}
+      # Enable debug logging
+      - LOG_LEVEL=DEBUG
+    ports:
+      # debugpy remote debugger
+      - "5679:5678"
+
+  sim:
+    volumes:
+      # Mount source code for live reloading during development
+      - ./sim:/app/sim
+      # Persist outputs outside the container
+      - ./outputs:/app/outputs
+    environment:
+      - LOG_LEVEL=DEBUG
