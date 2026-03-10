@@ -14,6 +14,13 @@ from gymnasium import spaces
 from numpy.typing import NDArray
 
 from sim.rewards import monorace_reward
+
+try:
+    from sim.rewards import gate_offset_penalty
+except ImportError:  # pragma: no cover – available once rewards.py is updated
+    def gate_offset_penalty(state, gate_state):  # type: ignore[misc]
+        """Fallback: negative Euclidean distance to gate center."""
+        return -float(np.linalg.norm(state.pos - gate_state.position))
 from sim.tracks import Track
 from sim.types import Action, GateState, QuadState
 from sim.dynamics.numpy_quad import (
@@ -39,6 +46,31 @@ DEFAULT_CEILING = 10.0
 DEFAULT_MAX_STEPS = 1200
 
 
+def _gate_normal(gate_state: GateState) -> NDArray[np.float64]:
+    """Compute the forward-facing normal vector of a gate.
+
+    The gate's forward direction is its local x-axis, rotated by the gate's
+    orientation quaternion.
+
+    Args:
+        gate_state: Gate with orientation quaternion [w, x, y, z].
+
+    Returns:
+        Unit normal vector (3,) in world frame.
+    """
+    q = gate_state.orientation  # [w, x, y, z]
+    qw, qx, qy, qz = q[0], q[1], q[2], q[3]
+
+    # Quaternion rotation of [1, 0, 0]:
+    # R * [1, 0, 0] = [1 - 2(qy^2 + qz^2), 2(qx*qy + qw*qz), 2(qx*qz - qw*qy)]
+    normal = np.array([
+        1.0 - 2.0 * (qy * qy + qz * qz),
+        2.0 * (qx * qy + qw * qz),
+        2.0 * (qx * qz - qw * qy),
+    ])
+    return normal
+
+
 class GateRaceEnv(gym.Env):
     """Gymnasium environment for quadrotor gate racing.
 
@@ -56,6 +88,10 @@ class GateRaceEnv(gym.Env):
 
     Supports vectorized operation with n_envs parallel episodes.
 
+    Gate passage uses plane-crossing detection: the drone must cross the gate
+    plane from the front (negative-normal side) to the back (positive-normal
+    side) while within ``gate_passage_radius`` of the gate center laterally.
+
     Args:
         track: Track object defining the gate sequence.
         params: Vehicle parameters. Uses defaults if None.
@@ -64,8 +100,9 @@ class GateRaceEnv(gym.Env):
         max_steps: Maximum steps per episode before timeout.
         ceiling: Maximum altitude (z) before crash.
         reward_weights: Weights for the monorace_reward function.
-        gate_passage_radius: Distance threshold for gate passage detection.
+        gate_passage_radius: Lateral distance threshold for gate passage detection.
         v_max: Maximum velocity for delta-progress reward clipping (m/s).
+        action_smoothness_threshold: Threshold for action smoothness penalty.
     """
 
     metadata = {"render_modes": []}
@@ -81,6 +118,7 @@ class GateRaceEnv(gym.Env):
         reward_weights: dict[str, float] | None = None,
         gate_passage_radius: float = 1.0,
         v_max: float = 30.0,
+        action_smoothness_threshold: float = 0.5,
     ) -> None:
         super().__init__()
 
@@ -91,6 +129,7 @@ class GateRaceEnv(gym.Env):
         self.reward_weights = reward_weights
         self.gate_passage_radius = gate_passage_radius
         self.v_max = v_max
+        self.action_smoothness_threshold = action_smoothness_threshold
 
         # Default track: simple 3-gate circuit
         if track is None:
@@ -122,6 +161,7 @@ class GateRaceEnv(gym.Env):
         self._step_counts = np.zeros(n_envs, dtype=np.int64)
         self._gate_indices = np.zeros(n_envs, dtype=np.int64)
         self._prev_gate_dists = np.zeros(n_envs, dtype=np.float64)
+        self._prev_along_normal = np.zeros(n_envs, dtype=np.float64)
         self._prev_actions: NDArray[np.float64] | None = None
 
     def reset(
@@ -146,12 +186,13 @@ class GateRaceEnv(gym.Env):
         self._gate_indices[:] = 0
         self._prev_actions = None
 
-        # Compute initial distances to gate
+        # Compute initial distances to gate and along-normal projections
         for i in range(self.n_envs):
-            gate_pos = self.track.gates[0].position
-            self._prev_gate_dists[i] = np.linalg.norm(
-                self._states[i, POS] - gate_pos
-            )
+            gate = self.track.gates[0]
+            rel_pos = self._states[i, POS] - gate.position
+            self._prev_gate_dists[i] = float(np.linalg.norm(rel_pos))
+            normal = _gate_normal(gate)
+            self._prev_along_normal[i] = float(np.dot(rel_pos, normal))
 
         self.track.reset()
         obs = self._compute_obs()
@@ -190,29 +231,36 @@ class GateRaceEnv(gym.Env):
             quat = self._states[i, QUAT]
             quat_norm = np.linalg.norm(quat)
 
+            # Configurable crash penalty
+            crash_penalty = (
+                self.reward_weights.get("crash_penalty", 10.0)
+                if self.reward_weights
+                else 10.0
+            )
+
             # Ground crash
             if z <= 0.0:
                 terminated[i] = True
-                rewards[i] = -10.0
+                rewards[i] = -crash_penalty
                 continue
 
             # Ceiling crash
             if z > self.ceiling:
                 terminated[i] = True
-                rewards[i] = -10.0
+                rewards[i] = -crash_penalty
                 continue
 
             # Quaternion divergence
             if quat_norm < 0.5 or quat_norm > 1.5:
                 terminated[i] = True
-                rewards[i] = -10.0
+                rewards[i] = -crash_penalty
                 continue
 
             # Timeout truncation
             if self._step_counts[i] >= self.max_steps:
                 truncated[i] = True
 
-            # Compute reward using monorace_reward
+            # Current target gate
             gate_idx = int(self._gate_indices[i])
             gate = self.track.gates[gate_idx % self.track.num_gates]
 
@@ -229,27 +277,81 @@ class GateRaceEnv(gym.Env):
                 self._states[i, POS] - gate.position
             ))
 
-            rewards[i] = monorace_reward(
-                state=state_obj,
-                action=action_obj,
-                gate_state=gate,
-                weights=self.reward_weights,
-                prev_action=prev_action_obj,
-                prev_gate_dist=self._prev_gate_dists[i],
-                v_max=self.v_max,
-                dt=self.dt,
-            )
+            # Continuous reward via monorace_reward (no gate_offset -- that's
+            # applied discretely at passage only).
+            # Pass new M23 params; fall back to old signature if rewards.py
+            # hasn't been updated yet by the other agent.
+            try:
+                rewards[i] = monorace_reward(
+                    state=state_obj,
+                    action=action_obj,
+                    gate_state=gate,
+                    weights=self.reward_weights,
+                    prev_action=prev_action_obj,
+                    prev_gate_dist=self._prev_gate_dists[i],
+                    v_max=self.v_max,
+                    dt=self.dt,
+                    action_smoothness_threshold=self.action_smoothness_threshold,
+                )
+            except TypeError:
+                # Old monorace_reward signature (pre-M23 update)
+                rewards[i] = monorace_reward(
+                    state=state_obj,
+                    action=action_obj,
+                    gate_state=gate,
+                    weights=self.reward_weights,
+                    prev_action=prev_action_obj,
+                )
 
-            # Gate passage detection (per-env, distance-based)
-            if curr_dist <= self.gate_passage_radius:
-                self._gate_indices[i] += 1
-                # Handle lap completion
-                if self._gate_indices[i] >= self.track.num_gates:
-                    self._gate_indices[i] = 0
-                # Add gate passage bonus
-                rewards[i] += self.reward_weights.get("gate_passage", 30.0) if self.reward_weights else 30.0
+            # --- Plane-crossing gate passage detection ---
+            normal = _gate_normal(gate)
+            rel_pos = self._states[i, POS] - gate.position
+            curr_along_normal = float(np.dot(rel_pos, normal))
+            prev_along_normal = self._prev_along_normal[i]
 
-            # Update previous gate distance for next step
+            # Plane crossing: sign change from negative (approaching) to
+            # positive (passed through front-to-back)
+            if prev_along_normal <= 0 and curr_along_normal > 0:
+                # Check lateral distance from gate center
+                lateral = rel_pos - curr_along_normal * normal
+                lateral_dist = float(np.linalg.norm(lateral))
+                if lateral_dist <= self.gate_passage_radius:
+                    # Gate passed! Increment gate index
+                    self._gate_indices[i] += 1
+                    if self._gate_indices[i] >= self.track.num_gates:
+                        self._gate_indices[i] = 0
+
+                    # Gate passage bonus
+                    passage_weight = (
+                        self.reward_weights.get("gate_passage", 1.5)
+                        if self.reward_weights
+                        else 1.5
+                    )
+                    rewards[i] += passage_weight
+
+                    # Gate offset penalty (discrete, at passage only)
+                    offset_weight = (
+                        (self.reward_weights or {}).get("gate_offset", 1.5)
+                    )
+                    rewards[i] += offset_weight * gate_offset_penalty(
+                        state_obj, gate
+                    )
+
+                    # CRITICAL: recompute curr_dist against NEW target gate
+                    new_gate = self.track.gates[
+                        int(self._gate_indices[i]) % self.track.num_gates
+                    ]
+                    curr_dist = float(np.linalg.norm(
+                        self._states[i, POS] - new_gate.position
+                    ))
+
+                    # Recompute along-normal for the new gate
+                    new_normal = _gate_normal(new_gate)
+                    new_rel = self._states[i, POS] - new_gate.position
+                    curr_along_normal = float(np.dot(new_rel, new_normal))
+
+            # Update tracking state for next step
+            self._prev_along_normal[i] = curr_along_normal
             self._prev_gate_dists[i] = curr_dist
 
         self._prev_actions = action.copy()
@@ -261,13 +363,15 @@ class GateRaceEnv(gym.Env):
             self._states[done] = reset_states
             self._step_counts[done] = 0
             self._gate_indices[done] = 0
-            # Reset prev gate distances for auto-reset envs
-            gate_pos = self.track.gates[0].position
+            # Reset prev gate distances and along-normal for auto-reset envs
+            gate = self.track.gates[0]
+            gate_pos = gate.position
+            normal = _gate_normal(gate)
             done_indices = np.where(done)[0]
             for idx in done_indices:
-                self._prev_gate_dists[idx] = float(np.linalg.norm(
-                    self._states[idx, POS] - gate_pos
-                ))
+                rel_pos = self._states[idx, POS] - gate_pos
+                self._prev_gate_dists[idx] = float(np.linalg.norm(rel_pos))
+                self._prev_along_normal[idx] = float(np.dot(rel_pos, normal))
 
         obs = self._compute_obs()
 
