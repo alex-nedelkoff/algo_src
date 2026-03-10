@@ -17,10 +17,13 @@ MCP server: `linear-grandprix` (if not configured, see [references/setup.md](ref
 ## What Are You Doing?
 
 **Starting a session on a task:**
-1. Read the issue via `get_issue` to load context (description, status, comments)
-2. If resuming prior work, read recent comments for session history
+1. Read the issue via `get_issue` to load context (description, status, relations)
+2. Read comments via `list_comments` — comments often contain scope changes, design decisions, and session history that override the original description. This is not optional; `get_issue` does not return comments.
 3. Move status to **In Progress** via `save_issue`
 4. Follow patterns in [references/session-tracking.md](references/session-tracking.md)
+
+**Reading any issue (even outside a session):**
+Always call both `get_issue` AND `list_comments`. The issue description is the original plan; comments are where the plan evolves. Reading only the description means you'll miss critical updates.
 
 **Creating or managing issues:**
 - Follow templates and conventions in [references/issue-lifecycle.md](references/issue-lifecycle.md)
