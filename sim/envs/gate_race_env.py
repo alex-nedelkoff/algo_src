@@ -64,6 +64,7 @@ class GateRaceEnv(gym.Env):
         max_steps: Maximum steps per episode before timeout.
         ceiling: Maximum altitude (z) before crash.
         reward_weights: Weights for the monorace_reward function.
+        gate_passage_radius: Distance threshold for gate passage detection.
     """
 
     metadata = {"render_modes": []}
@@ -77,6 +78,7 @@ class GateRaceEnv(gym.Env):
         max_steps: int = DEFAULT_MAX_STEPS,
         ceiling: float = DEFAULT_CEILING,
         reward_weights: dict[str, float] | None = None,
+        gate_passage_radius: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -84,6 +86,7 @@ class GateRaceEnv(gym.Env):
         self.max_steps = max_steps
         self.ceiling = ceiling
         self.reward_weights = reward_weights
+        self.gate_passage_radius = gate_passage_radius
 
         # Default track: simple 3-gate circuit
         if track is None:
@@ -224,6 +227,18 @@ class GateRaceEnv(gym.Env):
                 weights=self.reward_weights,
                 prev_action=prev_action_obj,
             )
+
+            # Gate passage detection (per-env, distance-based)
+            gate_pos = self.track.gates[gate_idx % self.track.num_gates].position
+            dist_to_gate = np.linalg.norm(self._states[i, POS] - gate_pos)
+
+            if dist_to_gate <= self.gate_passage_radius:
+                self._gate_indices[i] += 1
+                # Handle lap completion
+                if self._gate_indices[i] >= self.track.num_gates:
+                    self._gate_indices[i] = 0
+                # Add gate passage bonus
+                rewards[i] += self.reward_weights.get("gate_passage", 30.0) if self.reward_weights else 30.0
 
         self._prev_actions = action.copy()
 
