@@ -1,8 +1,7 @@
-# Perception-aware reward: penalises losing sight of gates
+# Perception-aware reward: future integration with perception pipeline
+# NOTE: p_perc penalty deferred to perception-in-the-loop (COR-48)
 weights:
   gate_progress: 1.0
   body_rate: 0.001
   action_smoothness: 0.01
   crash_penalty: 10.0
-  gate_visibility: 0.2      # bonus for keeping gate in FOV
-  detection_confidence: 0.1  # bonus for high-confidence detections
