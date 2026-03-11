@@ -9,7 +9,7 @@ defaults:
 
 seed: 42
 device: auto  # auto, cpu, cuda
-total_timesteps: 10_000_000
+total_timesteps: 100_000_000
 eval_freq: 50_000
 n_eval_episodes: 10
 checkpoint_freq: 100_000

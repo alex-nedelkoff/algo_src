@@ -47,13 +47,13 @@ class PPO(Algorithm):
     def __init__(
         self,
         learning_rate: float = 3e-4,
-        n_steps: int = 2048,
-        batch_size: int = 64,
+        n_steps: int = 1000,
+        batch_size: int = 5000,
         n_epochs: int = 10,
-        gamma: float = 0.99,
+        gamma: float = 0.999,
         gae_lambda: float = 0.95,
         clip_range: float = 0.2,
-        ent_coef: float = 0.01,
+        ent_coef: float = 0.005,
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         policy_type: str = "MlpPolicy",
@@ -115,6 +115,7 @@ class PPO(Algorithm):
         kwargs: dict[str, Any] = {
             "net_arch": self.net_arch,
             "activation_fn": act_fn,
+            "log_std_init": 0.0,
         }
 
         if self.hidden_dims:
