@@ -1,17 +1,26 @@
 # @package _global_
-# MonoRace baseline: PPO + gate racing + full domain randomization
+# MonoRace M23 baseline: PPO + gate racing + full domain randomization
+# M23 = safest policy (88.4% success rate in paper)
 
 defaults:
   - override /sim: numpy_quad
   - override /control: ppo
   - override /perception: none
-  - override /reward: monorace
+  - override /reward: monorace_safe
   - override /domain_rand: uniform_30pct
   - override /logging: wandb
 
 seed: 42
 total_timesteps: 10_000_000
+eval_freq: 100_000
+checkpoint_freq: 1_000_000
+
+sim:
+  n_envs: 100
+  max_steps: 1200  # M23: 12s episodes (not 10s)
+  arena_bounds: 5.0  # M23: 5m lateral bounds
+  gate_passage_radius: 0.75  # Training: generous for reward discovery (M23 paper: 0.40m)
 
 logging:
-  tags: [monorace, baseline]
+  tags: [monorace, m23, baseline]
   group: monorace_baseline

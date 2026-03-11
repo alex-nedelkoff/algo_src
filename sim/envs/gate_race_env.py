@@ -46,6 +46,17 @@ OBS_DIM = 24
 DEFAULT_CEILING = 10.0
 DEFAULT_MAX_STEPS = 1200
 
+# Termination reason codes
+TERM_NONE = 0
+TERM_GROUND = 1          # z <= 0
+TERM_CEILING = 2         # z > ceiling
+TERM_QUAT = 3            # quat norm out of [0.5, 1.5]
+TERM_NAN = 4             # non-finite state
+TERM_ARENA_OOB = 5       # |x| or |y| > arena_bounds
+TERM_BODY_RATE = 6       # per-axis omega > max_body_rate
+TERM_GATE_COLLISION = 7  # crossed gate plane outside opening
+TERM_TIMEOUT = 8         # step >= max_steps (truncation)
+
 
 def _gate_normal(gate_state: GateState) -> NDArray[np.float64]:
     """Compute the forward-facing normal vector of a gate.
@@ -212,6 +223,13 @@ class GateRaceEnv(gym.Env):
         esc_nonlinearity: ESC curve parameter k in [0, 1]. k=0 gives sqrt
             response, k=1 gives linear. Default 0.5 per MonoRace paper.
         omega_min: Minimum motor speed in rad/s (idle speed). Default 0.
+        max_body_rate: Maximum body angular rate (rad/s) before crash.
+            Default 17.45 (1000 deg/s, MonoRace M23).
+        max_velocity: Maximum velocity for state clamping (m/s). Default 50.
+            Used only for float32 overflow protection, not termination.
+        arena_bounds: Half-width of lateral arena bounds (m). Default 20.
+            Drone terminates if |x| or |y| exceeds this. MonoRace uses 5m
+            but that's for a fixed indoor track; 20m suits our gate layout.
     """
 
     metadata = {"render_modes": []}
@@ -234,8 +252,12 @@ class GateRaceEnv(gym.Env):
         start_behind_dist: float = 1.0,
         start_vel_std: float = 0.5,
         start_att_std: float = 0.1,
+        start_omega_std: float = 0.0,
         gate_collision: bool = False,
         domain_randomizer: DomainRandomizer | None = None,
+        max_body_rate: float = 17.45,
+        max_velocity: float = 50.0,
+        arena_bounds: float = 20.0,
     ) -> None:
         super().__init__()
 
@@ -253,16 +275,17 @@ class GateRaceEnv(gym.Env):
         self.start_behind_dist = start_behind_dist
         self.start_vel_std = start_vel_std
         self.start_att_std = start_att_std
+        self.start_omega_std = start_omega_std
         self.gate_collision = gate_collision
         self._domain_randomizer = domain_randomizer
+        self.max_body_rate = max_body_rate
+        self.max_velocity = max_velocity
+        self.arena_bounds = arena_bounds
 
-        # Default track: simple 3-gate circuit
+        # Default track: figure-8 with 8 gates (MonoRace M23, 5m×5m arena)
         if track is None:
-            track = Track([
-                GateState(position=np.array([5.0, 0.0, 2.0])),
-                GateState(position=np.array([10.0, 5.0, 2.0])),
-                GateState(position=np.array([5.0, 10.0, 2.0])),
-            ])
+            from sim.tracks import build_figure8_track
+            track = build_figure8_track()
         self.track = track
 
         # Dynamics
@@ -291,6 +314,8 @@ class GateRaceEnv(gym.Env):
         # Per-episode gate/lap tracking
         self._gates_passed = np.zeros(n_envs, dtype=np.int64)
         self._laps_completed = np.zeros(n_envs, dtype=np.int64)
+        self._episode_rewards = np.zeros(n_envs, dtype=np.float64)
+        self._termination_reasons = np.zeros(n_envs, dtype=np.int8)
 
     def _apply_domain_rand(self, env_indices: NDArray[np.intp]) -> None:
         """Draw fresh randomized physics for specified envs."""
@@ -346,8 +371,8 @@ class GateRaceEnv(gym.Env):
             yaw = gate_yaw + rng.normal(0, self.start_att_std)
             self._states[idx, QUAT] = _euler_to_quat(roll, pitch, yaw)
 
-            # Zero angular rates, set motors to hover (per-env params)
-            self._states[idx, OMEGA] = 0.0
+            # Angular rate perturbation (M23: random initial body rates)
+            self._states[idx, OMEGA] = rng.normal(0, self.start_omega_std, size=3)
             hover_omega_i = np.sqrt(
                 self.dynamics._mass[idx] * GRAVITY / (4.0 * self.dynamics._k_thrust[idx])
             )
@@ -390,6 +415,8 @@ class GateRaceEnv(gym.Env):
         self._prev_actions = np.zeros((self.n_envs, 4), dtype=np.float64)
         self._gates_passed[:] = 0
         self._laps_completed[:] = 0
+        self._episode_rewards[:] = 0.0
+        self._termination_reasons[:] = TERM_NONE
 
         all_indices = np.arange(self.n_envs)
 
@@ -449,6 +476,10 @@ class GateRaceEnv(gym.Env):
         self._states = self.dynamics.step(self._states, action_rads)
         self._step_counts += 1
 
+        # Clamp state to prevent overflow propagating to observations (float32)
+        np.clip(self._states[:, VEL], -self.max_velocity, self.max_velocity, out=self._states[:, VEL])
+        np.clip(self._states[:, OMEGA], -self.max_body_rate, self.max_body_rate, out=self._states[:, OMEGA])
+
         # Compute rewards, termination, truncation
         rewards = np.zeros(self.n_envs, dtype=np.float64)
         terminated = np.zeros(self.n_envs, dtype=np.bool_)
@@ -471,23 +502,50 @@ class GateRaceEnv(gym.Env):
             if z <= 0.0:
                 terminated[i] = True
                 rewards[i] = -crash_penalty
+                self._termination_reasons[i] = TERM_GROUND
                 continue
 
             # Ceiling crash
             if z > self.ceiling:
                 terminated[i] = True
                 rewards[i] = -crash_penalty
+                self._termination_reasons[i] = TERM_CEILING
                 continue
 
             # Quaternion divergence
             if quat_norm < 0.5 or quat_norm > 1.5:
                 terminated[i] = True
                 rewards[i] = -crash_penalty
+                self._termination_reasons[i] = TERM_QUAT
+                continue
+
+            # State divergence: NaN/inf (quaternion sim safety)
+            state_i = self._states[i]
+            if not np.all(np.isfinite(state_i)):
+                terminated[i] = True
+                rewards[i] = -crash_penalty
+                self._termination_reasons[i] = TERM_NAN
+                continue
+
+            # Out-of-bounds (lateral arena limits, MonoRace-style)
+            if (abs(state_i[0]) > self.arena_bounds
+                    or abs(state_i[1]) > self.arena_bounds):
+                terminated[i] = True
+                rewards[i] = -crash_penalty
+                self._termination_reasons[i] = TERM_ARENA_OOB
+                continue
+
+            # Excessive body rate per axis (MonoRace: 1000 deg/s ≈ 17.45 rad/s)
+            if np.any(np.abs(state_i[OMEGA]) > self.max_body_rate):
+                terminated[i] = True
+                rewards[i] = -crash_penalty
+                self._termination_reasons[i] = TERM_BODY_RATE
                 continue
 
             # Timeout truncation
             if self._step_counts[i] >= self.max_steps:
                 truncated[i] = True
+                self._termination_reasons[i] = TERM_TIMEOUT
 
             # Current target gate
             gate_idx = int(self._gate_indices[i])
@@ -582,6 +640,7 @@ class GateRaceEnv(gym.Env):
                     # Crossed gate plane but outside opening -> gate collision
                     terminated[i] = True
                     rewards[i] = -crash_penalty
+                    self._termination_reasons[i] = TERM_GATE_COLLISION
                     continue
 
             # Update tracking state for next step
@@ -589,6 +648,7 @@ class GateRaceEnv(gym.Env):
             self._prev_gate_dists[i] = curr_dist
 
         self._prev_actions = action.copy()
+        self._episode_rewards += rewards
 
         # Compute obs BEFORE auto-reset so we capture terminal observations.
         # Always keep batch dimension so VecEnvAdapter can index terminal_obs[i] safely.
@@ -601,9 +661,11 @@ class GateRaceEnv(gym.Env):
         ep_info: dict[str, Any] | None = None
         if np.any(done):
             ep_info = {
+                "r": self._episode_rewards.copy(),
                 "gates_passed": self._gates_passed.copy(),
                 "laps_completed": self._laps_completed.copy(),
                 "episode_length": self._step_counts.copy(),
+                "termination_reason": self._termination_reasons.copy(),
             }
 
             done_indices = np.where(done)[0]
@@ -623,6 +685,8 @@ class GateRaceEnv(gym.Env):
             self._prev_actions[done] = 0.0
             self._gates_passed[done] = 0
             self._laps_completed[done] = 0
+            self._episode_rewards[done] = 0.0
+            self._termination_reasons[done] = TERM_NONE
 
             if self.random_gate_start:
                 self._randomize_start(done_indices)

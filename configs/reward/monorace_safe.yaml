@@ -5,8 +5,8 @@ weights:
   gate_progress: 1.0
   gate_offset: 1.5
   body_rate: 0.001
-  action_smoothness: 0.0
+  action_smoothness: 0.001
   crash_penalty: 10.0
 
 v_max: 10.0
-action_smoothness_threshold: 0.0
+action_smoothness_threshold: 0.3

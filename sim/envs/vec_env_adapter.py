@@ -83,12 +83,16 @@ class VecEnvAdapter(VecEnv):
                 env_info["terminal_observation"] = terminal_obs[i]
                 env_info["TimeLimit.truncated"] = bool(truncated[i]) and not bool(terminated[i])
                 # Episode metrics for SB3 logging
+                # SB3 requires "r" (cumulative reward) and "l" (length)
                 if episode_metrics is not None:
                     env_info["episode"] = {
+                        "r": float(episode_metrics["r"][i]),
+                        "l": int(episode_metrics["episode_length"][i]),
                         "gates_passed": int(episode_metrics["gates_passed"][i]),
                         "laps_completed": int(episode_metrics["laps_completed"][i]),
-                        "l": int(episode_metrics["episode_length"][i]),
                     }
+                    if "termination_reason" in episode_metrics:
+                        env_info["episode"]["termination_reason"] = int(episode_metrics["termination_reason"][i])
             infos.append(env_info)
 
         return obs, rewards, dones, infos

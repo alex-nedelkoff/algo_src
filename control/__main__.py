@@ -62,8 +62,13 @@ def build_env(cfg: DictConfig) -> VecEnvAdapter:
         start_behind_dist=sim_cfg.get("start_behind_dist", 1.0),
         start_vel_std=sim_cfg.get("start_vel_std", 0.5),
         start_att_std=sim_cfg.get("start_att_std", 0.1),
+        start_omega_std=sim_cfg.get("start_omega_std", 0.0),
         gate_collision=sim_cfg.get("gate_collision", False),
         domain_randomizer=domain_randomizer,
+        esc_nonlinearity=sim_cfg.get("esc_nonlinearity", 0.5),
+        max_body_rate=sim_cfg.get("max_body_rate", 17.45),
+        max_velocity=sim_cfg.get("max_velocity", 50.0),
+        arena_bounds=sim_cfg.get("arena_bounds", 20.0),
     )
 
     return VecEnvAdapter(env)
@@ -94,15 +99,21 @@ def build_ppo(cfg: DictConfig) -> PPO:
 
 
 def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None) -> list:
-    """Create SB3 training callbacks from config."""
+    """Create SB3 training callbacks from config.
+
+    SB3 callback frequencies count env.step() calls, not total timesteps.
+    With n_envs parallel envs, divide by n_envs to get the intended
+    timestep-based frequency.
+    """
     from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 
     callbacks = []
     output_dir = Path(cfg.output_dir)
+    n_envs = cfg.sim.n_envs
 
     callbacks.append(
         CheckpointCallback(
-            save_freq=cfg.checkpoint_freq,
+            save_freq=max(1, cfg.checkpoint_freq // n_envs),
             save_path=str(output_dir / "checkpoints"),
             name_prefix="ppo",
         )
@@ -113,7 +124,7 @@ def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None) -> 
             EvalCallback(
                 eval_env,
                 n_eval_episodes=cfg.n_eval_episodes,
-                eval_freq=cfg.eval_freq,
+                eval_freq=max(1, cfg.eval_freq // n_envs),
                 best_model_save_path=str(output_dir / "best_model"),
                 log_path=str(output_dir / "eval_logs"),
             )

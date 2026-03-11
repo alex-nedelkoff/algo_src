@@ -142,7 +142,7 @@ class PPO(Algorithm):
             use_sde=self.use_sde,
             policy_kwargs=self._build_policy_kwargs(),
             tensorboard_log=self.tensorboard_log,
-            verbose=0,
+            verbose=1,
         )
 
     def train(
