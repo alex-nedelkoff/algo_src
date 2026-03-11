@@ -50,15 +50,21 @@ class DomainRandomizer:
 
     def __init__(
         self,
-        config: dict[str, tuple[float, float]],
+        config: dict[str, tuple[float, float] | float],
         absolute_bounds: bool = False,
     ) -> None:
-        for key in config:
+        # Normalize single floats to symmetric (p, p) tuples
+        normalized: dict[str, tuple[float, float]] = {}
+        for key, value in config.items():
             if key not in ALL_PARAMS:
                 raise ValueError(
                     f"Unknown parameter '{key}'. Valid params: {sorted(ALL_PARAMS)}"
                 )
-        self.config = config
+            if isinstance(value, (int, float)):
+                normalized[key] = (float(value), float(value))
+            else:
+                normalized[key] = (float(value[0]), float(value[1]))
+        self.config = normalized
         self.absolute_bounds = absolute_bounds
 
     def apply(
@@ -129,6 +135,36 @@ class DomainRandomizer:
             name: (percentage, percentage) for name in params_list
         }
         return cls(config)
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> DomainRandomizer:
+        """Create a DomainRandomizer from a YAML-style config dict.
+
+        Expected format::
+
+            {
+                "enabled": True,
+                "params": {
+                    "mass": 0.3,              # single float = symmetric +-30%
+                    "k_thrust": (0.2, 0.4),   # tuple = asymmetric
+                }
+            }
+
+        If ``enabled`` is False or ``params`` is empty, returns an identity
+        (no-op) randomizer.
+
+        Args:
+            config: Dict with 'enabled' bool and 'params' dict.
+
+        Returns:
+            Configured DomainRandomizer.
+        """
+        if not config.get("enabled", False):
+            return cls.identity()
+        params = config.get("params", {})
+        if not params:
+            return cls.identity()
+        return cls(params)
 
     @classmethod
     def identity(cls) -> DomainRandomizer:

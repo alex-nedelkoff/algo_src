@@ -54,8 +54,11 @@ class VehicleParams:
         self.inertia = np.asarray(self.inertia, dtype=np.float64)
         self.drag_coeff = np.asarray(self.drag_coeff, dtype=np.float64)
 
+        # Accept 3-element diagonal shorthand: [Jxx, Jyy, Jzz] -> diag matrix
+        if self.inertia.shape == (3,):
+            self.inertia = np.diag(self.inertia)
         if self.inertia.shape != (3, 3):
-            raise ValueError(f"inertia must have shape (3, 3), got {self.inertia.shape}")
+            raise ValueError(f"inertia must have shape (3, 3) or (3,), got {self.inertia.shape}")
         if self.drag_coeff.shape != (3,):
             raise ValueError(f"drag_coeff must have shape (3,), got {self.drag_coeff.shape}")
         if self.mass <= 0:

@@ -145,3 +145,94 @@ class TestInvalidConfig:
         """Unknown parameter name raises ValueError."""
         with pytest.raises(ValueError, match="Unknown parameter"):
             DomainRandomizer({"bogus_param": (0.1, 0.1)})
+
+
+class TestSingleFloatConfig:
+    """DomainRandomizer should accept single float as symmetric percentage."""
+
+    def test_single_float_expands_to_symmetric(self, nominal_params: VehicleParams) -> None:
+        """Single float 0.3 is equivalent to (0.3, 0.3)."""
+        config_float = {"mass": 0.3}
+        config_tuple = {"mass": (0.3, 0.3)}
+
+        rand_f = DomainRandomizer(config_float)
+        rand_t = DomainRandomizer(config_tuple)
+
+        rng_f = np.random.default_rng(42)
+        rng_t = np.random.default_rng(42)
+
+        pf = rand_f.apply(nominal_params, rng_f)
+        pt = rand_t.apply(nominal_params, rng_t)
+        assert pf.mass == pt.mass
+
+    def test_mixed_float_and_tuple(self, nominal_params: VehicleParams) -> None:
+        """Config can mix single floats and tuples."""
+        config = {
+            "mass": 0.3,
+            "k_thrust": (0.2, 0.4),
+        }
+        rand = DomainRandomizer(config)
+        rng = np.random.default_rng(42)
+        p = rand.apply(nominal_params, rng)
+        assert p.mass != nominal_params.mass or p.k_thrust != nominal_params.k_thrust
+
+
+class TestFromConfig:
+    """DomainRandomizer.from_config() constructs from YAML-style dict."""
+
+    def test_from_config_enabled(self, nominal_params: VehicleParams) -> None:
+        """from_config with enabled=True creates working randomizer."""
+        yaml_dict = {
+            "enabled": True,
+            "params": {
+                "mass": 0.3,
+                "k_thrust": 0.3,
+                "inertia": 0.3,
+            },
+        }
+        rand = DomainRandomizer.from_config(yaml_dict)
+        p = rand.apply(nominal_params, np.random.default_rng(42))
+        assert p.mass != nominal_params.mass
+
+    def test_from_config_disabled(self, nominal_params: VehicleParams) -> None:
+        """from_config with enabled=False creates identity randomizer."""
+        yaml_dict = {
+            "enabled": False,
+            "params": {"mass": 0.3},
+        }
+        rand = DomainRandomizer.from_config(yaml_dict)
+        p = rand.apply(nominal_params, np.random.default_rng(42))
+        assert p.mass == nominal_params.mass
+
+    def test_from_config_empty_params(self, nominal_params: VehicleParams) -> None:
+        """from_config with empty params creates identity randomizer."""
+        yaml_dict = {"enabled": True, "params": {}}
+        rand = DomainRandomizer.from_config(yaml_dict)
+        p = rand.apply(nominal_params, np.random.default_rng(42))
+        assert p.mass == nominal_params.mass
+
+
+class TestConfigFiles:
+    """YAML config files should parse without errors."""
+
+    def test_uniform_30pct_config(self, nominal_params: VehicleParams) -> None:
+        """uniform_30pct config parses and produces valid randomized params."""
+        config = {
+            "enabled": True,
+            "params": {
+                "mass": 0.3,
+                "inertia": 0.3,
+                "k_thrust": 0.3,
+                "k_torque": 0.3,
+                "tau_motor": 0.5,
+                "arm_length": 0.1,
+                "drag_coeff": 0.3,
+            },
+        }
+        rand = DomainRandomizer.from_config(config)
+        rng = np.random.default_rng(42)
+        for _ in range(50):
+            p = rand.apply(nominal_params, rng)
+            assert p.mass > 0
+            assert p.arm_length > 0
+            assert p.inertia.shape == (3, 3)

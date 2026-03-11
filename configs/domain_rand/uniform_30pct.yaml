@@ -1,10 +1,11 @@
-# Full uniform +-30% domain randomization (MonoRace default)
+# Full uniform domain randomization (MonoRace default)
+# Values are symmetric percentage deviations: U[nominal*(1-p), nominal*(1+p)]
 enabled: true
 params:
-  mass: [0.526, 0.978]                    # +-30%  (nominal 0.752)
-  inertia_xx: [0.00175, 0.00325]          # +-30%  (nominal 0.0025)
-  inertia_yy: [0.00175, 0.00325]          # +-30%  (nominal 0.0025)
-  inertia_zz: [0.00315, 0.00585]          # +-30%  (nominal 0.0045)
-  motor_constant: [5.984e-06, 1.111e-05]  # +-30%  (nominal 8.54858e-06)
-  arm_length: [0.153, 0.187]              # +-10%  (nominal 0.17)
-  drag: [0.7, 1.3]                        # +-30%  (normalised, nominal 1.0)
+  mass: 0.3           # +-30%
+  inertia: 0.3        # +-30% on diagonal
+  k_thrust: 0.3       # +-30%
+  k_torque: 0.3       # +-30%
+  tau_motor: 0.5      # +-50% (MonoRace competition: 50-55%)
+  arm_length: 0.1     # +-10% (structural, less variation)
+  drag_coeff: 0.3     # +-30%
