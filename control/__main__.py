@@ -107,6 +107,8 @@ def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None) -> 
     """
     from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 
+    from control.callbacks import GateMetricsCallback
+
     callbacks = []
     output_dir = Path(cfg.output_dir)
     n_envs = cfg.sim.n_envs
@@ -130,6 +132,9 @@ def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None) -> 
             )
         )
 
+    # Gate racing metrics (gates/laps/termination breakdown)
+    callbacks.append(GateMetricsCallback(log_freq=max(1, 100_000 // n_envs)))
+
     return callbacks
 
 
@@ -152,6 +157,12 @@ def main(cfg: DictConfig) -> None:
 
     log.info("Building PPO trainer...")
     ppo = build_ppo(cfg)
+
+    # Resume from checkpoint if specified
+    resume_path = cfg.get("resume_checkpoint", None)
+    if resume_path:
+        log.info("Resuming from checkpoint: %s", resume_path)
+        ppo.load(resume_path, env=train_env)
 
     # W&B init (optional)
     if cfg.logging.get("backend") == "wandb":

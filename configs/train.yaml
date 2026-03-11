@@ -14,3 +14,4 @@ eval_freq: 50_000
 n_eval_episodes: 10
 checkpoint_freq: 100_000
 output_dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+resume_checkpoint: null  # path to .zip checkpoint to resume from
