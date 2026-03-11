@@ -1,8 +1,8 @@
 """GCNet — Guidance and Control Network for direct motor RPM output.
 
-A compact MLP policy (~30K params) that maps observations directly to 4 motor
-RPM commands, bypassing PID controllers entirely.  Based on the MonoRace
-architecture that achieves 500 Hz inference on an STM32.
+A compact MLP policy (~10K params) that maps observations directly to 4 motor
+RPM commands, bypassing PID controllers entirely.  Based on the MonoRace M23
+architecture (3×64 ReLU) that achieves 500 Hz inference on an STM32.
 
 This module requires ``torch`` and ``stable-baselines3``.
 """
@@ -47,7 +47,8 @@ if _TORCH_AVAILABLE:
     class GCNet(nn.Module):
         """Guidance & Control Network: compact MLP for motor RPM output.
 
-        Default architecture: obs_dim -> 128 -> 128 -> 64 -> action_dim (~28K params).
+        Default architecture: obs_dim -> 64 -> 64 -> 64 -> action_dim (~10K params).
+        Matches MonoRace M23 policy (3×64, ReLU).
         All hidden layers use ReLU activation.
 
         Args:
@@ -60,7 +61,7 @@ if _TORCH_AVAILABLE:
             self,
             obs_dim: int = 24,
             action_dim: int = 4,
-            hidden_dims: tuple[int, ...] = (128, 128, 64),
+            hidden_dims: tuple[int, ...] = (64, 64, 64),
         ) -> None:
             super().__init__()
             layers: list[nn.Module] = []
@@ -112,7 +113,7 @@ if _TORCH_AVAILABLE:
             def __init__(
                 self,
                 observation_space: spaces.Box,
-                hidden_dims: tuple[int, ...] = (128, 128, 64),
+                hidden_dims: tuple[int, ...] = (64, 64, 64),
             ) -> None:
                 features_dim = hidden_dims[-1]
                 super().__init__(observation_space, features_dim=features_dim)

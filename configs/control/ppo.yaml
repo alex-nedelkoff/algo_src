@@ -12,10 +12,13 @@ ent_coef: 0.01
 vf_coef: 0.5
 max_grad_norm: 0.5
 
-# Network architecture
+# Network architecture — MonoRace M23 baseline
+# Separate policy and value networks (no shared backbone).
+# SB3 FlattenExtractor passes obs through; net_arch defines each head.
 policy_type: MlpPolicy
-# net_arch intentionally omitted — GCNetExtractor IS the network;
-# SB3 should not add extra MLP layers on top of it.
+net_arch:
+  pi: [64, 64, 64]
+  vf: [64, 64, 64]
 activation_fn: relu
 
 # Exploration

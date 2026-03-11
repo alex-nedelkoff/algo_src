@@ -14,13 +14,12 @@ from control.algorithms.ppo import PPO
 
 @pytest.fixture
 def ppo() -> PPO:
-    """A PPO instance with small config for fast tests."""
+    """A PPO instance with M23 defaults for fast tests."""
     return PPO(
         learning_rate=3e-4,
         n_steps=64,
         batch_size=32,
         n_epochs=2,
-        hidden_dims=(128, 128, 64),
     )
 
 
@@ -32,70 +31,112 @@ def hover_env():  # type: ignore[no-untyped-def]
     return HoverEnv()
 
 
-class TestPPOArchitecture:
-    """Test that PPO creates the expected network architecture.
+class TestPPOArchitectureM23:
+    """Test that PPO creates MonoRace M23 architecture by default.
 
-    GCNetExtractor IS the policy backbone. SB3 should NOT add extra MLP layers
-    on top (net_arch must be empty). The full actor path should be:
-        obs(24) -> GCNetExtractor(128->128->64) -> Linear(64->4)
+    M23 style: separate 3×64 ReLU policy and value networks, no shared backbone.
+    The full actor path should be:
+        obs(17/24) -> FlattenExtractor(identity) -> pi_net(3×64 ReLU) -> Linear(64->4)
     """
 
-    def test_no_extra_pi_layers(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
-        """SB3 pi_net should be empty (no layers between extractor and action head)."""
+    def test_pi_net_has_three_hidden_layers(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
+        """Policy net should have 3 hidden layers (3×64)."""
         ppo.train(hover_env, total_timesteps=64)
         pi_net = ppo._model.policy.mlp_extractor.policy_net
-        # pi_net should be an empty Sequential or identity
-        pi_modules = [m for m in pi_net.modules() if isinstance(m, torch.nn.Linear)]
-        assert len(pi_modules) == 0, (
-            f"Expected no extra pi layers, got {len(pi_modules)} Linear layers. "
-            "Check that net_arch is empty — GCNetExtractor should be the whole network."
+        pi_linears = [m for m in pi_net.modules() if isinstance(m, torch.nn.Linear)]
+        assert len(pi_linears) == 3, (
+            f"Expected 3 policy layers (M23 3×64), got {len(pi_linears)}"
         )
 
-    def test_no_extra_vf_layers(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
-        """SB3 vf_net should be empty (no layers between extractor and value head)."""
+    def test_vf_net_has_three_hidden_layers(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
+        """Value net should have 3 hidden layers (3×64)."""
         ppo.train(hover_env, total_timesteps=64)
         vf_net = ppo._model.policy.mlp_extractor.value_net
-        vf_modules = [m for m in vf_net.modules() if isinstance(m, torch.nn.Linear)]
-        assert len(vf_modules) == 0, (
-            f"Expected no extra vf layers, got {len(vf_modules)} Linear layers. "
-            "Check that net_arch is empty — GCNetExtractor should be the whole network."
+        vf_linears = [m for m in vf_net.modules() if isinstance(m, torch.nn.Linear)]
+        assert len(vf_linears) == 3, (
+            f"Expected 3 value layers (M23 3×64), got {len(vf_linears)}"
         )
 
+    def test_pi_layer_sizes(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
+        """Policy net layers should be obs_dim→64→64→64."""
+        ppo.train(hover_env, total_timesteps=64)
+        pi_net = ppo._model.policy.mlp_extractor.policy_net
+        linears = [m for m in pi_net.modules() if isinstance(m, torch.nn.Linear)]
+        sizes = [(l.in_features, l.out_features) for l in linears]
+        obs_dim = hover_env.observation_space.shape[0]
+        assert sizes == [(obs_dim, 64), (64, 64), (64, 64)]
+
+    def test_vf_layer_sizes(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
+        """Value net layers should be obs_dim→64→64→64."""
+        ppo.train(hover_env, total_timesteps=64)
+        vf_net = ppo._model.policy.mlp_extractor.value_net
+        linears = [m for m in vf_net.modules() if isinstance(m, torch.nn.Linear)]
+        sizes = [(l.in_features, l.out_features) for l in linears]
+        obs_dim = hover_env.observation_space.shape[0]
+        assert sizes == [(obs_dim, 64), (64, 64), (64, 64)]
+
+    def test_policy_and_value_are_independent(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
+        """Policy and value nets should NOT share parameters."""
+        ppo.train(hover_env, total_timesteps=64)
+        policy = ppo._model.policy
+        pi_params = set(id(p) for p in policy.mlp_extractor.policy_net.parameters())
+        vf_params = set(id(p) for p in policy.mlp_extractor.value_net.parameters())
+        assert pi_params.isdisjoint(vf_params), "Policy and value nets share parameters"
+
+    def test_activations_are_relu(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
+        """Hidden activations should be ReLU (M23 style)."""
+        ppo.train(hover_env, total_timesteps=64)
+        pi_net = ppo._model.policy.mlp_extractor.policy_net
+        activations = [m for m in pi_net.modules() if isinstance(m, torch.nn.ReLU)]
+        assert len(activations) == 3, f"Expected 3 ReLU activations, got {len(activations)}"
+
     def test_action_head_shape(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
-        """Action head should be Linear(features_dim -> action_dim)."""
+        """Action head should be Linear(64 -> action_dim)."""
         ppo.train(hover_env, total_timesteps=64)
         action_net = ppo._model.policy.action_net
         assert isinstance(action_net, torch.nn.Linear)
-        assert action_net.in_features == 64  # GCNetExtractor output
+        assert action_net.in_features == 64
         assert action_net.out_features == hover_env.action_space.shape[0]
 
-    def test_features_extractor_is_gcnet(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
-        """Features extractor should be our GCNetExtractor."""
+    def test_no_custom_extractor_by_default(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
+        """Default config should NOT use GCNetExtractor (uses FlattenExtractor)."""
         from control.policies.gcnet import GCNetExtractor
 
         ppo.train(hover_env, total_timesteps=64)
         extractor = ppo._model.policy.features_extractor
-        assert isinstance(extractor, GCNetExtractor)
-        assert extractor.features_dim == 64
+        assert not isinstance(extractor, GCNetExtractor)
 
     def test_total_actor_param_count(self, ppo: PPO, hover_env) -> None:  # type: ignore[no-untyped-def]
-        """Total actor params (extractor + action head) should be ~28K, not ~200K."""
+        """Total actor params (pi_net + action head) should be ~10K for M23."""
         ppo.train(hover_env, total_timesteps=64)
         policy = ppo._model.policy
-        extractor_params = sum(p.numel() for p in policy.features_extractor.parameters())
         pi_params = sum(p.numel() for p in policy.mlp_extractor.policy_net.parameters())
         action_params = sum(p.numel() for p in policy.action_net.parameters())
-        total = extractor_params + pi_params + action_params
-        # Extractor: 24*128+128 + 128*128+128 + 128*64+64 = 28032
-        # pi_net: 0 (empty)
-        # action_net: 64*4+4 = 260 (hover env has 4 actions)
-        assert pi_params == 0, f"pi_net should have 0 params, got {pi_params}"
-        assert total < 35_000, f"Actor too large ({total} params) — net_arch leak?"
+        total = pi_params + action_params
+        # obs_dim=17: 17*64+64 + 64*64+64 + 64*64+64 + 64*4+4 = ~10K
+        assert total < 15_000, f"Actor too large ({total} params) for M23 architecture"
+        assert total > 5_000, f"Actor too small ({total} params)"
 
-    def test_net_arch_override_rejected(self) -> None:
-        """Even if net_arch is passed, it should default to empty."""
+    def test_net_arch_default_is_m23(self) -> None:
+        """Default net_arch should be M23: separate 3×64."""
         ppo_default = PPO()
-        assert ppo_default.net_arch == {"pi": [], "vf": []}
+        assert ppo_default.net_arch == {"pi": [64, 64, 64], "vf": [64, 64, 64]}
+
+
+class TestPPOSharedExtractorMode:
+    """Test legacy shared-extractor mode when hidden_dims is provided."""
+
+    def test_gcnet_extractor_used_when_hidden_dims_set(self, hover_env) -> None:  # type: ignore[no-untyped-def]
+        from control.policies.gcnet import GCNetExtractor
+
+        ppo = PPO(
+            n_steps=64, batch_size=32, n_epochs=2,
+            hidden_dims=(128, 128, 64),
+            net_arch={"pi": [], "vf": []},
+        )
+        ppo.train(hover_env, total_timesteps=64)
+        extractor = ppo._model.policy.features_extractor
+        assert isinstance(extractor, GCNetExtractor)
 
 
 class TestPPOTrain:
@@ -150,7 +191,7 @@ class TestPPOOnnxExport:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             onnx_path = Path(tmpdir) / "gcnet.onnx"
-            result = ppo.export_onnx(onnx_path, obs_dim=17)
+            result = ppo.export_onnx(onnx_path)
             assert result.exists()
             assert result.stat().st_size > 0
 
@@ -161,7 +202,7 @@ class TestPPOOnnxExport:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             onnx_path = Path(tmpdir) / "gcnet.onnx"
-            ppo.export_onnx(onnx_path, obs_dim=17)
+            ppo.export_onnx(onnx_path)
             session = ort.InferenceSession(str(onnx_path))
 
             inputs = session.get_inputs()
@@ -191,7 +232,7 @@ class TestPPOOnnxExport:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             onnx_path = Path(tmpdir) / "gcnet.onnx"
-            ppo.export_onnx(onnx_path, obs_dim=17)
+            ppo.export_onnx(onnx_path)
             session = ort.InferenceSession(str(onnx_path))
 
             ort_result = session.run(None, {"observation": obs.reshape(1, -1)})

@@ -37,14 +37,22 @@ class TestGCNetForwardPass:
 
 
 class TestGCNetParamCount:
-    """Test GCNet parameter count is in the 25K-35K range."""
+    """Test GCNet parameter count matches M23 (~10K)."""
 
     def test_default_param_count_in_range(self) -> None:
         model = GCNet()
         n_params = sum(p.numel() for p in model.parameters())
-        assert 25_000 <= n_params <= 35_000, f"Param count {n_params} not in [25K, 35K]"
+        assert 8_000 <= n_params <= 15_000, f"Param count {n_params} not in M23 range [8K, 15K]"
 
-    def test_param_count_exact(self) -> None:
+    def test_param_count_exact_m23(self) -> None:
+        """M23 architecture: 24→64→64→64→4."""
+        model = GCNet(obs_dim=24, action_dim=4, hidden_dims=(64, 64, 64))
+        n_params = sum(p.numel() for p in model.parameters())
+        # 24*64+64 + 64*64+64 + 64*64+64 + 64*4+4 = 1600+4160+4160+260 = 10180
+        assert n_params == 10_180
+
+    def test_param_count_exact_legacy(self) -> None:
+        """Legacy 128→128→64 architecture for reference."""
         model = GCNet(obs_dim=24, action_dim=4, hidden_dims=(128, 128, 64))
         n_params = sum(p.numel() for p in model.parameters())
         assert n_params == 28_228
@@ -60,7 +68,7 @@ class TestGCNetAsymmetric:
         assert out.shape == (8, 4)
 
     def test_critic_privileged_obs(self) -> None:
-        critic = GCNet(obs_dim=48, action_dim=1, hidden_dims=(128, 128, 64))
+        critic = GCNet(obs_dim=48, action_dim=1, hidden_dims=(64, 64, 64))
         x = torch.randn(8, 48)
         out = critic(x)
         assert out.shape == (8, 1)
@@ -97,13 +105,13 @@ class TestGCNetGradients:
 
 
 class TestGCNetArchitectureLayers:
-    """Test GCNet internal layer structure matches expectations."""
+    """Test GCNet internal layer structure matches M23."""
 
     def test_default_layer_sizes(self) -> None:
         model = GCNet()
         linears = [m for m in model.net if isinstance(m, torch.nn.Linear)]
         sizes = [(l.in_features, l.out_features) for l in linears]
-        assert sizes == [(24, 128), (128, 128), (128, 64), (64, 4)]
+        assert sizes == [(24, 64), (64, 64), (64, 64), (64, 4)]
 
     def test_all_hidden_activations_are_relu(self) -> None:
         model = GCNet()
@@ -124,7 +132,7 @@ class TestGCNetArchitectureLayers:
 
 
 class TestGCNetExtractor:
-    """Test GCNetExtractor for SB3 integration."""
+    """Test GCNetExtractor for SB3 integration (shared-backbone mode)."""
 
     def test_features_dim(self) -> None:
         from gymnasium import spaces
@@ -153,4 +161,4 @@ class TestGCNetExtractor:
         extractor = GCNetExtractor(obs_space)
         linears = [m for m in extractor._backbone.net if isinstance(m, torch.nn.Linear)]
         sizes = [(l.in_features, l.out_features) for l in linears]
-        assert sizes == [(24, 128), (128, 128), (128, 64)]
+        assert sizes == [(24, 64), (64, 64), (64, 64)]

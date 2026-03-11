@@ -58,9 +58,9 @@ class PPO(Algorithm):
         max_grad_norm: float = 0.5,
         policy_type: str = "MlpPolicy",
         net_arch: dict[str, list[int]] | None = None,
-        activation_fn: str = "tanh",
+        activation_fn: str = "relu",
         use_sde: bool = False,
-        hidden_dims: tuple[int, ...] = (128, 128, 64),
+        hidden_dims: tuple[int, ...] = (),
         asymmetric_critic: bool = False,
         critic_obs_dim: int = 48,
         actor_obs_dim: int = 24,
@@ -88,28 +88,40 @@ class PPO(Algorithm):
         self.actor_obs_dim = actor_obs_dim
         self.tensorboard_log = tensorboard_log
 
-        # Empty net_arch so SB3 doesn't add extra MLP layers on top of the extractor
+        # MonoRace M23 default: separate 3×64 policy and value networks.
+        # When hidden_dims is empty, SB3's FlattenExtractor is used (identity for Box)
+        # and net_arch defines the full architecture for each head independently.
         self.net_arch: dict[str, list[int]] | list[dict[str, list[int]]] = net_arch or {
-            "pi": [],
-            "vf": [],
+            "pi": [64, 64, 64],
+            "vf": [64, 64, 64],
         }
 
         self._model: SB3_PPO | None = None
 
     def _build_policy_kwargs(self) -> dict[str, Any]:
-        """Build SB3 policy_kwargs with GCNetExtractor."""
+        """Build SB3 policy_kwargs.
+
+        When ``hidden_dims`` is empty (default, M23-style), architecture is
+        defined entirely via ``net_arch`` with separate policy/value networks.
+        When ``hidden_dims`` is set, GCNetExtractor is injected as a shared
+        feature backbone (legacy shared-extractor mode).
+        """
         activation_map = {
             "tanh": torch.nn.Tanh,
             "relu": torch.nn.ReLU,
         }
-        act_fn = activation_map.get(self.activation_fn, torch.nn.Tanh)
+        act_fn = activation_map.get(self.activation_fn, torch.nn.ReLU)
 
-        return {
-            "features_extractor_class": GCNetExtractor,
-            "features_extractor_kwargs": {"hidden_dims": self.hidden_dims},
+        kwargs: dict[str, Any] = {
             "net_arch": self.net_arch,
             "activation_fn": act_fn,
         }
+
+        if self.hidden_dims:
+            kwargs["features_extractor_class"] = GCNetExtractor
+            kwargs["features_extractor_kwargs"] = {"hidden_dims": self.hidden_dims}
+
+        return kwargs
 
     def _create_model(self, env: gym.Env) -> SB3_PPO:
         """Instantiate the SB3 PPO model."""
@@ -169,11 +181,13 @@ class PPO(Algorithm):
         _check_deps()
         self._model = SB3_PPO.load(str(path), env=env)
 
-    def export_onnx(self, path: str | Path, obs_dim: int = 24) -> Path:
+    def export_onnx(self, path: str | Path, obs_dim: int | None = None) -> Path:
         """Export the trained actor network to ONNX.
 
-        Extracts the actor (features_extractor + action_net) and exports
-        to ONNX format for deployment on Jetson Orin NX.
+        Chains features_extractor → policy_net → action_net into a single
+        ONNX model for deployment on Jetson Orin NX.
+
+        Works for both shared-extractor and separate-net architectures.
         """
         if self._model is None:
             raise RuntimeError("No model to export. Call train() or load() first.")
@@ -185,6 +199,9 @@ class PPO(Algorithm):
 
         policy = self._model.policy
         policy.eval()
+
+        if obs_dim is None:
+            obs_dim = policy.observation_space.shape[0]
 
         # Build a sequential actor: features_extractor -> pi_net -> action_net
         extractor = policy.features_extractor
