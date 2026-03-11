@@ -120,26 +120,22 @@ class TestVectorization:
 
     def test_batch_matches_single(self) -> None:
         """100 parallel envs match 1 env repeated 100 times."""
-        dynamics = NumpyQuadDynamics()
         n_envs = 100
+        batch_dynamics = NumpyQuadDynamics()
+        single_dynamics = NumpyQuadDynamics()
 
-        # Reset all at once
-        batch_states = dynamics.reset(n_envs)
-        # All should be identical after reset
-        single_state = dynamics.reset(1)
+        batch_states = batch_dynamics.reset(n_envs)
+        single_state = single_dynamics.reset(1)
 
-        # Apply same action to all
-        hover_w = dynamics.hover_omega()
+        hover_w = batch_dynamics.hover_omega()
         batch_action = np.full((n_envs, 4), hover_w)
         single_action = np.full((1, 4), hover_w)
 
-        # Step both
         n_steps = 50
         for _ in range(n_steps):
-            batch_states = dynamics.step(batch_states, batch_action)
-            single_state = dynamics.step(single_state, single_action)
+            batch_states = batch_dynamics.step(batch_states, batch_action)
+            single_state = single_dynamics.step(single_state, single_action)
 
-        # All batch envs should match the single env
         for i in range(n_envs):
             np.testing.assert_allclose(
                 batch_states[i],
@@ -251,3 +247,72 @@ class TestMotorLag:
                 f"Motor {j}: fraction={actual_fraction:.3f}, "
                 f"expected ~{expected_fraction:.3f}"
             )
+
+
+class TestPerEnvParams:
+    """Different per-env params should produce different physics."""
+
+    def test_different_masses_different_hover(self):
+        """Envs with different masses need different thrust to hover."""
+        dynamics = NumpyQuadDynamics()
+        states = dynamics.reset(2)
+
+        # Override env 1 to have double the mass
+        dynamics.update_params(env_indices=np.array([1]), mass=np.array([0.054]))
+
+        # Both start at hover for the nominal mass
+        hover_w = dynamics.hover_omega()
+        action = np.full((2, 4), hover_w)
+
+        # Step for 2 seconds
+        for _ in range(200):
+            states = dynamics.step(states, action)
+
+        # Env 0 (nominal mass) should maintain altitude
+        assert abs(states[0, 2] - 1.0) < 0.1, "Nominal mass should hover"
+        # Env 1 (double mass) should fall — insufficient thrust
+        assert states[1, 2] < 0.5, f"Double mass should fall, got z={states[1, 2]}"
+
+    def test_update_params_selective(self):
+        """update_params only affects specified env indices."""
+        dynamics = NumpyQuadDynamics()
+        dynamics.reset(4)
+
+        original_mass = dynamics._mass.copy()
+        dynamics.update_params(
+            env_indices=np.array([1, 3]),
+            mass=np.array([0.1, 0.2]),
+        )
+
+        assert dynamics._mass[0] == original_mass[0]  # untouched
+        assert dynamics._mass[1] == 0.1
+        assert dynamics._mass[2] == original_mass[2]  # untouched
+        assert dynamics._mass[3] == 0.2
+
+    def test_update_params_inertia(self):
+        """Per-env inertia is used in angular acceleration."""
+        dynamics = NumpyQuadDynamics()
+        states = dynamics.reset(2)
+
+        # Double inertia on env 1 → half the angular acceleration
+        new_inertia = dynamics.params.inertia * 2.0
+        dynamics.update_params(
+            env_indices=np.array([1]),
+            inertia=new_inertia[None],  # (1, 3, 3)
+        )
+
+        hover_w = dynamics.hover_omega()
+        # Asymmetric thrust to induce rotation
+        action = np.array([
+            [hover_w * 1.2, hover_w * 0.8, hover_w * 1.2, hover_w * 0.8],
+            [hover_w * 1.2, hover_w * 0.8, hover_w * 1.2, hover_w * 0.8],
+        ])
+        for _ in range(50):
+            states = dynamics.step(states, action)
+
+        # Env 0 should rotate faster than env 1 (lower inertia)
+        omega_0 = np.linalg.norm(states[0, OMEGA])
+        omega_1 = np.linalg.norm(states[1, OMEGA])
+        assert omega_0 > omega_1 * 1.5, (
+            f"Lower inertia should rotate faster: {omega_0:.3f} vs {omega_1:.3f}"
+        )

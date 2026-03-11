@@ -122,11 +122,18 @@ class NumpyQuadDynamics:
         """
         self.params = params if params is not None else VehicleParams()
         self.dt = dt
+        self._n_envs = 0  # set by reset()
 
-        # Pre-compute inverse inertia for efficiency
-        self._J = self.params.inertia
-        self._J_inv = np.linalg.inv(self._J)
-        self._J_diag = np.diag(self._J)  # [Jxx, Jyy, Jzz]
+        # Per-env arrays initialized lazily in reset()
+        self._mass: NDArray[np.float64] = np.empty(0)
+        self._k_thrust: NDArray[np.float64] = np.empty(0)
+        self._k_torque: NDArray[np.float64] = np.empty(0)
+        self._arm_length: NDArray[np.float64] = np.empty(0)
+        self._tau_motor: NDArray[np.float64] = np.empty(0)
+        self._max_omega: NDArray[np.float64] = np.empty(0)
+        self._drag_coeff: NDArray[np.float64] = np.empty(0)  # (N, 3)
+        self._J_inv: NDArray[np.float64] = np.empty(0)       # (N, 3, 3)
+        self._J_diag: NDArray[np.float64] = np.empty(0)      # (N, 3)
 
     def reset(self, n_envs: int, rng: np.random.Generator | None = None) -> NDArray[np.float64]:
         """Reset all environments to hover initial condition.
@@ -138,21 +145,96 @@ class NumpyQuadDynamics:
         Returns:
             Initial states array of shape (n_envs, 17).
         """
+        self._n_envs = n_envs
+        p = self.params
+
+        # Broadcast nominal params to per-env arrays
+        self._mass = np.full(n_envs, p.mass)
+        self._k_thrust = np.full(n_envs, p.k_thrust)
+        self._k_torque = np.full(n_envs, p.k_torque)
+        self._arm_length = np.full(n_envs, p.arm_length)
+        self._tau_motor = np.full(n_envs, p.tau_motor)
+        self._max_omega = np.full(n_envs, p.max_omega)
+        self._drag_coeff = np.tile(p.drag_coeff, (n_envs, 1))           # (N, 3)
+        self._J_inv = np.tile(np.linalg.inv(p.inertia), (n_envs, 1, 1)) # (N, 3, 3)
+        self._J_diag = np.tile(np.diag(p.inertia), (n_envs, 1))         # (N, 3)
+
+        return self.make_reset_states(n_envs)
+
+    def make_reset_states(
+        self, n_envs: int, env_indices: NDArray[np.intp] | None = None
+    ) -> NDArray[np.float64]:
+        """Generate initial state vectors without touching param arrays.
+
+        Uses per-env mass/k_thrust for hover omega when env_indices are
+        provided (auto-reset path). Falls back to nominal params otherwise.
+
+        Args:
+            n_envs: Number of state vectors to generate.
+            env_indices: If provided, use per-env params at these indices
+                for hover omega computation. Shape (n_envs,).
+
+        Returns:
+            Initial states (n_envs, 17).
+        """
         states = np.zeros((n_envs, 17), dtype=np.float64)
+        states[:, 2] = 1.0   # z = 1m
+        states[:, 6] = 1.0   # quat w = 1
 
-        # Position: start at z=1.0 (1 meter above ground)
-        states[:, 2] = 1.0
+        if env_indices is not None and self._n_envs > 0:
+            # Use per-env randomized mass/k_thrust for correct hover
+            hover_omega = np.sqrt(
+                self._mass[env_indices] * GRAVITY
+                / (4.0 * self._k_thrust[env_indices])
+            )
+        else:
+            hover_omega = np.full(n_envs, np.sqrt(
+                self.params.mass * GRAVITY / (4.0 * self.params.k_thrust)
+            ))
 
-        # Quaternion: identity [w=1, x=0, y=0, z=0]
-        states[:, 6] = 1.0
-
-        # Motor speeds: hover equilibrium (T_per_motor = mg/4)
-        hover_omega = np.sqrt(
-            self.params.mass * GRAVITY / (4.0 * self.params.k_thrust)
-        )
-        states[:, 13:17] = hover_omega
-
+        states[:, 13:17] = hover_omega[:, None]
         return states
+
+    def update_params(
+        self,
+        env_indices: NDArray[np.intp],
+        mass: NDArray[np.float64] | None = None,
+        inertia: NDArray[np.float64] | None = None,
+        k_thrust: NDArray[np.float64] | None = None,
+        k_torque: NDArray[np.float64] | None = None,
+        arm_length: NDArray[np.float64] | None = None,
+        tau_motor: NDArray[np.float64] | None = None,
+        max_rpm: NDArray[np.float64] | None = None,
+        drag_coeff: NDArray[np.float64] | None = None,
+    ) -> None:
+        """Update physics params for specific environments.
+
+        Args:
+            env_indices: Indices of envs to update, shape (K,).
+            mass: New masses, shape (K,).
+            inertia: New inertia tensors, shape (K, 3, 3).
+            k_thrust: shape (K,). k_torque: shape (K,).
+            arm_length: shape (K,). tau_motor: shape (K,).
+            max_rpm: shape (K,). drag_coeff: shape (K, 3).
+        """
+        if mass is not None:
+            self._mass[env_indices] = mass
+        if k_thrust is not None:
+            self._k_thrust[env_indices] = k_thrust
+        if k_torque is not None:
+            self._k_torque[env_indices] = k_torque
+        if arm_length is not None:
+            self._arm_length[env_indices] = arm_length
+        if tau_motor is not None:
+            self._tau_motor[env_indices] = tau_motor
+        if max_rpm is not None:
+            self._max_omega[env_indices] = max_rpm * 2.0 * np.pi / 60.0
+        if drag_coeff is not None:
+            self._drag_coeff[env_indices] = drag_coeff
+        if inertia is not None:
+            # Batched inversion: np.linalg.inv supports (K, 3, 3) input
+            self._J_inv[env_indices] = np.linalg.inv(inertia)
+            self._J_diag[env_indices] = inertia[:, [0, 1, 2], [0, 1, 2]]
 
     def step(
         self,
@@ -173,7 +255,6 @@ class NumpyQuadDynamics:
         if dt is None:
             dt = self.dt
 
-        p = self.params
         n = states.shape[0]
 
         # Extract state components
@@ -183,72 +264,67 @@ class NumpyQuadDynamics:
         omega = states[:, OMEGA]      # (N, 3)
         motor_w = states[:, MOTOR]    # (N, 4)
 
-        # Clip actions to valid range
-        max_w = p.max_omega
-        cmd_w = np.clip(actions, 0.0, max_w)  # (N, 4)
+        # Clip actions to valid range (per-env max_omega)
+        max_w = self._max_omega[:n]                     # (N,)
+        cmd_w = np.clip(actions, 0.0, max_w[:, None])   # (N, 4)
 
         # --- Motor dynamics: first-order lag ---
-        # dw/dt = (cmd - w) / tau
-        motor_w_new = motor_w + dt * (cmd_w - motor_w) / p.tau_motor  # (N, 4)
-        motor_w_new = np.clip(motor_w_new, 0.0, max_w)
+        tau = self._tau_motor[:n, None]                  # (N, 1) for broadcast
+        motor_w_new = motor_w + dt * (cmd_w - motor_w) / tau  # (N, 4)
+        motor_w_new = np.clip(motor_w_new, 0.0, max_w[:, None])
 
         # Use average of old and new motor speeds for force computation
         motor_w_avg = 0.5 * (motor_w + motor_w_new)
 
         # --- Compute per-motor thrust ---
-        w_sq = motor_w_avg ** 2  # (N, 4)
-        thrust_per_motor = p.k_thrust * w_sq  # (N, 4)
+        w_sq = motor_w_avg ** 2                          # (N, 4)
+        k_t = self._k_thrust[:n, None]                   # (N, 1)
+        thrust_per_motor = k_t * w_sq                    # (N, 4)
         total_thrust = np.sum(thrust_per_motor, axis=1)  # (N,)
 
         # --- Body-frame force ---
-        # Thrust along body z-axis (upward in body frame)
         force_body = np.zeros((n, 3), dtype=np.float64)
         force_body[:, 2] = total_thrust
 
         # Body drag (quadratic, if drag_coeff nonzero)
-        if np.any(p.drag_coeff != 0.0):
-            # Transform velocity to body frame
+        if np.any(self._drag_coeff[:n] != 0.0):
             R = quat_to_rotmat_batch(quat)  # (N, 3, 3)
             vel_body = np.einsum("nij,nj->ni", np.transpose(R, (0, 2, 1)), vel)
-            drag_force = -p.drag_coeff * vel_body * np.abs(vel_body)
+            drag_force = -self._drag_coeff[:n] * vel_body * np.abs(vel_body)
             force_body += drag_force
 
-        # --- Torques ---
-        # Roll torque: arm_length * k_thrust * (-w0^2 + w1^2 + w2^2 - w3^2) / sqrt(2)
-        tau_roll = p.arm_length * p.k_thrust * _SQRT2_INV * (
+        # --- Torques (per-env arm_length, k_thrust, k_torque) ---
+        arm_k = self._arm_length[:n] * self._k_thrust[:n] * _SQRT2_INV  # (N,)
+        tau_roll = arm_k * (
             -w_sq[:, 0] + w_sq[:, 1] + w_sq[:, 2] - w_sq[:, 3]
         )
-        # Pitch torque: arm_length * k_thrust * (-w0^2 - w1^2 + w2^2 + w3^2) / sqrt(2)
-        tau_pitch = p.arm_length * p.k_thrust * _SQRT2_INV * (
+        tau_pitch = arm_k * (
             -w_sq[:, 0] - w_sq[:, 1] + w_sq[:, 2] + w_sq[:, 3]
         )
-        # Yaw torque: k_torque * (w0^2 - w1^2 + w2^2 - w3^2)
-        # CW motors (+) produce negative yaw torque, CCW (-) produce positive
-        tau_yaw = p.k_torque * (
+        k_q = self._k_torque[:n]                        # (N,)
+        tau_yaw = k_q * (
             w_sq[:, 0] - w_sq[:, 1] + w_sq[:, 2] - w_sq[:, 3]
         )
 
         torques = np.stack([tau_roll, tau_pitch, tau_yaw], axis=1)  # (N, 3)
 
         # --- Gyroscopic torque: omega x (J * omega) ---
-        J_omega = omega * self._J_diag  # (N, 3) assuming diagonal inertia
-        gyro_torque = np.cross(omega, J_omega)  # (N, 3)
+        J_omega = omega * self._J_diag[:n]               # (N, 3)
+        gyro_torque = np.cross(omega, J_omega)            # (N, 3)
 
-        # --- Angular acceleration ---
-        # J * alpha = torques - omega x (J * omega)
+        # --- Angular acceleration (per-env inertia) ---
         net_torque = torques - gyro_torque
-        alpha = np.einsum("ij,nj->ni", self._J_inv, net_torque)  # (N, 3)
+        alpha = np.einsum("nij,nj->ni", self._J_inv[:n], net_torque)  # (N, 3)
 
         # --- Transform thrust to world frame ---
         R = quat_to_rotmat_batch(quat)  # (N, 3, 3)
         force_world = np.einsum("nij,nj->ni", R, force_body)  # (N, 3)
 
-        # --- Translational acceleration ---
+        # --- Translational acceleration (per-env mass) ---
         gravity_vec = np.array([0.0, 0.0, -GRAVITY])
-        accel = force_world / p.mass + gravity_vec  # (N, 3)
+        accel = force_world / self._mass[:n, None] + gravity_vec  # (N, 3)
 
         # --- Quaternion derivative ---
-        # dq/dt = 0.5 * q * [0, omega]
         omega_quat = np.zeros((n, 4), dtype=np.float64)
         omega_quat[:, 1:4] = omega
         dquat = 0.5 * quat_multiply_batch(quat, omega_quat)
@@ -263,11 +339,11 @@ class NumpyQuadDynamics:
         # Quaternion (with renormalization)
         new_quat = quat + dt * dquat
         quat_norms = np.linalg.norm(new_quat, axis=1, keepdims=True)
-        quat_norms = np.maximum(quat_norms, 1e-10)  # avoid division by zero
+        quat_norms = np.maximum(quat_norms, 1e-10)
         new_states[:, QUAT] = new_quat / quat_norms
         # Angular velocity
         new_states[:, OMEGA] = omega + dt * alpha
-        # Motor speeds (already computed above)
+        # Motor speeds
         new_states[:, MOTOR] = motor_w_new
 
         return new_states
@@ -281,3 +357,7 @@ class NumpyQuadDynamics:
         return float(np.sqrt(
             self.params.mass * GRAVITY / (4.0 * self.params.k_thrust)
         ))
+
+    def hover_omega_per_env(self) -> NDArray[np.float64]:
+        """Per-env hover omega, shape (N,). Uses current per-env params."""
+        return np.sqrt(self._mass * GRAVITY / (4.0 * self._k_thrust))
