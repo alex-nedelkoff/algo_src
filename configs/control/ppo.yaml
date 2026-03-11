@@ -14,10 +14,9 @@ max_grad_norm: 0.5
 
 # Network architecture
 policy_type: MlpPolicy
-net_arch:
-  pi: [256, 256]
-  vf: [256, 256]
-activation_fn: tanh
+# net_arch intentionally omitted — GCNetExtractor IS the network;
+# SB3 should not add extra MLP layers on top of it.
+activation_fn: relu
 
 # Exploration
 use_sde: false

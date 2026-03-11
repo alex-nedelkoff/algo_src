@@ -96,6 +96,33 @@ class TestGCNetGradients:
         assert len(param_names) == 8
 
 
+class TestGCNetArchitectureLayers:
+    """Test GCNet internal layer structure matches expectations."""
+
+    def test_default_layer_sizes(self) -> None:
+        model = GCNet()
+        linears = [m for m in model.net if isinstance(m, torch.nn.Linear)]
+        sizes = [(l.in_features, l.out_features) for l in linears]
+        assert sizes == [(24, 128), (128, 128), (128, 64), (64, 4)]
+
+    def test_all_hidden_activations_are_relu(self) -> None:
+        model = GCNet()
+        activations = [m for m in model.net if not isinstance(m, torch.nn.Linear)]
+        assert len(activations) == 3  # one per hidden layer, none after output
+        assert all(isinstance(a, torch.nn.ReLU) for a in activations)
+
+    def test_no_activation_after_output(self) -> None:
+        model = GCNet()
+        last_module = list(model.net)[-1]
+        assert isinstance(last_module, torch.nn.Linear)
+
+    def test_custom_hidden_dims(self) -> None:
+        model = GCNet(obs_dim=20, action_dim=4, hidden_dims=(64, 64, 64))
+        linears = [m for m in model.net if isinstance(m, torch.nn.Linear)]
+        sizes = [(l.in_features, l.out_features) for l in linears]
+        assert sizes == [(20, 64), (64, 64), (64, 64), (64, 4)]
+
+
 class TestGCNetExtractor:
     """Test GCNetExtractor for SB3 integration."""
 
@@ -116,3 +143,14 @@ class TestGCNetExtractor:
         x = torch.randn(8, 24)
         features = extractor(x)
         assert features.shape == (8, 64)
+
+    def test_extractor_layer_sizes(self) -> None:
+        """Extractor should have hidden layers only (no action head)."""
+        from gymnasium import spaces
+        import numpy as np
+
+        obs_space = spaces.Box(-np.inf, np.inf, shape=(24,), dtype=np.float32)
+        extractor = GCNetExtractor(obs_space)
+        linears = [m for m in extractor._backbone.net if isinstance(m, torch.nn.Linear)]
+        sizes = [(l.in_features, l.out_features) for l in linears]
+        assert sizes == [(24, 128), (128, 128), (128, 64)]
