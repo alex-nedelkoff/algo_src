@@ -12,6 +12,8 @@ import pytest
 from sim.domain_randomization import DomainRandomizer
 from sim.envs.gate_race_env import GateRaceEnv, OBS_DIM
 from sim.envs.hover_env import HoverEnv, STATE_DIM
+from sim.tracks import Track
+from sim.types import GateState
 
 
 class TestGateRaceEnvReset:
@@ -369,3 +371,65 @@ class TestDomainRandomization:
         env.reset(seed=42)
         masses = env.dynamics._mass
         assert np.allclose(masses, masses[0])
+
+
+class TestGateLapTracking:
+    """Gate passage counting and lap timing in info dict."""
+
+    def test_gates_passed_increments(self):
+        """gates_passed counter increments on gate passage."""
+        track = Track([
+            GateState(position=np.array([3.0, 0.0, 1.0])),
+            GateState(position=np.array([6.0, 0.0, 1.0])),
+        ])
+        env = GateRaceEnv(track=track, n_envs=1, gate_passage_radius=5.0)
+        env.reset(seed=42)
+
+        # Place drone just behind gate 0 plane so one step crosses it.
+        # Gate is at x=3, normal points +x (default orientation).
+        # Drone at x=2.999 with high forward velocity crosses in one dt=0.01 step.
+        env._states[0, 0] = 2.999
+        env._states[0, 1] = 0.0
+        env._states[0, 2] = 1.0
+        env._states[0, 3] = 20.0  # high forward velocity to guarantee crossing
+        env._prev_along_normal[0] = -0.001  # just barely on the approaching side
+
+        obs, rew, term, trunc, info = env.step(np.zeros((1, 4), dtype=np.float32))
+
+        assert env._gates_passed[0] >= 1, "gates_passed should increment on passage"
+
+    def test_episode_metrics_on_done(self):
+        """Episode metrics appear in info dict when episode ends."""
+        env = GateRaceEnv(n_envs=1, ceiling=2.0, max_steps=5)
+        env.reset(seed=42)
+
+        # Step until truncation (max_steps=5)
+        for _ in range(5):
+            obs, rew, term, trunc, info = env.step(np.zeros((1, 4), dtype=np.float32))
+
+        # Should have episode metrics in info
+        assert "episode" in info, "info should contain 'episode' key on done"
+        ep = info["episode"]
+        assert "gates_passed" in ep
+        assert "laps_completed" in ep
+
+    def test_lap_completes_on_gate_wrap(self):
+        """Lap counter increments when gate index wraps to 0."""
+        track = Track([
+            GateState(position=np.array([3.0, 0.0, 1.0])),
+        ])
+        env = GateRaceEnv(track=track, n_envs=1, gate_passage_radius=5.0)
+        env.reset(seed=42)
+
+        # Place drone just behind gate plane with high velocity to guarantee crossing
+        env._states[0, 0] = 2.999
+        env._states[0, 1] = 0.0
+        env._states[0, 2] = 1.0
+        env._states[0, 3] = 20.0  # high forward velocity
+        env._prev_along_normal[0] = -0.001
+        env._gate_indices[0] = 0
+
+        obs, rew, term, trunc, info = env.step(np.zeros((1, 4), dtype=np.float32))
+
+        # Gate wrapped to 0 = lap complete
+        assert env._laps_completed[0] >= 1, "Lap should complete when gate wraps"

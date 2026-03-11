@@ -288,6 +288,10 @@ class GateRaceEnv(gym.Env):
             (n_envs, 4), dtype=np.float64
         )
 
+        # Per-episode gate/lap tracking
+        self._gates_passed = np.zeros(n_envs, dtype=np.int64)
+        self._laps_completed = np.zeros(n_envs, dtype=np.int64)
+
     def _apply_domain_rand(self, env_indices: NDArray[np.intp]) -> None:
         """Draw fresh randomized physics for specified envs."""
         if self._domain_randomizer is None:
@@ -384,6 +388,8 @@ class GateRaceEnv(gym.Env):
         self._step_counts[:] = 0
         self._gate_indices[:] = 0
         self._prev_actions = np.zeros((self.n_envs, 4), dtype=np.float64)
+        self._gates_passed[:] = 0
+        self._laps_completed[:] = 0
 
         all_indices = np.arange(self.n_envs)
 
@@ -539,8 +545,10 @@ class GateRaceEnv(gym.Env):
                 if lateral_dist <= self.gate_passage_radius:
                     # Gate passed! Increment gate index
                     self._gate_indices[i] += 1
+                    self._gates_passed[i] += 1
                     if self._gate_indices[i] >= self.track.num_gates:
                         self._gate_indices[i] = 0
+                        self._laps_completed[i] += 1
 
                     # Gate passage bonus
                     passage_weight = (
@@ -588,7 +596,16 @@ class GateRaceEnv(gym.Env):
 
         # Auto-reset terminated/truncated envs
         done = terminated | truncated
+
+        # Snapshot episode metrics BEFORE auto-reset clears counters
+        ep_info: dict[str, Any] | None = None
         if np.any(done):
+            ep_info = {
+                "gates_passed": self._gates_passed.copy(),
+                "laps_completed": self._laps_completed.copy(),
+                "episode_length": self._step_counts.copy(),
+            }
+
             done_indices = np.where(done)[0]
 
             # Randomize params FIRST, then generate states with correct hover omega
@@ -604,6 +621,8 @@ class GateRaceEnv(gym.Env):
             self._step_counts[done] = 0
             self._gate_indices[done] = 0
             self._prev_actions[done] = 0.0
+            self._gates_passed[done] = 0
+            self._laps_completed[done] = 0
 
             if self.random_gate_start:
                 self._randomize_start(done_indices)
@@ -614,6 +633,10 @@ class GateRaceEnv(gym.Env):
 
         # Copy to avoid aliasing between returned obs and terminal_obs
         info: dict[str, Any] = {"terminal_obs": pre_reset_obs.copy()}
+
+        # Episode metrics for done envs (SB3 auto-logs these)
+        if ep_info is not None:
+            info["episode"] = ep_info
 
         return obs, rewards, terminated, truncated, info
 

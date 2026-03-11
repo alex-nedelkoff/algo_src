@@ -75,12 +75,20 @@ class VecEnvAdapter(VecEnv):
 
         # terminal_obs is always (n_envs, OBS_DIM) from _compute_obs_batched()
         terminal_obs = info.get("terminal_obs")
+        episode_metrics = info.get("episode")
         infos: list[dict[str, Any]] = []
         for i in range(self.num_envs):
             env_info: dict[str, Any] = {}
             if dones[i] and terminal_obs is not None:
                 env_info["terminal_observation"] = terminal_obs[i]
                 env_info["TimeLimit.truncated"] = bool(truncated[i]) and not bool(terminated[i])
+                # Episode metrics for SB3 logging
+                if episode_metrics is not None:
+                    env_info["episode"] = {
+                        "gates_passed": int(episode_metrics["gates_passed"][i]),
+                        "laps_completed": int(episode_metrics["laps_completed"][i]),
+                        "l": int(episode_metrics["episode_length"][i]),
+                    }
             infos.append(env_info)
 
         return obs, rewards, dones, infos
