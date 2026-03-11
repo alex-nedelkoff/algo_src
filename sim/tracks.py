@@ -48,42 +48,6 @@ class Track:
         """Number of complete laps finished."""
         return self._laps_completed
 
-    def check_gate_passage(
-        self,
-        state: QuadState,
-        passage_radius: float = 1.0,
-    ) -> bool:
-        """Check if the drone has passed through the current gate.
-
-        Uses a simple distance-based check: the drone is considered to have
-        passed through the gate if it is within passage_radius of the gate center.
-
-        Args:
-            state: Current quadrotor state.
-            passage_radius: Distance threshold for gate passage detection.
-
-        Returns:
-            True if the gate was passed on this check.
-        """
-        gate = self.current_gate
-        distance = float(np.linalg.norm(state.pos - gate.position))
-
-        if distance <= passage_radius:
-            self.gates[self._current_gate_idx].passed = True
-            self._current_gate_idx += 1
-
-            # Check for lap completion
-            if self._current_gate_idx >= self.num_gates:
-                self._laps_completed += 1
-                self._current_gate_idx = 0
-                # Reset passed flags for next lap
-                for g in self.gates:
-                    g.passed = False
-
-            return True
-
-        return False
-
     def reset(self) -> None:
         """Reset track state for a new episode."""
         self._current_gate_idx = 0
