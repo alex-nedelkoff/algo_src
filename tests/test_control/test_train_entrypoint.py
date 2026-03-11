@@ -78,6 +78,41 @@ class TestBuildPPO:
             assert ppo.ent_coef == 0.005
 
 
+class TestDomainRandWiring:
+    """Test domain randomization wiring in build_env."""
+
+    def test_build_env_wires_domain_randomizer(self) -> None:
+        """build_env passes domain_randomizer to GateRaceEnv when enabled."""
+        with initialize_config_dir(config_dir=CONFIG_DIR, version_base=None):
+            cfg = compose(
+                config_name="train",
+                overrides=[
+                    "sim.n_envs=2",
+                    "domain_rand.enabled=true",
+                ],
+            )
+            # Verify the config has params (from uniform_30pct default)
+            assert "params" in cfg.domain_rand
+            env = build_env(cfg)
+            assert env.env._domain_randomizer is not None
+            assert len(env.env._domain_randomizer.config) > 0
+            env.close()
+
+    def test_build_env_no_domain_rand_when_disabled(self) -> None:
+        """build_env passes None when domain_rand is disabled."""
+        with initialize_config_dir(config_dir=CONFIG_DIR, version_base=None):
+            cfg = compose(
+                config_name="train",
+                overrides=[
+                    "sim.n_envs=2",
+                    "domain_rand.enabled=false",
+                ],
+            )
+            env = build_env(cfg)
+            assert env.env._domain_randomizer is None
+            env.close()
+
+
 class TestTrainSmoke:
     """Smoke test: build env + PPO and train for a few steps."""
 

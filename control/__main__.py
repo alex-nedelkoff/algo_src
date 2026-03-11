@@ -16,6 +16,7 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
 from control.algorithms.ppo import PPO
+from sim.domain_randomization import DomainRandomizer
 from sim.dynamics.params import VehicleParams
 from sim.envs.gate_race_env import GateRaceEnv
 from sim.envs.vec_env_adapter import VecEnvAdapter
@@ -39,6 +40,13 @@ def build_env(cfg: DictConfig) -> VecEnvAdapter:
         max_rpm=sim_cfg.params.max_rpm,
     )
 
+    # Domain randomization
+    dr_cfg = OmegaConf.to_container(cfg.domain_rand, resolve=True)
+    if dr_cfg.get("enabled", False):
+        domain_randomizer = DomainRandomizer.from_config(dr_cfg)
+    else:
+        domain_randomizer = None
+
     reward_weights = OmegaConf.to_container(cfg.reward.weights, resolve=True)
 
     env = GateRaceEnv(
@@ -55,6 +63,7 @@ def build_env(cfg: DictConfig) -> VecEnvAdapter:
         start_vel_std=sim_cfg.get("start_vel_std", 0.5),
         start_att_std=sim_cfg.get("start_att_std", 0.1),
         gate_collision=sim_cfg.get("gate_collision", False),
+        domain_randomizer=domain_randomizer,
     )
 
     return VecEnvAdapter(env)
@@ -126,6 +135,8 @@ def main(cfg: DictConfig) -> None:
     # Build eval env — same config but fewer envs
     eval_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
     eval_cfg.sim.n_envs = cfg.n_eval_episodes
+    # Eval env uses nominal physics (no domain randomization)
+    OmegaConf.update(eval_cfg, "domain_rand.enabled", False)
     eval_env = build_env(eval_cfg)
 
     log.info("Building PPO trainer...")
