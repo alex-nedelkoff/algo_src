@@ -13,14 +13,20 @@ import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
 
-from sim.rewards import monorace_reward
+from sim.rewards import gate_offset_penalty, monorace_reward
 
-try:
-    from sim.rewards import gate_offset_penalty
-except ImportError:  # pragma: no cover – available once rewards.py is updated
-    def gate_offset_penalty(state, gate_state):  # type: ignore[misc]
-        """Fallback: negative Euclidean distance to gate center."""
-        return -float(np.linalg.norm(state.pos - gate_state.position))
+# Reward component column indices for the (n_envs, 6) array
+RC_PROGRESS = 0
+RC_BODY_RATE = 1
+RC_ACTION_SMOOTH = 2
+RC_GATE_PASSAGE = 3
+RC_GATE_OFFSET = 4
+RC_CRASH_PENALTY = 5
+NUM_REWARD_COMPONENTS = 6
+REWARD_COMPONENT_NAMES = [
+    "progress", "body_rate", "action_smooth",
+    "gate_passage", "gate_offset", "crash_penalty",
+]
 from sim.tracks import Track
 from sim.types import Action, GateState, QuadState
 from sim.dynamics.numpy_quad import (
@@ -317,6 +323,20 @@ class GateRaceEnv(gym.Env):
         self._episode_rewards = np.zeros(n_envs, dtype=np.float64)
         self._termination_reasons = np.zeros(n_envs, dtype=np.int8)
 
+        # Per-step reward component array (zeroed each step)
+        self._step_reward_components = np.zeros(
+            (n_envs, NUM_REWARD_COMPONENTS), dtype=np.float64
+        )
+        # Per-episode accumulated reward components
+        self._episode_reward_components = np.zeros(
+            (n_envs, NUM_REWARD_COMPONENTS), dtype=np.float64
+        )
+        # Per-episode speed tracking (for avg_speed metric)
+        self._episode_speed_sum = np.zeros(n_envs, dtype=np.float64)
+        self._episode_speed_count = np.zeros(n_envs, dtype=np.int64)
+        # Per-episode first gate step tracking
+        self._first_gate_step = np.full(n_envs, -1, dtype=np.int64)  # -1 = no gate passed
+
     def _apply_domain_rand(self, env_indices: NDArray[np.intp]) -> None:
         """Draw fresh randomized physics for specified envs."""
         if self._domain_randomizer is None:
@@ -417,6 +437,11 @@ class GateRaceEnv(gym.Env):
         self._laps_completed[:] = 0
         self._episode_rewards[:] = 0.0
         self._termination_reasons[:] = TERM_NONE
+        self._step_reward_components[:] = 0.0
+        self._episode_reward_components[:] = 0.0
+        self._episode_speed_sum[:] = 0.0
+        self._episode_speed_count[:] = 0
+        self._first_gate_step[:] = -1
 
         all_indices = np.arange(self.n_envs)
 
@@ -485,6 +510,14 @@ class GateRaceEnv(gym.Env):
         terminated = np.zeros(self.n_envs, dtype=np.bool_)
         truncated = np.zeros(self.n_envs, dtype=np.bool_)
 
+        # Zero per-step reward components
+        self._step_reward_components[:] = 0.0
+
+        # Accumulate speed for avg_speed metric
+        speed = np.linalg.norm(self._states[:, VEL], axis=1)
+        self._episode_speed_sum += speed
+        self._episode_speed_count += 1
+
         for i in range(self.n_envs):
             # Check termination conditions
             z = self._states[i, 2]
@@ -502,6 +535,7 @@ class GateRaceEnv(gym.Env):
             if z <= 0.0:
                 terminated[i] = True
                 rewards[i] = -crash_penalty
+                self._step_reward_components[i, RC_CRASH_PENALTY] = -crash_penalty
                 self._termination_reasons[i] = TERM_GROUND
                 continue
 
@@ -509,6 +543,7 @@ class GateRaceEnv(gym.Env):
             if z > self.ceiling:
                 terminated[i] = True
                 rewards[i] = -crash_penalty
+                self._step_reward_components[i, RC_CRASH_PENALTY] = -crash_penalty
                 self._termination_reasons[i] = TERM_CEILING
                 continue
 
@@ -516,6 +551,7 @@ class GateRaceEnv(gym.Env):
             if quat_norm < 0.5 or quat_norm > 1.5:
                 terminated[i] = True
                 rewards[i] = -crash_penalty
+                self._step_reward_components[i, RC_CRASH_PENALTY] = -crash_penalty
                 self._termination_reasons[i] = TERM_QUAT
                 continue
 
@@ -524,6 +560,7 @@ class GateRaceEnv(gym.Env):
             if not np.all(np.isfinite(state_i)):
                 terminated[i] = True
                 rewards[i] = -crash_penalty
+                self._step_reward_components[i, RC_CRASH_PENALTY] = -crash_penalty
                 self._termination_reasons[i] = TERM_NAN
                 continue
 
@@ -532,6 +569,7 @@ class GateRaceEnv(gym.Env):
                     or abs(state_i[1]) > self.arena_bounds):
                 terminated[i] = True
                 rewards[i] = -crash_penalty
+                self._step_reward_components[i, RC_CRASH_PENALTY] = -crash_penalty
                 self._termination_reasons[i] = TERM_ARENA_OOB
                 continue
 
@@ -539,6 +577,7 @@ class GateRaceEnv(gym.Env):
             if np.any(np.abs(state_i[OMEGA]) > self.max_body_rate):
                 terminated[i] = True
                 rewards[i] = -crash_penalty
+                self._step_reward_components[i, RC_CRASH_PENALTY] = -crash_penalty
                 self._termination_reasons[i] = TERM_BODY_RATE
                 continue
 
@@ -562,31 +601,22 @@ class GateRaceEnv(gym.Env):
                 self._states[i, POS] - gate.position
             ))
 
-            # Continuous reward via monorace_reward (no gate_offset -- that's
-            # applied discretely at passage only).
-            # Pass new M23 params; fall back to old signature if rewards.py
-            # hasn't been updated yet by the other agent.
-            try:
-                rewards[i] = monorace_reward(
-                    state=state_obj,
-                    action=action_obj,
-                    gate_state=gate,
-                    weights=self.reward_weights,
-                    prev_action=prev_action_obj,
-                    prev_gate_dist=self._prev_gate_dists[i],
-                    v_max=self.v_max,
-                    dt=self.dt,
-                    action_smoothness_threshold=self.action_smoothness_threshold,
-                )
-            except TypeError:
-                # Old monorace_reward signature (pre-M23 update)
-                rewards[i] = monorace_reward(
-                    state=state_obj,
-                    action=action_obj,
-                    gate_state=gate,
-                    weights=self.reward_weights,
-                    prev_action=prev_action_obj,
-                )
+            # Continuous reward via monorace_reward (returns RewardResult)
+            reward_result = monorace_reward(
+                state=state_obj,
+                action=action_obj,
+                gate_state=gate,
+                weights=self.reward_weights,
+                prev_action=prev_action_obj,
+                prev_gate_dist=self._prev_gate_dists[i],
+                v_max=self.v_max,
+                dt=self.dt,
+                action_smoothness_threshold=self.action_smoothness_threshold,
+            )
+            rewards[i] = reward_result.total
+            self._step_reward_components[i, RC_PROGRESS] = reward_result.components["progress"]
+            self._step_reward_components[i, RC_BODY_RATE] = reward_result.components["body_rate"]
+            self._step_reward_components[i, RC_ACTION_SMOOTH] = reward_result.components["action_smooth"]
 
             # --- Plane-crossing gate passage detection ---
             normal = _gate_normal(gate)
@@ -608,6 +638,10 @@ class GateRaceEnv(gym.Env):
                         self._gate_indices[i] = 0
                         self._laps_completed[i] += 1
 
+                    # Track first gate step
+                    if self._first_gate_step[i] < 0:
+                        self._first_gate_step[i] = self._step_counts[i]
+
                     # Gate passage bonus
                     passage_weight = (
                         self.reward_weights.get("gate_passage", 1.5)
@@ -615,14 +649,17 @@ class GateRaceEnv(gym.Env):
                         else 1.5
                     )
                     rewards[i] += passage_weight
+                    self._step_reward_components[i, RC_GATE_PASSAGE] = passage_weight
 
                     # Gate offset penalty (discrete, at passage only)
                     offset_weight = (
                         (self.reward_weights or {}).get("gate_offset", 1.5)
                     )
-                    rewards[i] += offset_weight * gate_offset_penalty(
+                    offset_val = offset_weight * gate_offset_penalty(
                         state_obj, gate
                     )
+                    rewards[i] += offset_val
+                    self._step_reward_components[i, RC_GATE_OFFSET] = offset_val
 
                     # CRITICAL: recompute curr_dist against NEW target gate
                     new_gate = self.track.gates[
@@ -640,6 +677,7 @@ class GateRaceEnv(gym.Env):
                     # Crossed gate plane but outside opening -> gate collision
                     terminated[i] = True
                     rewards[i] = -crash_penalty
+                    self._step_reward_components[i, RC_CRASH_PENALTY] = -crash_penalty
                     self._termination_reasons[i] = TERM_GATE_COLLISION
                     continue
 
@@ -649,6 +687,7 @@ class GateRaceEnv(gym.Env):
 
         self._prev_actions = action.copy()
         self._episode_rewards += rewards
+        self._episode_reward_components += self._step_reward_components
 
         # Compute obs BEFORE auto-reset so we capture terminal observations.
         # Always keep batch dimension so VecEnvAdapter can index terminal_obs[i] safely.
@@ -660,12 +699,22 @@ class GateRaceEnv(gym.Env):
         # Snapshot episode metrics BEFORE auto-reset clears counters
         ep_info: dict[str, Any] | None = None
         if np.any(done):
+            # Compute avg_speed per env
+            avg_speed = np.where(
+                self._episode_speed_count > 0,
+                self._episode_speed_sum / self._episode_speed_count,
+                0.0,
+            )
+
             ep_info = {
                 "r": self._episode_rewards.copy(),
                 "gates_passed": self._gates_passed.copy(),
                 "laps_completed": self._laps_completed.copy(),
                 "episode_length": self._step_counts.copy(),
                 "termination_reason": self._termination_reasons.copy(),
+                "reward_components": self._episode_reward_components.copy(),
+                "avg_speed": avg_speed.copy(),
+                "first_gate_step": self._first_gate_step.copy(),
             }
 
             done_indices = np.where(done)[0]
@@ -687,6 +736,10 @@ class GateRaceEnv(gym.Env):
             self._laps_completed[done] = 0
             self._episode_rewards[done] = 0.0
             self._termination_reasons[done] = TERM_NONE
+            self._episode_reward_components[done] = 0.0
+            self._episode_speed_sum[done] = 0.0
+            self._episode_speed_count[done] = 0
+            self._first_gate_step[done] = -1
 
             if self.random_gate_start:
                 self._randomize_start(done_indices)

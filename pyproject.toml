@@ -36,6 +36,9 @@ perception = [
     "onnxruntime-gpu",
     "albumentations",
 ]
+viz = [
+    "rerun-sdk",
+]
 dev = [
     "pytest",
     "ruff",

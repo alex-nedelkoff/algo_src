@@ -93,6 +93,18 @@ class VecEnvAdapter(VecEnv):
                     }
                     if "termination_reason" in episode_metrics:
                         env_info["episode"]["termination_reason"] = int(episode_metrics["termination_reason"][i])
+                    if "reward_components" in episode_metrics:
+                        from sim.envs.gate_race_env import REWARD_COMPONENT_NAMES
+                        rc = episode_metrics["reward_components"][i]
+                        env_info["episode"]["reward_components"] = {
+                            name: float(rc[j])
+                            for j, name in enumerate(REWARD_COMPONENT_NAMES)
+                        }
+                    if "avg_speed" in episode_metrics:
+                        env_info["episode"]["avg_speed"] = float(episode_metrics["avg_speed"][i])
+                    if "first_gate_step" in episode_metrics:
+                        fgs = int(episode_metrics["first_gate_step"][i])
+                        env_info["episode"]["first_gate_step"] = fgs if fgs >= 0 else None
             infos.append(env_info)
 
         return obs, rewards, dones, infos

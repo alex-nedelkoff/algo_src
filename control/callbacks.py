@@ -59,6 +59,18 @@ class GateMetricsCallback(BaseCallback):
         self._term_reasons: deque[int] = deque(maxlen=window_size)
         self._lap_times: deque[float] = deque(maxlen=window_size)
 
+        # Reward component buffers
+        self._rew_progress: deque[float] = deque(maxlen=window_size)
+        self._rew_body_rate: deque[float] = deque(maxlen=window_size)
+        self._rew_action_smooth: deque[float] = deque(maxlen=window_size)
+        self._rew_gate_passage: deque[float] = deque(maxlen=window_size)
+        self._rew_gate_offset: deque[float] = deque(maxlen=window_size)
+        self._rew_crash_penalty: deque[float] = deque(maxlen=window_size)
+
+        # Speed and first-gate buffers
+        self._avg_speed: deque[float] = deque(maxlen=window_size)
+        self._first_gate_step: deque[int] = deque(maxlen=window_size)
+
         # Tracking for lap time estimation
         self._total_episodes = 0
         self._total_gates = 0
@@ -94,6 +106,26 @@ class GateMetricsCallback(BaseCallback):
             if laps > 0:
                 lap_time = (ep_len * 0.01) / laps
                 self._lap_times.append(lap_time)
+
+            # Reward component breakdown
+            rc = ep.get("reward_components")
+            if rc is not None:
+                self._rew_progress.append(rc.get("progress", 0.0))
+                self._rew_body_rate.append(rc.get("body_rate", 0.0))
+                self._rew_action_smooth.append(rc.get("action_smooth", 0.0))
+                self._rew_gate_passage.append(rc.get("gate_passage", 0.0))
+                self._rew_gate_offset.append(rc.get("gate_offset", 0.0))
+                self._rew_crash_penalty.append(rc.get("crash_penalty", 0.0))
+
+            # Average speed
+            avg_spd = ep.get("avg_speed")
+            if avg_spd is not None:
+                self._avg_speed.append(float(avg_spd))
+
+            # First gate step (only record when a gate was actually passed)
+            fgs = ep.get("first_gate_step")
+            if fgs is not None:
+                self._first_gate_step.append(int(fgs))
 
         # Log at frequency
         if self.n_calls % self.log_freq == 0 and len(self._gates) > 0:
@@ -132,6 +164,46 @@ class GateMetricsCallback(BaseCallback):
             lt = np.array(self._lap_times)
             self.logger.record("racing/lap_time_mean", float(lt.mean()))
             self.logger.record("racing/lap_time_best", float(lt.min()))
+
+        # Reward component breakdown
+        if self._rew_gate_passage:
+            self.logger.record(
+                "racing/reward_gate_passage",
+                float(np.mean(self._rew_gate_passage)),
+            )
+            self.logger.record(
+                "racing/reward_progress",
+                float(np.mean(self._rew_progress)),
+            )
+            self.logger.record(
+                "racing/reward_body_rate",
+                float(np.mean(self._rew_body_rate)),
+            )
+            self.logger.record(
+                "racing/reward_action_smooth",
+                float(np.mean(self._rew_action_smooth)),
+            )
+            self.logger.record(
+                "racing/reward_gate_offset",
+                float(np.mean(self._rew_gate_offset)),
+            )
+            self.logger.record(
+                "racing/reward_crash_penalty",
+                float(np.mean(self._rew_crash_penalty)),
+            )
+
+        # Average speed
+        if self._avg_speed:
+            self.logger.record(
+                "racing/avg_speed", float(np.mean(self._avg_speed))
+            )
+
+        # Time to first gate
+        if self._first_gate_step:
+            self.logger.record(
+                "racing/time_to_first_gate",
+                float(np.mean(self._first_gate_step)),
+            )
 
         # Termination breakdown
         for code, name in TERM_NAMES.items():

@@ -108,6 +108,7 @@ def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None) -> 
     from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 
     from control.callbacks import GateMetricsCallback
+    from control.trajectory_recorder import TrajectoryRecorderCallback
 
     callbacks = []
     output_dir = Path(cfg.output_dir)
@@ -134,6 +135,18 @@ def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None) -> 
 
     # Gate racing metrics (gates/laps/termination breakdown)
     callbacks.append(GateMetricsCallback(log_freq=max(1, 100_000 // n_envs)))
+
+    # Trajectory recording for visualisation
+    viz_freq = cfg.get("viz_freq", 1_000_000)
+    n_viz_episodes = cfg.get("n_viz_episodes", 5)
+    callbacks.append(
+        TrajectoryRecorderCallback(
+            viz_freq=viz_freq,
+            n_envs=n_envs,
+            save_path=str(output_dir / "checkpoints"),
+            n_viz_episodes=n_viz_episodes,
+        )
+    )
 
     return callbacks
 

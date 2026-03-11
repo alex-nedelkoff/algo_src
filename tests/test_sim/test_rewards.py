@@ -266,8 +266,8 @@ class TestMonoraceReward:
         action = Action(values=np.zeros(4))
         gate = GateState(position=np.array([3.0, 4.0, 0.0]))
 
-        reward = monorace_reward(state, action, gate)
-        assert reward == pytest.approx(0.0)
+        result = monorace_reward(state, action, gate)
+        assert result.total == pytest.approx(0.0)
 
     def test_case_2_with_delta_progress(self) -> None:
         """Case 2: Delta-based progress with body rate penalty.
@@ -290,11 +290,11 @@ class TestMonoraceReward:
         action = Action(values=np.zeros(4))
         gate = GateState(position=np.array([4.0, 0.0, 0.0]))
 
-        reward = monorace_reward(
+        result = monorace_reward(
             state, action, gate,
             prev_gate_dist=5.0, v_max=30.0, dt=0.01,
         )
-        assert reward == pytest.approx(0.3)
+        assert result.total == pytest.approx(0.3)
 
     def test_case_3_body_rate_and_progress(self) -> None:
         """Case 3: Combined progress and body rate penalty.
@@ -322,11 +322,11 @@ class TestMonoraceReward:
             "action_smoothness": 0.0,
         }
 
-        reward = monorace_reward(
+        result = monorace_reward(
             state, action, gate, weights=weights,
             prev_gate_dist=6.0, v_max=30.0, dt=0.01,
         )
-        assert reward == pytest.approx(-0.4)
+        assert result.total == pytest.approx(-0.4)
 
     def test_progress_skipped_when_prev_dist_none(self) -> None:
         """Progress reward is 0 when prev_gate_dist is None, even with weight > 0."""
@@ -339,11 +339,11 @@ class TestMonoraceReward:
             "action_smoothness": 0.0,
         }
 
-        reward = monorace_reward(
+        result = monorace_reward(
             state, action, gate, weights=weights,
             prev_gate_dist=None,
         )
-        assert reward == pytest.approx(0.0)
+        assert result.total == pytest.approx(0.0)
 
     def test_action_smoothness_in_composite(self) -> None:
         """Action smoothness penalty integrates correctly in composite.
@@ -366,12 +366,12 @@ class TestMonoraceReward:
             "action_smoothness": 0.1,
         }
 
-        reward = monorace_reward(
+        result = monorace_reward(
             state, action, gate, weights=weights,
             prev_action=prev_action,
             action_smoothness_threshold=0.5,
         )
-        assert reward == pytest.approx(-0.6)
+        assert result.total == pytest.approx(-0.6)
 
     def test_first_step_no_prev_action_zero_smoothness(self) -> None:
         """First step with no prev_action should contribute 0 smoothness penalty."""
@@ -384,11 +384,11 @@ class TestMonoraceReward:
             "action_smoothness": 1.0,  # high weight to catch any bug
         }
 
-        reward = monorace_reward(
+        result = monorace_reward(
             state, action, gate, weights=weights,
             prev_action=None,
         )
-        assert reward == pytest.approx(0.0)
+        assert result.total == pytest.approx(0.0)
 
     def test_custom_smoothness_threshold(self) -> None:
         """Custom action_smoothness_threshold is passed through.
@@ -410,12 +410,12 @@ class TestMonoraceReward:
             "action_smoothness": 1.0,
         }
 
-        reward = monorace_reward(
+        result = monorace_reward(
             state, action, gate, weights=weights,
             prev_action=prev_action,
             action_smoothness_threshold=0.8,
         )
-        assert reward == pytest.approx(-0.8)
+        assert result.total == pytest.approx(-0.8)
 
     def test_m23_defaults_all_components(self) -> None:
         """Full M23 defaults with all active components.
@@ -440,8 +440,8 @@ class TestMonoraceReward:
         action = Action(values=np.zeros(4))
         gate = GateState(position=np.array([5.0, 0.0, 0.0]))
 
-        reward = monorace_reward(
+        result = monorace_reward(
             state, action, gate,
             prev_gate_dist=4.0, v_max=30.0, dt=0.01,
         )
-        assert reward == pytest.approx(0.297)
+        assert result.total == pytest.approx(0.297)

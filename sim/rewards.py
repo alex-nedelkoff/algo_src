@@ -9,13 +9,25 @@ Default weights align with the M23 configuration from the paper.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
 from sim.types import Action, GateState, QuadState
 
 # Default reward weights — aligned with M23 (MonoRace paper)
+class RewardResult(NamedTuple):
+    """Composite reward with component breakdown.
+
+    Attributes:
+        total: Weighted sum of all components.
+        components: Per-component weighted values (sign-included).
+    """
+
+    total: float
+    components: dict[str, float]
+
+
 DEFAULT_WEIGHTS: dict[str, float] = {
     "gate_progress": 1.0,      # M23: lambda_prog=1
     "gate_passage": 1.5,       # M23: lambda_gate=1.5
@@ -116,7 +128,7 @@ def monorace_reward(
     v_max: float = 30.0,
     dt: float = 0.01,
     action_smoothness_threshold: float = 0.5,
-) -> float:
+) -> RewardResult:
     """Composite reward function for single-drone racing.
 
     Based on the MonoRace paper (arXiv:2601.15222):
@@ -138,28 +150,33 @@ def monorace_reward(
         action_smoothness_threshold: Dead-zone threshold for action smoothness.
 
     Returns:
-        Weighted sum of reward components.
+        RewardResult with total and per-component breakdown.
     """
     w: dict[str, Any] = dict(DEFAULT_WEIGHTS)
     if weights is not None:
         w.update(weights)
 
-    reward = 0.0
+    components: dict[str, float] = {}
 
     # Delta-based gate progress reward
+    progress_val = 0.0
     progress_weight = w.get("gate_progress", 0.0)
     if progress_weight != 0.0 and prev_gate_dist is not None:
         curr_dist = float(np.linalg.norm(state.pos - gate_state.position))
-        reward += progress_weight * gate_progress_reward(
+        progress_val = progress_weight * gate_progress_reward(
             prev_gate_dist, curr_dist, v_max, dt
         )
+    components["progress"] = progress_val
 
     # Body rate penalty
-    reward += w["body_rate"] * body_rate_penalty(state)
+    body_rate_val = w["body_rate"] * body_rate_penalty(state)
+    components["body_rate"] = body_rate_val
 
     # Action smoothness penalty (thresholded L1)
-    reward += w["action_smoothness"] * action_smoothness_penalty(
+    action_smooth_val = w["action_smoothness"] * action_smoothness_penalty(
         action, prev_action, threshold=action_smoothness_threshold
     )
+    components["action_smooth"] = action_smooth_val
 
-    return reward
+    total = progress_val + body_rate_val + action_smooth_val
+    return RewardResult(total=total, components=components)
