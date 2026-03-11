@@ -31,14 +31,14 @@ from sim.dynamics.numpy_quad import (
     QUAT,
     VEL,
     NumpyQuadDynamics,
-    quat_to_rotmat_batch,
 )
 from sim.dynamics.params import VehicleParams
 
 
-# Observation dimension breakdown:
-#   gate_rel_pos(3) + vel(3) + omega(3) + motor_speeds(4) +
-#   next_gate_rel_pos(3) + gate_progress(1) + padding(7) = 24
+# Observation dimension breakdown (MonoRace paper spec):
+#   gate_rel_pos(3) + vel(3) + roll_pitch(2) + yaw_rel(1) +
+#   body_rates(3) + motor_speeds(4) + next_gate_rel_pos(3) +
+#   next_gate_yaw_rel(1) + prev_action(4) = 24
 OBS_DIM = 24
 
 # Default termination thresholds
@@ -71,17 +71,97 @@ def _gate_normal(gate_state: GateState) -> NDArray[np.float64]:
     return normal
 
 
+def _quat_to_yaw(q: NDArray[np.float64]) -> float:
+    """Extract yaw angle from a quaternion [w, x, y, z].
+
+    Uses standard ZYX Euler extraction for the yaw component.
+
+    Args:
+        q: Quaternion (4,) in [w, x, y, z] convention.
+
+    Returns:
+        Yaw angle in radians.
+    """
+    qw, qx, qy, qz = q[0], q[1], q[2], q[3]
+    return float(np.arctan2(2.0 * (qw * qz + qx * qy),
+                            1.0 - 2.0 * (qy * qy + qz * qz)))
+
+
+def _quat_to_euler(q: NDArray[np.float64]) -> tuple[float, float, float]:
+    """Extract roll, pitch, yaw from a quaternion [w, x, y, z].
+
+    Uses standard ZYX Euler convention.
+
+    Args:
+        q: Quaternion (4,) in [w, x, y, z] convention.
+
+    Returns:
+        Tuple of (roll, pitch, yaw) in radians.
+    """
+    qw, qx, qy, qz = q[0], q[1], q[2], q[3]
+    # Roll (x-axis rotation)
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = float(np.arctan2(sinr_cosp, cosr_cosp))
+    # Pitch (y-axis rotation)
+    sinp = 2.0 * (qw * qy - qz * qx)
+    sinp = np.clip(sinp, -1.0, 1.0)
+    pitch = float(np.arcsin(sinp))
+    # Yaw (z-axis rotation)
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    yaw = float(np.arctan2(siny_cosp, cosy_cosp))
+    return roll, pitch, yaw
+
+
+def _wrap_angle(angle: float | NDArray[np.float64]) -> float | NDArray[np.float64]:
+    """Wrap angle(s) to [-pi, pi].
+
+    Args:
+        angle: Angle or array of angles in radians.
+
+    Returns:
+        Wrapped angle(s).
+    """
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _rotate_xy(
+    xy: NDArray[np.float64],
+    cos_yaw: float,
+    sin_yaw: float,
+) -> NDArray[np.float64]:
+    """Rotate 2D vector(s) by a gate yaw angle.
+
+    Applies a 2D rotation matrix [[cos, sin], [-sin, cos]] to transform
+    world-frame XY offsets into gate-yaw-relative frame.
+
+    Args:
+        xy: Shape (..., 2) array of XY coordinates.
+        cos_yaw: Cosine of the gate yaw angle.
+        sin_yaw: Sine of the gate yaw angle.
+
+    Returns:
+        Rotated XY array with same shape as input.
+    """
+    x, y = xy[..., 0], xy[..., 1]
+    return np.stack([cos_yaw * x + sin_yaw * y,
+                     -sin_yaw * x + cos_yaw * y], axis=-1)
+
+
 class GateRaceEnv(gym.Env):
     """Gymnasium environment for quadrotor gate racing.
 
-    Observation (24-dim):
-        [0:3]   relative position to current gate (body frame)
-        [3:6]   velocity (world frame)
-        [6:9]   angular rate (body frame)
-        [9:13]  motor speeds (rad/s, normalized by max_omega)
-        [13:16] relative position to next gate (body frame)
-        [16]    gate progress scalar (current_gate_idx / num_gates)
-        [17:24] padding zeros
+    Observation (24-dim, MonoRace paper spec):
+        [0:3]   position to current gate (gate-yaw-relative frame)
+        [3:6]   velocity (gate-yaw-relative frame)
+        [6:8]   roll, pitch (world frame Euler angles)
+        [8]     yaw relative to gate (drone_yaw - gate_yaw, wrapped [-pi, pi])
+        [9:12]  body angular rates p, q, r (body frame)
+        [12:16] motor speeds (normalized to [-1, 1]: (w / w_max) * 2 - 1)
+        [16:19] position from current gate to next gate (gate-yaw-relative frame)
+        [19]    relative yaw to next gate (next_yaw - cur_yaw, wrapped [-pi, pi])
+        [20:24] previous action / motor commands (normalized [-1, 1])
 
     Action (4-dim):
         Motor RPM commands, continuous, clipped to [0, max_rpm].
@@ -162,7 +242,9 @@ class GateRaceEnv(gym.Env):
         self._gate_indices = np.zeros(n_envs, dtype=np.int64)
         self._prev_gate_dists = np.zeros(n_envs, dtype=np.float64)
         self._prev_along_normal = np.zeros(n_envs, dtype=np.float64)
-        self._prev_actions: NDArray[np.float64] | None = None
+        self._prev_actions: NDArray[np.float64] = np.zeros(
+            (n_envs, 4), dtype=np.float64
+        )
 
     def reset(
         self,
@@ -184,7 +266,7 @@ class GateRaceEnv(gym.Env):
         self._states = self.dynamics.reset(self.n_envs)
         self._step_counts[:] = 0
         self._gate_indices[:] = 0
-        self._prev_actions = None
+        self._prev_actions = np.zeros((self.n_envs, 4), dtype=np.float64)
 
         # Compute initial distances to gate and along-normal projections
         for i in range(self.n_envs):
@@ -267,10 +349,8 @@ class GateRaceEnv(gym.Env):
             state_obj = QuadState.from_vector(self._states[i])
             action_obj = Action(values=action[i] if action.shape[0] > 1 else action[0])
 
-            prev_action_obj = None
-            if self._prev_actions is not None:
-                prev_vals = self._prev_actions[i] if self._prev_actions.shape[0] > 1 else self._prev_actions[0]
-                prev_action_obj = Action(values=prev_vals)
+            prev_vals = self._prev_actions[i] if self._prev_actions.shape[0] > 1 else self._prev_actions[0]
+            prev_action_obj = Action(values=prev_vals)
 
             # Current distance to gate (for delta-based progress reward)
             curr_dist = float(np.linalg.norm(
@@ -363,6 +443,7 @@ class GateRaceEnv(gym.Env):
             self._states[done] = reset_states
             self._step_counts[done] = 0
             self._gate_indices[done] = 0
+            self._prev_actions[done] = 0.0
             # Reset prev gate distances and along-normal for auto-reset envs
             gate = self.track.gates[0]
             gate_pos = gate.position
@@ -383,6 +464,19 @@ class GateRaceEnv(gym.Env):
     def _compute_obs(self) -> NDArray[np.float32]:
         """Compute observation vectors for all environments.
 
+        MonoRace paper observation layout (24-dim):
+            [0:3]   position drone -> current gate  (gate-yaw-relative frame)
+            [3:6]   velocity                        (gate-yaw-relative frame)
+            [6:8]   roll, pitch                     (world-frame Euler angles)
+            [8]     yaw relative to gate             (drone_yaw - gate_yaw, wrapped)
+            [9:12]  body angular rates (p, q, r)     (body frame)
+            [12:16] motor speeds                     (normalized [-1, 1])
+            [16:19] position current gate -> next gate (gate-yaw-relative frame)
+            [19]    relative yaw to next gate        (next_yaw - cur_yaw, wrapped)
+            [20:24] previous action                  (normalized [-1, 1])
+
+        Gate-yaw-relative frame: XY rotated by negative gate yaw, Z unchanged.
+
         Returns:
             Observations (n_envs, OBS_DIM) or (OBS_DIM,) for single env.
         """
@@ -395,30 +489,50 @@ class GateRaceEnv(gym.Env):
             gate = self.track.gates[gate_idx % self.track.num_gates]
             next_gate = self.track.gates[(gate_idx + 1) % self.track.num_gates]
 
-            # Rotation matrix (body to world)
-            quat = state[QUAT].reshape(1, 4)
-            R = quat_to_rotmat_batch(quat)[0]  # (3, 3)
-            R_inv = R.T  # world to body
+            # Gate yaw from its orientation quaternion
+            gate_yaw = _quat_to_yaw(gate.orientation)
+            cos_yaw = np.cos(gate_yaw)
+            sin_yaw = np.sin(gate_yaw)
 
-            # Relative gate position in body frame
-            gate_rel_world = gate.position - state[POS]
-            gate_rel_body = R_inv @ gate_rel_world
+            # --- [0:3] Position drone -> current gate (gate-yaw frame) ---
+            dpos = state[POS] - gate.position  # world frame
+            obs[i, 0:2] = _rotate_xy(dpos[:2], cos_yaw, sin_yaw)
+            obs[i, 2] = dpos[2]  # Z plain offset
 
-            # Next gate relative position in body frame
-            next_gate_rel_world = next_gate.position - state[POS]
-            next_gate_rel_body = R_inv @ next_gate_rel_world
+            # --- [3:6] Velocity (gate-yaw frame) ---
+            vel_world = state[VEL]
+            obs[i, 3:5] = _rotate_xy(vel_world[:2], cos_yaw, sin_yaw)
+            obs[i, 5] = vel_world[2]  # Z unchanged
 
-            # Gate progress
-            progress = gate_idx / max(self.track.num_gates, 1)
+            # --- [6:8] Roll, Pitch (world frame Euler) ---
+            drone_quat = state[QUAT]
+            roll, pitch, drone_yaw = _quat_to_euler(drone_quat)
+            obs[i, 6] = roll
+            obs[i, 7] = pitch
 
-            # Build observation
-            obs[i, 0:3] = gate_rel_body
-            obs[i, 3:6] = state[VEL]
-            obs[i, 6:9] = state[OMEGA]
-            obs[i, 9:13] = state[MOTOR] / max(max_omega, 1e-10)  # normalized
-            obs[i, 13:16] = next_gate_rel_body
-            obs[i, 16] = progress
-            # [17:24] remain zero (padding)
+            # --- [8] Yaw relative to gate ---
+            obs[i, 8] = _wrap_angle(drone_yaw - gate_yaw)
+
+            # --- [9:12] Body angular rates ---
+            obs[i, 9:12] = state[OMEGA]
+
+            # --- [12:16] Motor speeds normalized to [-1, 1] ---
+            obs[i, 12:16] = (state[MOTOR] / max(max_omega, 1e-10)) * 2.0 - 1.0
+
+            # --- [16:19] Position current gate -> next gate (gate-yaw frame) ---
+            dnext = next_gate.position - gate.position  # world frame
+            obs[i, 16:18] = _rotate_xy(dnext[:2], cos_yaw, sin_yaw)
+            obs[i, 18] = dnext[2]
+
+            # --- [19] Relative yaw to next gate ---
+            next_gate_yaw = _quat_to_yaw(next_gate.orientation)
+            obs[i, 19] = _wrap_angle(next_gate_yaw - gate_yaw)
+
+            # --- [20:24] Previous action (normalized [-1, 1]) ---
+            # _prev_actions stores RPM values; convert to rad/s then normalize
+            prev_rpm = self._prev_actions[i]
+            prev_omega = prev_rpm * 2.0 * np.pi / 60.0
+            obs[i, 20:24] = (prev_omega / max(max_omega, 1e-10)) * 2.0 - 1.0
 
         if self.n_envs == 1:
             return obs[0]

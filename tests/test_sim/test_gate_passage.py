@@ -695,12 +695,13 @@ class TestObservationAfterPassage:
     """Observation should reflect updated target gate after passage."""
 
     def test_obs_targets_next_gate_after_passage(self) -> None:
-        """After passing gate 0, observation should reference gate 1."""
+        """After passing gate 0, obs[0:3] should reference gate 1 (not gate 0)."""
         env = _make_env()
         env.reset(seed=42)
         action = np.zeros(4, dtype=np.float32)
 
         gate0_pos = env.track.gates[0].position
+        gate1_pos = env.track.gates[1].position
 
         # Cross gate 0
         behind = gate0_pos.copy()
@@ -713,9 +714,14 @@ class TestObservationAfterPassage:
         _teleport(env, 0, ahead)
         obs, _, _, _, _ = env.step(action)
 
+        # After passage, drone targets gate 1.  obs[0:3] is position to
+        # current gate in gate-yaw-relative frame.  With identity gate
+        # orientation (yaw=0) the rotation is identity so obs[0:3] equals
+        # the world-frame offset drone_pos - gate1_pos.
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
-        progress = obs_flat[16]
-        expected_progress = 1.0 / env.track.num_gates  # gate 1 / 3 gates
-        assert abs(progress - expected_progress) < 1e-5, (
-            f"Expected progress={expected_progress}, got {progress}"
+        drone_pos = env._states[0, POS]
+        expected_rel = drone_pos - gate1_pos
+        np.testing.assert_allclose(
+            obs_flat[0:3], expected_rel, atol=1e-4,
+            err_msg="obs[0:3] should reference gate 1 after passing gate 0",
         )
