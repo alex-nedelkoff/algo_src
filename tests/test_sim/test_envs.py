@@ -61,27 +61,33 @@ class TestGateRaceEnvStep:
         env = GateRaceEnv(n_envs=1)
         env.reset(seed=42)
 
-        # Hover RPM: compute from params
+        # Compute normalized action that produces hover omega via ESC inverse
         from sim.dynamics.numpy_quad import GRAVITY
         p = env.params
         hover_omega = np.sqrt(p.mass * GRAVITY / (4.0 * p.k_thrust))
-        hover_rpm = hover_omega * 60.0 / (2.0 * np.pi)
-        action = np.full(4, hover_rpm, dtype=np.float32)
+        # Invert ESC curve: omega = (w_max - w_min) * sqrt(k*U^2 + (1-k)*U) + w_min
+        # Solve for U: R = ((omega - w_min) / (w_max - w_min))^2 = k*U^2 + (1-k)*U
+        k = env.esc_nonlinearity
+        R = ((hover_omega - env.omega_min) / (p.max_omega - env.omega_min)) ** 2
+        # Quadratic in U: k*U^2 + (1-k)*U - R = 0
+        if k > 0:
+            U = (-(1 - k) + np.sqrt((1 - k) ** 2 + 4 * k * R)) / (2 * k)
+        else:
+            U = R  # k=0: sqrt(U) model, so U = R
+        u = 2.0 * U - 1.0  # [0,1] -> [-1,1]
+        action = np.full(4, u, dtype=np.float32)
 
         obs, reward, terminated, truncated, info = env.step(action)
         assert obs.shape == (OBS_DIM,)
         assert np.all(np.isfinite(obs))
 
     def test_multiple_steps_dont_crash(self) -> None:
-        """Running 100 steps with hover action doesn't crash."""
+        """Running 100 steps with mid-range action doesn't crash."""
         env = GateRaceEnv(n_envs=1)
         env.reset(seed=42)
 
-        from sim.dynamics.numpy_quad import GRAVITY
-        p = env.params
-        hover_omega = np.sqrt(p.mass * GRAVITY / (4.0 * p.k_thrust))
-        hover_rpm = hover_omega * 60.0 / (2.0 * np.pi)
-        action = np.full(4, hover_rpm, dtype=np.float32)
+        # Use action=0 (mid-range motor speed via ESC curve)
+        action = np.zeros(4, dtype=np.float32)
 
         for _ in range(100):
             obs, reward, terminated, truncated, info = env.step(action)
@@ -96,8 +102,8 @@ class TestGateRaceEnvTermination:
         env = GateRaceEnv(n_envs=1, max_steps=10000)
         env.reset(seed=42)
 
-        # Zero thrust -> free fall -> ground crash
-        action = np.zeros(4, dtype=np.float32)
+        # Minimum thrust (u=-1 -> omega_min via ESC) -> free fall -> ground crash
+        action = -np.ones(4, dtype=np.float32)
 
         terminated = False
         for _ in range(2000):
@@ -125,13 +131,10 @@ class TestGateRaceEnvSpaces:
         assert env.action_space.shape == (4,)
 
     def test_action_space_bounds(self) -> None:
-        """Action space low=0, high=max_rpm."""
+        """Action space low=-1, high=1 (normalized ESC commands)."""
         env = GateRaceEnv(n_envs=1)
-        np.testing.assert_array_equal(env.action_space.low, np.zeros(4, dtype=np.float32))
-        np.testing.assert_allclose(
-            env.action_space.high,
-            np.full(4, env.params.max_rpm, dtype=np.float32),
-        )
+        np.testing.assert_array_equal(env.action_space.low, -np.ones(4, dtype=np.float32))
+        np.testing.assert_array_equal(env.action_space.high, np.ones(4, dtype=np.float32))
 
     def test_obs_in_space_after_reset(self) -> None:
         """Reset observation is within observation space."""
@@ -148,6 +151,80 @@ class TestGateRaceEnvSpaces:
         # obs could have very large values due to relative positions,
         # but should be finite
         assert np.all(np.isfinite(obs))
+
+
+class TestESCModel:
+    """Tests for the nonlinear ESC motor mapping."""
+
+    def test_esc_min_action_gives_omega_min(self) -> None:
+        """u=-1 should map to omega_min."""
+        env = GateRaceEnv(n_envs=1)
+        u = -np.ones((1, 4), dtype=np.float64)
+        omega = env._esc_to_omega(u)
+        np.testing.assert_allclose(omega, env.omega_min, atol=1e-10)
+
+    def test_esc_max_action_gives_omega_max(self) -> None:
+        """u=+1 should map to max_omega."""
+        env = GateRaceEnv(n_envs=1)
+        u = np.ones((1, 4), dtype=np.float64)
+        omega = env._esc_to_omega(u)
+        np.testing.assert_allclose(omega, env.params.max_omega, atol=1e-10)
+
+    def test_esc_monotonically_increasing(self) -> None:
+        """ESC curve should be monotonically increasing from -1 to 1."""
+        env = GateRaceEnv(n_envs=1)
+        u_values = np.linspace(-1, 1, 100)
+        u_batch = u_values.reshape(-1, 1) * np.ones((1, 4))
+        omega = env._esc_to_omega(u_batch)
+        # Check each motor channel is monotonically increasing
+        for motor in range(4):
+            diffs = np.diff(omega[:, motor])
+            assert np.all(diffs >= 0), "ESC curve is not monotonically increasing"
+
+    def test_esc_linear_when_k_is_one(self) -> None:
+        """With k=1, ESC curve should be linear."""
+        env = GateRaceEnv(n_envs=1, esc_nonlinearity=1.0)
+        u_values = np.linspace(-1, 1, 50)
+        u_batch = u_values.reshape(-1, 1) * np.ones((1, 4))
+        omega = env._esc_to_omega(u_batch)
+        # Linear: omega should be evenly spaced
+        expected = np.linspace(env.omega_min, env.params.max_omega, 50)
+        np.testing.assert_allclose(omega[:, 0], expected, atol=1e-8)
+
+    def test_esc_nonlinear_when_k_is_zero(self) -> None:
+        """With k=0, ESC curve should be sqrt-shaped."""
+        env = GateRaceEnv(n_envs=1, esc_nonlinearity=0.0)
+        u = np.array([[0.0, 0.0, 0.0, 0.0]])
+        omega = env._esc_to_omega(u)
+        # U=0.5, k=0: sqrt(0.5) * max_omega ≈ 0.707 * max_omega
+        expected = env.params.max_omega * np.sqrt(0.5)
+        np.testing.assert_allclose(omega[0, 0], expected, rtol=1e-6)
+
+    def test_esc_roundtrip_with_hover(self) -> None:
+        """ESC output at hover action matches hover omega."""
+        from sim.dynamics.numpy_quad import GRAVITY
+        env = GateRaceEnv(n_envs=1)
+        p = env.params
+        hover_omega = np.sqrt(p.mass * GRAVITY / (4.0 * p.k_thrust))
+
+        # Invert ESC to get normalized action
+        k = env.esc_nonlinearity
+        R = ((hover_omega - env.omega_min) / (p.max_omega - env.omega_min)) ** 2
+        U = (-(1 - k) + np.sqrt((1 - k) ** 2 + 4 * k * R)) / (2 * k)
+        u = 2.0 * U - 1.0
+
+        # Forward through ESC
+        omega = env._esc_to_omega(np.full((1, 4), u))
+        np.testing.assert_allclose(omega[0, 0], hover_omega, rtol=1e-6)
+
+    def test_prev_action_in_obs_is_normalized(self) -> None:
+        """Previous action in observation [20:24] should be in [-1, 1]."""
+        env = GateRaceEnv(n_envs=1)
+        env.reset(seed=42)
+        action = np.array([0.5, -0.3, 0.1, 0.8], dtype=np.float32)
+        obs, _, _, _, _ = env.step(action)
+        # obs[20:24] should equal the action we just passed
+        np.testing.assert_allclose(obs[20:24], action, atol=1e-6)
 
 
 class TestHoverEnv:

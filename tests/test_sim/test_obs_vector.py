@@ -483,13 +483,10 @@ class TestObsNextGateYaw:
 
 
 class TestObsActionHistoryInitial:
-    """After reset (no prior action), obs[20:24] should reflect normalized zero motors.
+    """After reset (no prior action), obs[20:24] should be zeros (no previous command).
 
-    If prev_action is zero RPM: normalized = (0 / max_omega)*2 - 1 = -1.
-    Alternatively, if the convention is that prev_action is unset and defaults to
-    zeros in the normalized [-1, 1] space, the values could be 0.
-
-    We test that all four values are identical and either all -1 or all 0.
+    The prev_action is stored directly as the normalized [-1, 1] action input.
+    On reset, prev_actions are initialized to zeros.
     """
 
     def test_action_history_after_reset(self) -> None:
@@ -500,22 +497,18 @@ class TestObsActionHistoryInitial:
         obs, _ = env.reset(seed=0)
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
         prev_action = obs_flat[20:24]
-        # All four values should be identical
-        assert np.all(prev_action == prev_action[0]), (
-            f"All prev_action dims should be equal after reset, got {prev_action}"
-        )
-        # Should be -1 (zero motor, normalized) or 0 (unset sentinel)
-        assert prev_action[0] == pytest.approx(-1.0, abs=1e-5) or \
-               prev_action[0] == pytest.approx(0.0, abs=1e-5), (
-            f"prev_action after reset should be -1 or 0, got {prev_action[0]}"
+        # All four values should be zero after reset
+        np.testing.assert_allclose(
+            prev_action, [0.0, 0.0, 0.0, 0.0], atol=1e-5,
+            err_msg="prev_action after reset should be 0 (unset)",
         )
 
 
 class TestObsActionHistoryAfterStep:
-    """After one step with a known action, obs[20:24] should reflect it normalized.
+    """After one step with a known action, obs[20:24] should reflect it directly.
 
-    action in RPM -> omega = action * 2*pi/60
-    normalized = (omega / max_omega) * 2 - 1
+    Action space is [-1, 1] (normalized ESC commands); prev_action in obs
+    stores these values directly without further transformation.
     """
 
     def test_action_reflected_after_step(self) -> None:
@@ -525,46 +518,44 @@ class TestObsActionHistoryAfterStep:
         )
         env.reset(seed=0)
 
-        # Choose action at half the max RPM
-        half_rpm = env.params.max_rpm / 2.0
-        action = np.full(4, half_rpm, dtype=np.float32)
+        # Action space is now [-1, 1]; use mid-range (0.0)
+        action = np.full(4, 0.0, dtype=np.float32)
         obs, _, _, _, _ = env.step(action)
 
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
         prev_action = obs_flat[20:24]
 
-        # Half max RPM -> omega = max_omega/2 -> normalized = (0.5)*2 - 1 = 0
+        # prev_action in obs should directly reflect the normalized action
         np.testing.assert_allclose(
             prev_action, [0.0, 0.0, 0.0, 0.0], atol=0.05,
-            err_msg="prev_action at half max RPM should normalize to ~0",
+            err_msg="prev_action at u=0 should be 0",
         )
 
-    def test_action_at_max_rpm(self) -> None:
+    def test_action_at_max(self) -> None:
         env = _make_env(
             gate_positions=[[5.0, 0.0, 2.0], [15.0, 0.0, 2.0]],
             gate_yaws=[0.0, 0.0],
         )
         env.reset(seed=0)
 
-        max_rpm = env.params.max_rpm
-        action = np.full(4, max_rpm, dtype=np.float32)
+        action = np.full(4, 1.0, dtype=np.float32)
         obs, _, _, _, _ = env.step(action)
 
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
         prev_action = obs_flat[20:24]
         np.testing.assert_allclose(
             prev_action, [1.0, 1.0, 1.0, 1.0], atol=0.05,
-            err_msg="prev_action at max RPM should normalize to +1",
+            err_msg="prev_action at u=+1 should be +1",
         )
 
-    def test_action_at_zero_rpm(self) -> None:
+    def test_action_at_min(self) -> None:
         env = _make_env(
             gate_positions=[[5.0, 0.0, 2.0], [15.0, 0.0, 2.0]],
             gate_yaws=[0.0, 0.0],
         )
         env.reset(seed=0)
 
-        action = np.zeros(4, dtype=np.float32)
+        action = -np.ones(4, dtype=np.float32)
         obs, _, terminated, _, _ = env.step(action)
 
         term_val = terminated.item() if hasattr(terminated, "item") else terminated
@@ -573,7 +564,7 @@ class TestObsActionHistoryAfterStep:
             prev_action = obs_flat[20:24]
             np.testing.assert_allclose(
                 prev_action, [-1.0, -1.0, -1.0, -1.0], atol=0.05,
-                err_msg="prev_action at zero RPM should normalize to -1",
+                err_msg="prev_action at u=-1 should be -1",
             )
 
 
@@ -605,8 +596,8 @@ class TestObsAllDimsNonzero:
             motor=np.full(4, env.params.max_omega * 0.7),
         )
 
-        # Provide a previous action by stepping first
-        action = np.full(4, env.params.max_rpm * 0.6, dtype=np.float32)
+        # Provide a previous action by stepping first (normalized [-1, 1])
+        action = np.full(4, 0.3, dtype=np.float32)
         obs, _, terminated, _, _ = env.step(action)
 
         term_val = terminated.item() if hasattr(terminated, "item") else terminated
@@ -830,7 +821,7 @@ class TestObsFinite:
     def test_finite_after_step(self) -> None:
         env = _make_env()
         env.reset(seed=0)
-        action = np.full(4, env.params.max_rpm * 0.5, dtype=np.float32)
+        action = np.full(4, 0.0, dtype=np.float32)  # mid-range normalized action
         obs, _, _, _, _ = env.step(action)
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
         assert np.all(np.isfinite(obs_flat)), f"Non-finite obs after step: {obs_flat}"

@@ -164,7 +164,8 @@ class GateRaceEnv(gym.Env):
         [20:24] previous action / motor commands (normalized [-1, 1])
 
     Action (4-dim):
-        Motor RPM commands, continuous, clipped to [0, max_rpm].
+        Normalized motor commands in [-1, 1], mapped to motor speeds via a
+        nonlinear ESC (Electronic Speed Controller) curve per MonoRace paper.
 
     Supports vectorized operation with n_envs parallel episodes.
 
@@ -183,6 +184,9 @@ class GateRaceEnv(gym.Env):
         gate_passage_radius: Lateral distance threshold for gate passage detection.
         v_max: Maximum velocity for delta-progress reward clipping (m/s).
         action_smoothness_threshold: Threshold for action smoothness penalty.
+        esc_nonlinearity: ESC curve parameter k in [0, 1]. k=0 gives sqrt
+            response, k=1 gives linear. Default 0.5 per MonoRace paper.
+        omega_min: Minimum motor speed in rad/s (idle speed). Default 0.
     """
 
     metadata = {"render_modes": []}
@@ -199,6 +203,8 @@ class GateRaceEnv(gym.Env):
         gate_passage_radius: float = 1.0,
         v_max: float = 30.0,
         action_smoothness_threshold: float = 0.5,
+        esc_nonlinearity: float = 0.5,
+        omega_min: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -210,6 +216,8 @@ class GateRaceEnv(gym.Env):
         self.gate_passage_radius = gate_passage_radius
         self.v_max = v_max
         self.action_smoothness_threshold = action_smoothness_threshold
+        self.esc_nonlinearity = esc_nonlinearity
+        self.omega_min = omega_min
 
         # Default track: simple 3-gate circuit
         if track is None:
@@ -224,15 +232,12 @@ class GateRaceEnv(gym.Env):
         self.params = params or VehicleParams()
         self.dynamics = NumpyQuadDynamics(params=self.params, dt=dt)
 
-        max_rpm = self.params.max_rpm
-        max_omega = self.params.max_omega
-
-        # Gymnasium spaces
+        # Gymnasium spaces — normalized action space [-1, 1] per MonoRace paper
         obs_high = np.full(OBS_DIM, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
         self.action_space = spaces.Box(
-            low=np.zeros(4, dtype=np.float32),
-            high=np.full(4, max_rpm, dtype=np.float32),
+            low=-np.ones(4, dtype=np.float32),
+            high=np.ones(4, dtype=np.float32),
             dtype=np.float32,
         )
 
@@ -280,13 +285,32 @@ class GateRaceEnv(gym.Env):
         obs = self._compute_obs()
         return obs, {}
 
+    def _esc_to_omega(self, u: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Map normalized action [-1, 1] to motor speed [rad/s] via ESC curve.
+
+        MonoRace ESC model:
+            U = (u + 1) / 2                          # [-1,1] -> [0,1]
+            omega = (w_max - w_min) * sqrt(k*U^2 + (1-k)*U) + w_min
+
+        Args:
+            u: Normalized actions, shape (N, 4), values in [-1, 1].
+
+        Returns:
+            Motor speeds in rad/s, shape (N, 4).
+        """
+        k = self.esc_nonlinearity
+        w_max = self.params.max_omega
+        w_min = self.omega_min
+        U = np.clip((u + 1.0) / 2.0, 0.0, 1.0)  # [-1,1] -> [0,1]
+        return (w_max - w_min) * np.sqrt(k * U**2 + (1.0 - k) * U) + w_min
+
     def step(
         self, action: NDArray[np.float32]
     ) -> tuple[NDArray[np.float32], NDArray[np.float64], NDArray[np.bool_], NDArray[np.bool_], dict[str, Any]]:
         """Step all environments forward.
 
         Args:
-            action: Motor RPM commands (n_envs, 4) or (4,) for single env.
+            action: Normalized motor commands (n_envs, 4) or (4,) in [-1, 1].
 
         Returns:
             Tuple of (obs, reward, terminated, truncated, info).
@@ -295,8 +319,8 @@ class GateRaceEnv(gym.Env):
         if action.ndim == 1:
             action = action[None, :]  # (1, 4)
 
-        # Convert RPM to rad/s for dynamics
-        action_rads = action * 2.0 * np.pi / 60.0
+        # Map normalized [-1, 1] action through nonlinear ESC curve to rad/s
+        action_rads = self._esc_to_omega(action)
 
         # Step dynamics
         self._states = self.dynamics.step(self._states, action_rads)
@@ -529,10 +553,8 @@ class GateRaceEnv(gym.Env):
             obs[i, 19] = _wrap_angle(next_gate_yaw - gate_yaw)
 
             # --- [20:24] Previous action (normalized [-1, 1]) ---
-            # _prev_actions stores RPM values; convert to rad/s then normalize
-            prev_rpm = self._prev_actions[i]
-            prev_omega = prev_rpm * 2.0 * np.pi / 60.0
-            obs[i, 20:24] = (prev_omega / max(max_omega, 1e-10)) * 2.0 - 1.0
+            # _prev_actions already stores normalized [-1, 1] values
+            obs[i, 20:24] = self._prev_actions[i]
 
         if self.n_envs == 1:
             return obs[0]
