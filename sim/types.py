@@ -123,14 +123,12 @@ class GateState:
     Attributes:
         position: [x, y, z] center of the gate in world frame.
         orientation: [w, x, y, z] quaternion representing gate normal direction.
-        passed: Whether the drone has passed through this gate.
     """
 
     position: NDArray[np.float64] = field(default_factory=lambda: np.zeros(3))
     orientation: NDArray[np.float64] = field(
         default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0])
     )
-    passed: bool = False
 
     def __post_init__(self) -> None:
         self.position = np.asarray(self.position, dtype=np.float64)

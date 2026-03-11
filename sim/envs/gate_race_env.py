@@ -371,7 +371,6 @@ class GateRaceEnv(gym.Env):
 
         self._update_gate_tracking(all_indices)
 
-        self.track.reset()
         obs = self._compute_obs()
         return obs, {}
 
