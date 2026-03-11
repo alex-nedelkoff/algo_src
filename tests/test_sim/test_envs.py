@@ -291,3 +291,41 @@ class TestHoverEnv:
         env = HoverEnv()
         assert env.observation_space.shape == (STATE_DIM,)
         assert env.action_space.shape == (4,)
+
+
+class TestTerminalObservation:
+    """Terminal observations should be captured before auto-reset."""
+
+    def test_terminal_obs_returned_on_crash(self) -> None:
+        """When an env terminates, info should contain terminal_obs."""
+        env = GateRaceEnv(n_envs=2, max_steps=10000)
+        env.reset(seed=42)
+
+        # Drive env 0 into the ground with minimum thrust
+        action = -np.ones((2, 4), dtype=np.float32)
+        info: dict = {}
+        for _ in range(2000):
+            obs, reward, terminated, truncated, info = env.step(action)
+            if np.any(terminated):
+                break
+
+        assert "terminal_obs" in info, "info should contain 'terminal_obs' on termination"
+        terminal_obs = info["terminal_obs"]
+        assert terminal_obs.shape == (2, OBS_DIM)
+        # Done envs should have the pre-reset observation
+        done_mask = terminated | truncated
+        if np.any(done_mask):
+            done_idx = np.where(done_mask)[0][0]
+            assert not np.allclose(terminal_obs[done_idx], obs[done_idx]), \
+                "Terminal obs should differ from post-reset obs"
+
+    def test_terminal_obs_matches_non_done_envs(self) -> None:
+        """For non-done envs, terminal_obs should equal the returned obs."""
+        env = GateRaceEnv(n_envs=2, max_steps=10000)
+        env.reset(seed=42)
+
+        action = np.zeros((2, 4), dtype=np.float32)
+        obs, reward, terminated, truncated, info = env.step(action)
+
+        assert "terminal_obs" in info
+        np.testing.assert_array_equal(info["terminal_obs"], obs)

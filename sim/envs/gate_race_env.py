@@ -555,6 +555,10 @@ class GateRaceEnv(gym.Env):
 
         self._prev_actions = action.copy()
 
+        # Compute obs BEFORE auto-reset so we capture terminal observations.
+        # Always keep batch dimension so VecEnvAdapter can index terminal_obs[i] safely.
+        pre_reset_obs = self._compute_obs_batched()
+
         # Auto-reset terminated/truncated envs
         done = terminated | truncated
         if np.any(done):
@@ -572,13 +576,16 @@ class GateRaceEnv(gym.Env):
 
         obs = self._compute_obs()
 
-        # For single env, squeeze the batch dimension
-        if self.n_envs == 1:
-            return obs, rewards, terminated, truncated, {}
-        return obs, rewards, terminated, truncated, {}
+        # Copy to avoid aliasing between returned obs and terminal_obs
+        info: dict[str, Any] = {"terminal_obs": pre_reset_obs.copy()}
 
-    def _compute_obs(self) -> NDArray[np.float32]:
+        return obs, rewards, terminated, truncated, info
+
+    def _compute_obs_batched(self) -> NDArray[np.float32]:
         """Compute observation vectors for all environments.
+
+        Always returns shape ``(n_envs, OBS_DIM)`` regardless of ``n_envs``.
+        Use ``_compute_obs`` when you need the single-env squeeze behaviour.
 
         MonoRace paper observation layout (24-dim):
             [0:3]   position drone -> current gate  (gate-yaw-relative frame)
@@ -594,7 +601,7 @@ class GateRaceEnv(gym.Env):
         Gate-yaw-relative frame: XY rotated by negative gate yaw, Z unchanged.
 
         Returns:
-            Observations (n_envs, OBS_DIM) or (OBS_DIM,) for single env.
+            Observations (n_envs, OBS_DIM).
         """
         obs = np.zeros((self.n_envs, OBS_DIM), dtype=np.float32)
         max_omega = self.params.max_omega
@@ -648,6 +655,15 @@ class GateRaceEnv(gym.Env):
             # _prev_actions already stores normalized [-1, 1] values
             obs[i, 20:24] = self._prev_actions[i]
 
+        return obs
+
+    def _compute_obs(self) -> NDArray[np.float32]:
+        """Compute observation vectors, squeezing for single env.
+
+        Returns:
+            Observations (n_envs, OBS_DIM) or (OBS_DIM,) for single env.
+        """
+        obs = self._compute_obs_batched()
         if self.n_envs == 1:
             return obs[0]
         return obs
