@@ -32,6 +32,7 @@ from sim.dynamics.numpy_quad import (
     VEL,
     NumpyQuadDynamics,
 )
+from sim.domain_randomization import DomainRandomizer
 from sim.dynamics.params import VehicleParams
 
 
@@ -234,6 +235,7 @@ class GateRaceEnv(gym.Env):
         start_vel_std: float = 0.5,
         start_att_std: float = 0.1,
         gate_collision: bool = False,
+        domain_randomizer: DomainRandomizer | None = None,
     ) -> None:
         super().__init__()
 
@@ -252,6 +254,7 @@ class GateRaceEnv(gym.Env):
         self.start_vel_std = start_vel_std
         self.start_att_std = start_att_std
         self.gate_collision = gate_collision
+        self._domain_randomizer = domain_randomizer
 
         # Default track: simple 3-gate circuit
         if track is None:
@@ -285,6 +288,24 @@ class GateRaceEnv(gym.Env):
             (n_envs, 4), dtype=np.float64
         )
 
+    def _apply_domain_rand(self, env_indices: NDArray[np.intp]) -> None:
+        """Draw fresh randomized physics for specified envs."""
+        if self._domain_randomizer is None:
+            return
+        for idx in env_indices:
+            rp = self._domain_randomizer.apply(self.params, rng=self.np_random)
+            self.dynamics.update_params(
+                env_indices=np.array([idx]),
+                mass=np.array([rp.mass]),
+                inertia=rp.inertia[None],
+                k_thrust=np.array([rp.k_thrust]),
+                k_torque=np.array([rp.k_torque]),
+                arm_length=np.array([rp.arm_length]),
+                tau_motor=np.array([rp.tau_motor]),
+                max_rpm=np.array([rp.max_rpm]),
+                drag_coeff=rp.drag_coeff[None],
+            )
+
     def _randomize_start(self, env_indices: NDArray[np.intp]) -> None:
         """Place envs at random gates with perturbation.
 
@@ -296,9 +317,6 @@ class GateRaceEnv(gym.Env):
             env_indices: Array of env indices to randomize.
         """
         rng = self.np_random
-        hover_omega = np.sqrt(
-            self.params.mass * GRAVITY / (4.0 * self.params.k_thrust)
-        )
 
         for idx in env_indices:
             # Pick a random gate
@@ -324,9 +342,12 @@ class GateRaceEnv(gym.Env):
             yaw = gate_yaw + rng.normal(0, self.start_att_std)
             self._states[idx, QUAT] = _euler_to_quat(roll, pitch, yaw)
 
-            # Zero angular rates, set motors to hover
+            # Zero angular rates, set motors to hover (per-env params)
             self._states[idx, OMEGA] = 0.0
-            self._states[idx, MOTOR] = hover_omega
+            hover_omega_i = np.sqrt(
+                self.dynamics._mass[idx] * GRAVITY / (4.0 * self.dynamics._k_thrust[idx])
+            )
+            self._states[idx, MOTOR] = hover_omega_i
 
     def _update_gate_tracking(self, env_indices: NDArray[np.intp]) -> None:
         """Recompute prev_gate_dists and prev_along_normal for given envs.
@@ -366,6 +387,9 @@ class GateRaceEnv(gym.Env):
 
         all_indices = np.arange(self.n_envs)
 
+        if self._domain_randomizer is not None:
+            self._apply_domain_rand(all_indices)
+
         if self.random_gate_start:
             self._randomize_start(all_indices)
 
@@ -388,7 +412,11 @@ class GateRaceEnv(gym.Env):
             Motor speeds in rad/s, shape (N, 4).
         """
         k = self.esc_nonlinearity
-        w_max = self.params.max_omega
+        n = u.shape[0]
+        if self.dynamics._max_omega.size >= n:
+            w_max = self.dynamics._max_omega[:n, None]  # (N, 1) per-env
+        else:
+            w_max = self.params.max_omega  # scalar fallback
         w_min = self.omega_min
         U = np.clip((u + 1.0) / 2.0, 0.0, 1.0)  # [-1,1] -> [0,1]
         return (w_max - w_min) * np.sqrt(k * U**2 + (1.0 - k) * U) + w_min
@@ -562,7 +590,16 @@ class GateRaceEnv(gym.Env):
         done = terminated | truncated
         if np.any(done):
             done_indices = np.where(done)[0]
-            reset_states = self.dynamics.reset(int(np.sum(done)))
+
+            # Randomize params FIRST, then generate states with correct hover omega
+            if self._domain_randomizer is not None:
+                self._apply_domain_rand(done_indices)
+
+            # Generate reset states using per-env params (not dynamics.reset()!)
+            reset_states = self.dynamics.make_reset_states(
+                n_envs=int(np.sum(done)),
+                env_indices=done_indices,
+            )
             self._states[done] = reset_states
             self._step_counts[done] = 0
             self._gate_indices[done] = 0
@@ -603,7 +640,6 @@ class GateRaceEnv(gym.Env):
             Observations (n_envs, OBS_DIM).
         """
         obs = np.zeros((self.n_envs, OBS_DIM), dtype=np.float32)
-        max_omega = self.params.max_omega
 
         for i in range(self.n_envs):
             state = self._states[i]
@@ -639,7 +675,11 @@ class GateRaceEnv(gym.Env):
             obs[i, 9:12] = state[OMEGA]
 
             # --- [12:16] Motor speeds normalized to [-1, 1] ---
-            obs[i, 12:16] = (state[MOTOR] / max(max_omega, 1e-10)) * 2.0 - 1.0
+            if self.dynamics._max_omega.size > i:
+                max_omega_i = self.dynamics._max_omega[i]
+            else:
+                max_omega_i = self.params.max_omega
+            obs[i, 12:16] = (state[MOTOR] / max(max_omega_i, 1e-10)) * 2.0 - 1.0
 
             # --- [16:19] Position current gate -> next gate (gate-yaw frame) ---
             dnext = next_gate.position - gate.position  # world frame

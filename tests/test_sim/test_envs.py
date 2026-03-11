@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from sim.domain_randomization import DomainRandomizer
 from sim.envs.gate_race_env import GateRaceEnv, OBS_DIM
 from sim.envs.hover_env import HoverEnv, STATE_DIM
 
@@ -329,3 +330,42 @@ class TestTerminalObservation:
 
         assert "terminal_obs" in info
         np.testing.assert_array_equal(info["terminal_obs"], obs)
+
+
+class TestDomainRandomization:
+    def test_randomizer_changes_params_on_reset(self):
+        """After reset, env's dynamics should have per-env randomized params."""
+        randomizer = DomainRandomizer({"mass": 0.3, "k_thrust": 0.3})
+        env = GateRaceEnv(n_envs=10, domain_randomizer=randomizer)
+        env.reset(seed=42)
+
+        # Masses should vary across envs
+        masses = env.dynamics._mass
+        assert not np.allclose(masses, masses[0]), (
+            f"All masses identical after DR reset: {masses}"
+        )
+
+    def test_auto_reset_rerandomizes(self):
+        """Terminated envs get fresh randomized params on auto-reset."""
+        randomizer = DomainRandomizer({"mass": 0.3})
+        env = GateRaceEnv(
+            n_envs=2, domain_randomizer=randomizer, ceiling=200.0
+        )
+        env.reset(seed=42)
+
+        masses_before = env.dynamics._mass.copy()
+
+        # Drive env 0 above ceiling to trigger termination
+        env._states[0, 2] = 300.0  # way above ceiling
+        action = np.zeros((2, 4), dtype=np.float32)
+        env.step(action)
+
+        # Env 1 was not reset → mass unchanged
+        assert env.dynamics._mass[1] == masses_before[1]
+
+    def test_no_randomizer_uses_nominal(self):
+        """Without domain_randomizer, all envs use nominal params."""
+        env = GateRaceEnv(n_envs=10)
+        env.reset(seed=42)
+        masses = env.dynamics._mass
+        assert np.allclose(masses, masses[0])
