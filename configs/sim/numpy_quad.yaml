@@ -5,6 +5,13 @@ n_envs: 100
 max_steps: 1000
 gate_passage_radius: 1.0
 
+# MonoRace: random gate start with perturbation + gate collision
+random_gate_start: true
+start_behind_dist: 1.0
+start_vel_std: 0.5
+start_att_std: 0.1
+gate_collision: true
+
 # Racing quad vehicle parameters (5" racing quad, sysid)
 params:
   _target_: sim.dynamics.params.VehicleParams

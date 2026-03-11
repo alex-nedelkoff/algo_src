@@ -114,6 +114,30 @@ def _quat_to_euler(q: NDArray[np.float64]) -> tuple[float, float, float]:
     return roll, pitch, yaw
 
 
+def _euler_to_quat(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
+    """Convert ZYX Euler angles to quaternion [w, x, y, z].
+
+    Inverse of ``_quat_to_euler``.
+
+    Args:
+        roll: Roll angle in radians.
+        pitch: Pitch angle in radians.
+        yaw: Yaw angle in radians.
+
+    Returns:
+        Quaternion (4,) in [w, x, y, z] convention.
+    """
+    cr, sr = np.cos(roll / 2.0), np.sin(roll / 2.0)
+    cp, sp = np.cos(pitch / 2.0), np.sin(pitch / 2.0)
+    cy, sy = np.cos(yaw / 2.0), np.sin(yaw / 2.0)
+    return np.array([
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    ])
+
+
 def _wrap_angle(angle: float | NDArray[np.float64]) -> float | NDArray[np.float64]:
     """Wrap angle(s) to [-pi, pi].
 
@@ -205,6 +229,11 @@ class GateRaceEnv(gym.Env):
         action_smoothness_threshold: float = 0.5,
         esc_nonlinearity: float = 0.5,
         omega_min: float = 0.0,
+        random_gate_start: bool = False,
+        start_behind_dist: float = 1.0,
+        start_vel_std: float = 0.5,
+        start_att_std: float = 0.1,
+        gate_collision: bool = False,
     ) -> None:
         super().__init__()
 
@@ -218,6 +247,11 @@ class GateRaceEnv(gym.Env):
         self.action_smoothness_threshold = action_smoothness_threshold
         self.esc_nonlinearity = esc_nonlinearity
         self.omega_min = omega_min
+        self.random_gate_start = random_gate_start
+        self.start_behind_dist = start_behind_dist
+        self.start_vel_std = start_vel_std
+        self.start_att_std = start_att_std
+        self.gate_collision = gate_collision
 
         # Default track: simple 3-gate circuit
         if track is None:
@@ -251,6 +285,63 @@ class GateRaceEnv(gym.Env):
             (n_envs, 4), dtype=np.float64
         )
 
+    def _randomize_start(self, env_indices: NDArray[np.intp]) -> None:
+        """Place envs at random gates with perturbation.
+
+        For each env in ``env_indices``, picks a random gate, places the drone
+        ``start_behind_dist`` meters behind the gate along its negative normal,
+        adds small velocity and attitude perturbations, and sets motors to hover.
+
+        Args:
+            env_indices: Array of env indices to randomize.
+        """
+        rng = self.np_random
+        hover_omega = np.sqrt(
+            self.params.mass * GRAVITY / (4.0 * self.params.k_thrust)
+        )
+
+        for idx in env_indices:
+            # Pick a random gate
+            gate_idx = int(rng.integers(0, self.track.num_gates))
+            self._gate_indices[idx] = gate_idx
+            gate = self.track.gates[gate_idx]
+            normal = _gate_normal(gate)
+
+            # Position: behind gate along negative normal + small lateral noise
+            self._states[idx, POS] = (
+                gate.position
+                - self.start_behind_dist * normal
+                + rng.normal(0, 0.1, size=3)
+            )
+
+            # Velocity perturbation
+            self._states[idx, VEL] = rng.normal(0, self.start_vel_std, size=3)
+
+            # Attitude: face the gate (yaw from gate normal) + perturbation
+            gate_yaw = float(np.arctan2(normal[1], normal[0]))
+            roll = rng.normal(0, self.start_att_std)
+            pitch = rng.normal(0, self.start_att_std)
+            yaw = gate_yaw + rng.normal(0, self.start_att_std)
+            self._states[idx, QUAT] = _euler_to_quat(roll, pitch, yaw)
+
+            # Zero angular rates, set motors to hover
+            self._states[idx, OMEGA] = 0.0
+            self._states[idx, MOTOR] = hover_omega
+
+    def _update_gate_tracking(self, env_indices: NDArray[np.intp]) -> None:
+        """Recompute prev_gate_dists and prev_along_normal for given envs.
+
+        Args:
+            env_indices: Array of env indices to update.
+        """
+        for idx in env_indices:
+            gate_idx = int(self._gate_indices[idx])
+            gate = self.track.gates[gate_idx % self.track.num_gates]
+            rel_pos = self._states[idx, POS] - gate.position
+            self._prev_gate_dists[idx] = float(np.linalg.norm(rel_pos))
+            normal = _gate_normal(gate)
+            self._prev_along_normal[idx] = float(np.dot(rel_pos, normal))
+
     def reset(
         self,
         *,
@@ -273,13 +364,12 @@ class GateRaceEnv(gym.Env):
         self._gate_indices[:] = 0
         self._prev_actions = np.zeros((self.n_envs, 4), dtype=np.float64)
 
-        # Compute initial distances to gate and along-normal projections
-        for i in range(self.n_envs):
-            gate = self.track.gates[0]
-            rel_pos = self._states[i, POS] - gate.position
-            self._prev_gate_dists[i] = float(np.linalg.norm(rel_pos))
-            normal = _gate_normal(gate)
-            self._prev_along_normal[i] = float(np.dot(rel_pos, normal))
+        all_indices = np.arange(self.n_envs)
+
+        if self.random_gate_start:
+            self._randomize_start(all_indices)
+
+        self._update_gate_tracking(all_indices)
 
         self.track.reset()
         obs = self._compute_obs()
@@ -453,6 +543,11 @@ class GateRaceEnv(gym.Env):
                     new_normal = _gate_normal(new_gate)
                     new_rel = self._states[i, POS] - new_gate.position
                     curr_along_normal = float(np.dot(new_rel, new_normal))
+                elif self.gate_collision:
+                    # Crossed gate plane but outside opening -> gate collision
+                    terminated[i] = True
+                    rewards[i] = -crash_penalty
+                    continue
 
             # Update tracking state for next step
             self._prev_along_normal[i] = curr_along_normal
@@ -463,20 +558,17 @@ class GateRaceEnv(gym.Env):
         # Auto-reset terminated/truncated envs
         done = terminated | truncated
         if np.any(done):
+            done_indices = np.where(done)[0]
             reset_states = self.dynamics.reset(int(np.sum(done)))
             self._states[done] = reset_states
             self._step_counts[done] = 0
             self._gate_indices[done] = 0
             self._prev_actions[done] = 0.0
-            # Reset prev gate distances and along-normal for auto-reset envs
-            gate = self.track.gates[0]
-            gate_pos = gate.position
-            normal = _gate_normal(gate)
-            done_indices = np.where(done)[0]
-            for idx in done_indices:
-                rel_pos = self._states[idx, POS] - gate_pos
-                self._prev_gate_dists[idx] = float(np.linalg.norm(rel_pos))
-                self._prev_along_normal[idx] = float(np.dot(rel_pos, normal))
+
+            if self.random_gate_start:
+                self._randomize_start(done_indices)
+
+            self._update_gate_tracking(done_indices)
 
         obs = self._compute_obs()
 
