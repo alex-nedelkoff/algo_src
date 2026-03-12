@@ -73,8 +73,12 @@ def _object_exists(
         remote_size = resp["ContentLength"]
         if remote_size != local_size:
             return False
-        # Compare etag (MD5 for single-part uploads, quoted in response)
+        # Compare etag (MD5 for single-part uploads, quoted in response).
+        # Multi-part uploads produce etags like "md5-N" — size match is
+        # sufficient in that case since we can't reproduce the composite hash.
         remote_etag = resp.get("ETag", "").strip('"')
+        if "-" in remote_etag:
+            return True
         local_md5 = _md5_hex(local_path)
         return remote_etag == local_md5
     except Exception:
@@ -207,5 +211,7 @@ def register_wandb_artifact(
         )
     except Exception as exc:
         log.warning(
-            "W&B artifact registration failed (non-fatal): %s", exc
+            "W&B artifact registration failed (non-fatal): %s",
+            exc,
+            exc_info=True,
         )
