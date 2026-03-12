@@ -3,7 +3,7 @@
 Runs alongside the training loop so that ``TrajectoryRecorderCallback`` can
 hand off ``.npz`` directories without blocking.  The worker thread converts
 each episode to ``.rrd`` (if *rerun-sdk* is available), uploads both formats
-to Cloudflare R2, and logs a Rerun viewer URL table to the W&B run summary.
+to Cloudflare R2, and logs Rerun viewer URLs to the W&B run summary.
 
 All failures are logged as warnings — the training loop is **never** affected.
 """
@@ -67,23 +67,18 @@ class ArtifactUploader:
             self._enabled = False
             return
 
-        # ----- W&B live run (for Rerun table logging) -----------------------
+        # ----- W&B live run (for Rerun URL logging) -------------------------
         try:
             import wandb
 
-            self._wandb = wandb
             self._wandb_run = wandb.run
             if self._wandb_run is None:
                 log.warning(
-                    "No active wandb.run — Rerun table will not be logged."
+                    "No active wandb.run — Rerun URLs will not be logged."
                 )
         except ImportError:
-            log.warning("wandb not installed — Rerun table will not be logged.")
-            self._wandb = None
+            log.warning("wandb not installed — Rerun URLs will not be logged.")
             self._wandb_run = None
-
-        # Accumulate rows for the Rerun recordings table on the run page
-        self._rerun_rows: list[list] = []
 
         # ----- Queue & worker thread ---------------------------------------
         self._queue: queue.Queue[Optional[_WorkItem]] = queue.Queue(maxsize=10)
@@ -245,21 +240,18 @@ class ArtifactUploader:
                 )
                 rrd_key = None
 
-        # --- 4. Log Rerun viewer URL to W&B table --------------------------
+        # --- 4. Log Rerun viewer URL to W&B summary -------------------------
         if self._wandb_run is None or rrd_key is None:
             return
 
         viewer_url = rerun_viewer_url(rrd_key)
-        self._rerun_rows.append([step, stem, viewer_url])
+        summary_key = f"rerun/step_{step}/{stem}"
         try:
-            table = self._wandb.Table(
-                columns=["step", "episode", "rerun_url"],
-                data=self._rerun_rows,
-            )
-            self._wandb_run.summary["rerun_recordings"] = table
-            log.info("W&B rerun table updated (%d rows) → %s", len(self._rerun_rows), viewer_url)
+            self._wandb_run.summary[summary_key] = viewer_url
+            log.info("W&B summary[%s] → %s", summary_key, viewer_url)
         except Exception:
             log.warning(
-                "Failed to update W&B rerun table — skipping.",
+                "Failed to set W&B summary key '%s' — skipping.",
+                summary_key,
                 exc_info=True,
             )
