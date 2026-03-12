@@ -43,6 +43,9 @@ tb = [
     "tbparse",
     "pandas",
 ]
+artifacts = [
+    "boto3",
+]
 dev = [
     "pytest",
     "ruff",

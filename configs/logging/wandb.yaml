@@ -2,7 +2,7 @@
 backend: wandb
 
 project: corvidx-drone-racing
-entity: corvidx
+entity: null
 tags: []
 group: null
 notes: null
