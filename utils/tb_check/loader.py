@@ -23,8 +23,11 @@ def load_run(path: str, last_n: int | None = None) -> pd.DataFrame:
         DataFrame with columns ``step`` (int), ``tag`` (str), ``value`` (float).
         Returns an empty DataFrame with those columns if no scalar data is found.
     """
-    reader = SummaryReader(path, pivot=False)
-    df: pd.DataFrame = reader.scalars
+    try:
+        reader = SummaryReader(path, pivot=False)
+        df: pd.DataFrame = reader.scalars
+    except ValueError:
+        return pd.DataFrame(columns=["step", "tag", "value"])
 
     if df is None or df.empty:
         return pd.DataFrame(columns=["step", "tag", "value"])
