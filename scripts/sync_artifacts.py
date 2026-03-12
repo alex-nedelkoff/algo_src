@@ -24,12 +24,34 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# R2 / public URL constants
+# R2 shared imports (constants + upload helpers from artifacts.r2)
 # ---------------------------------------------------------------------------
 
-R2_ENDPOINT_TEMPLATE = "https://{account_id}.r2.cloudflarestorage.com"
-R2_PUBLIC_BASE = "https://pub-030397d1ed024b568ceff9508ce0bd30.r2.dev"
-DEFAULT_BUCKET = "corvidx-artifacts"
+try:
+    from artifacts.r2 import (
+        DEFAULT_BUCKET,
+        R2_PUBLIC_BASE,
+        _human_size,
+        make_r2_client,
+        register_wandb_artifact,
+        rerun_viewer_url,
+        upload_file,
+    )
+except ImportError:
+    # If artifacts package isn't on the path, try adjusting sys.path
+    # (scripts/ is one level below the project root where artifacts/ lives)
+    _project_root = str(Path(__file__).resolve().parent.parent)
+    if _project_root not in sys.path:
+        sys.path.insert(0, _project_root)
+    from artifacts.r2 import (
+        DEFAULT_BUCKET,
+        R2_PUBLIC_BASE,
+        _human_size,
+        make_r2_client,
+        register_wandb_artifact,
+        rerun_viewer_url,
+        upload_file,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -100,14 +122,14 @@ def _find_wandb_run_id(run_dir: Path) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# R2 / boto3 helpers
+# R2 client wrapper (friendly exit on missing boto3)
 # ---------------------------------------------------------------------------
 
 
-def _make_s3_client(account_id: str, access_key: str, secret_key: str):
+def _make_r2_client(account_id: str, access_key: str, secret_key: str):
+    """Wrap :func:`artifacts.r2.make_r2_client` with a user-friendly exit."""
     try:
-        import boto3
-        from botocore.config import Config
+        return make_r2_client(account_id, access_key, secret_key)
     except ImportError:
         log.error(
             "boto3 is not installed. Install it with: pip install boto3  "
@@ -115,65 +137,10 @@ def _make_s3_client(account_id: str, access_key: str, secret_key: str):
         )
         sys.exit(1)
 
-    endpoint = R2_ENDPOINT_TEMPLATE.format(account_id=account_id)
-    client = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        config=Config(signature_version="s3v4"),
-        region_name="auto",
-    )
-    return client
 
-
-def _md5_hex(path: Path) -> str:
-    """Compute MD5 hex digest of a local file."""
-    import hashlib
-
-    h = hashlib.md5()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _object_exists(
-    client, bucket: str, key: str, local_path: Path, local_size: int
-) -> bool:
-    """Return True if the R2 object already exists with matching size and etag."""
-    try:
-        resp = client.head_object(Bucket=bucket, Key=key)
-        remote_size = resp["ContentLength"]
-        if remote_size != local_size:
-            return False
-        # Compare etag (MD5 for single-part uploads, quoted in response)
-        remote_etag = resp.get("ETag", "").strip('"')
-        local_md5 = _md5_hex(local_path)
-        return remote_etag == local_md5
-    except Exception:
-        return False
-
-
-def _upload_file(
-    client,
-    bucket: str,
-    local_path: Path,
-    r2_key: str,
-    *,
-    skip_existing: bool = True,
-) -> Optional[str]:
-    """Upload a single local file to R2. Returns the public URL or None on skip."""
-    size = local_path.stat().st_size
-
-    if skip_existing and _object_exists(client, bucket, r2_key, local_path, size):
-        log.info("  [skip] %s (already uploaded, same size+etag)", r2_key)
-        return None
-
-    log.info("  [upload] %s  (%s)", r2_key, _human_size(size))
-    client.upload_file(str(local_path), bucket, r2_key)
-    public_url = f"{R2_PUBLIC_BASE}/{r2_key}"
-    return public_url
+# ---------------------------------------------------------------------------
+# In-memory upload (for dir-zipping — not in shared r2.py)
+# ---------------------------------------------------------------------------
 
 
 def _upload_bytes(
@@ -211,14 +178,6 @@ def _upload_bytes(
 # ---------------------------------------------------------------------------
 
 
-def _human_size(n_bytes: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n_bytes < 1024:
-            return f"{n_bytes:.1f} {unit}"
-        n_bytes /= 1024
-    return f"{n_bytes:.1f} TB"
-
-
 def _zip_directory(directory: Path) -> bytes:
     """Zip an entire directory in-memory and return the bytes."""
     buf = io.BytesIO()
@@ -239,26 +198,6 @@ def _checkpoint_step(p: Path) -> int:
     """Extract step number from ppo_<n>_steps.zip filename."""
     m = re.search(r"ppo_(\d+)_steps", p.name)
     return int(m.group(1)) if m else 0
-
-
-# ---------------------------------------------------------------------------
-# Rerun viewer URL
-# ---------------------------------------------------------------------------
-
-
-def _rerun_version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("rerun-sdk")
-    except Exception:
-        return "latest"
-
-
-def _rerun_viewer_url(r2_key: str) -> str:
-    version = _rerun_version()
-    file_url = f"{R2_PUBLIC_BASE}/{r2_key}"
-    return f"https://app.rerun.io/version/{version}/?url={file_url}"
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +295,7 @@ def _collect_artifacts(run_dir: Path, run_id: str) -> list[ArtifactEntry]:
 
 
 # ---------------------------------------------------------------------------
-# W&B reference artifact registration
+# W&B reference artifact registration (using wandb.Api for thread safety)
 # ---------------------------------------------------------------------------
 
 
@@ -374,32 +313,31 @@ def _register_wandb_artifacts(
         log.info("wandb not installed — skipping W&B artifact registration.")
         return
 
-    try:
-        run = wandb.init(
-            id=run_id,
-            resume="allow",
-            project=project or "corvidx-drone-racing",
-            entity=entity,
-        )
+    project = project or "corvidx-drone-racing"
+    entity = entity or wandb.Api().default_entity
 
-        # Log R2 artifact as a reference artifact
+    try:
+        api = wandb.Api()
+        run_path = f"{entity}/{project}/{run_id}"
+
+        # Register an aggregate reference artifact with all uploaded R2 URLs
         artifact = wandb.Artifact(
             name=f"r2-artifacts-{run_id}",
             type="model",
             description="R2-hosted training artifacts",
         )
         for url in uploaded_urls:
-            # Use the URL path as the artifact entry name
             name = url.replace(R2_PUBLIC_BASE + "/", "")
             artifact.add_reference(url, name=name)
 
+        run = api.run(run_path)
         run.log_artifact(artifact)
 
-        # Also surface rerun viewer URLs in the run summary
+        # Surface rerun viewer URLs in the run summary
         if rerun_viewer_urls:
             run.summary["rerun_viewer_urls"] = rerun_viewer_urls
+            run.summary.update()
 
-        run.finish()
         log.info("W&B artifact registration complete for run %s.", run_id)
     except Exception as exc:
         log.warning("W&B artifact registration failed (non-fatal): %s", exc)
@@ -448,7 +386,7 @@ def run_sync(
     log.info("Run ID: %s", resolved_run_id)
     log.info("Run directory: %s", run_dir)
 
-    client = _make_s3_client(account_id, access_key, secret_key)
+    client = _make_r2_client(account_id, access_key, secret_key)
 
     artifacts = _collect_artifacts(run_dir, resolved_run_id)
     if not artifacts:
@@ -489,14 +427,16 @@ def run_sync(
                     total_bytes += len(zip_bytes)
             else:
                 assert entry.local_path is not None
-                url = _upload_file(client, bucket, entry.local_path, entry.r2_key)
+                # NOTE: artifacts.r2.upload_file param order is
+                # (client, local_path, bucket, r2_key)
+                url = upload_file(client, entry.local_path, bucket, entry.r2_key)
                 if url is None:
                     skipped.append(entry.r2_key)
                 else:
                     uploaded_urls.append(url)
                     total_bytes += entry.local_path.stat().st_size
                     if entry.r2_key.endswith(".rrd"):
-                        rerun_viewer_urls.append(_rerun_viewer_url(entry.r2_key))
+                        rerun_viewer_urls.append(rerun_viewer_url(entry.r2_key))
         except Exception as exc:
             log.error("Failed to upload %s: %s", entry.r2_key, exc)
             failed.append((entry.r2_key, str(exc)))
