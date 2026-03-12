@@ -107,8 +107,8 @@ def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None, upl
     """
     from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 
-    from control.callbacks import GateMetricsCallback
-    from control.trajectory_recorder import TrajectoryRecorderCallback
+    from training.callbacks import GateMetricsCallback
+    from training.trajectory_recorder import TrajectoryRecorderCallback
 
     callbacks = []
     output_dir = Path(cfg.output_dir)
