@@ -46,6 +46,9 @@ tb = [
 artifacts = [
     "boto3",
 ]
+logging = [
+    "wandb",
+]
 playground = [
     "sympy>=1.13",
 ]

@@ -5,7 +5,7 @@ FROM algo-src-base AS control-cpu
 # Install CPU-only PyTorch (much smaller than CUDA variant) then control + sim deps
 RUN uv pip install --python /app/.venv/bin/python \
         torch --index-url https://download.pytorch.org/whl/cpu \
-    && uv pip install --python /app/.venv/bin/python -e ".[control,sim,tb,viz,dev]"
+    && uv pip install --python /app/.venv/bin/python -e ".[control,sim,playground,logging,artifacts,tb,viz,dev]"
 
 WORKDIR /app
 
