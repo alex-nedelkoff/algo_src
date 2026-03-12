@@ -98,7 +98,7 @@ def build_ppo(cfg: DictConfig) -> PPO:
     )
 
 
-def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None) -> list:
+def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None, uploader=None) -> list:
     """Create SB3 training callbacks from config.
 
     SB3 callback frequencies count env.step() calls, not total timesteps.
@@ -145,6 +145,7 @@ def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None) -> 
             n_envs=n_envs,
             save_path=str(output_dir / "checkpoints"),
             n_viz_episodes=n_viz_episodes,
+            uploader=uploader,
         )
     )
 
@@ -178,11 +179,12 @@ def main(cfg: DictConfig) -> None:
         ppo.load(resume_path, env=train_env)
 
     # W&B init (optional)
+    uploader = None
     if cfg.logging.get("backend") == "wandb":
         try:
             import wandb
 
-            wandb.init(
+            wandb_run = wandb.init(
                 project=cfg.logging.project,
                 entity=cfg.logging.get("entity"),
                 tags=list(cfg.logging.get("tags", [])),
@@ -190,13 +192,24 @@ def main(cfg: DictConfig) -> None:
                 config=OmegaConf.to_container(cfg, resolve=True),
                 sync_tensorboard=True,
             )
+
+            from artifacts.uploader import ArtifactUploader
+
+            uploader = ArtifactUploader(
+                run_id=wandb_run.id,
+                wandb_entity=wandb_run.entity,
+                wandb_project=wandb_run.project,
+            )
         except ImportError:
             log.warning("wandb not installed, skipping W&B logging")
 
-    callbacks = _setup_callbacks(cfg, eval_env=eval_env)
+    callbacks = _setup_callbacks(cfg, eval_env=eval_env, uploader=uploader)
 
     log.info("Starting training for %d timesteps...", cfg.total_timesteps)
     ppo.train(train_env, total_timesteps=cfg.total_timesteps, callbacks=callbacks)
+
+    if uploader is not None:
+        uploader.close(timeout=60)
 
     final_path = Path(cfg.output_dir) / "final_model"
     ppo.save(final_path)

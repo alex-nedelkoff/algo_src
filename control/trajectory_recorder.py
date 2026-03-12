@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from artifacts.uploader import ArtifactUploader
 
 try:
     from stable_baselines3.common.callbacks import BaseCallback
@@ -54,12 +58,14 @@ class TrajectoryRecorderCallback(BaseCallback):
         save_path: str,
         n_viz_episodes: int = 5,
         verbose: int = 1,
+        uploader: ArtifactUploader | None = None,
     ) -> None:
         super().__init__(verbose)
         self.viz_freq = viz_freq
         self.check_freq = max(1, viz_freq // n_envs)
         self.save_path = Path(save_path)
         self.n_viz_episodes = n_viz_episodes
+        self._uploader = uploader
 
     # ------------------------------------------------------------------
     # Helpers
@@ -239,5 +245,8 @@ class TrajectoryRecorderCallback(BaseCallback):
                 self.n_viz_episodes,
                 out_dir,
             )
+
+        if self._uploader is not None:
+            self._uploader.submit(out_dir, total_ts)
 
         return True
