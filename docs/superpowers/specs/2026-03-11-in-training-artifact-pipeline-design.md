@@ -90,7 +90,9 @@ TrajectoryRecorderCallback._on_step()
 ### 4. ArtifactUploader Lifecycle
 
 ```python
-__init__(run_id, wandb_run_id)
+__init__(run_id, wandb_entity, wandb_project)
+  # run_id: W&B run ID, also used as R2 path prefix (runs/{run_id}/...)
+  # wandb_entity/wandb_project: needed to construct run_path for wandb.Api()
   # Creates R2 client (boto3) from env vars:
   #   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
   # Creates wandb.Api() for thread-safe artifact registration
@@ -118,7 +120,11 @@ close(timeout=60)
 
 **Wiring in `control/__main__.py`:**
 ```python
-uploader = ArtifactUploader(run_id=wandb_run.id, wandb_run_id=wandb_run.id)
+uploader = ArtifactUploader(
+    run_id=wandb_run.id,
+    wandb_entity=wandb_run.entity,
+    wandb_project=wandb_run.project,
+)
 trajectory_callback = TrajectoryRecorderCallback(..., uploader=uploader)
 # ... training ...
 uploader.close(timeout=60)  # best-effort drain
@@ -137,7 +143,7 @@ Extracted from `sync_artifacts.py` so both `ArtifactUploader` and `sync_artifact
 | `register_wandb_artifact(api, run_path, r2_key, artifact_type)` | Log R2 URL as W&B reference artifact via `wandb.Api()` |
 | `rerun_viewer_url(r2_public_base, r2_key, rerun_version)` | Build `app.rerun.io` viewer URL |
 
-`scripts/sync_artifacts.py` becomes a thinner orchestrator — it still handles discovery, priority ordering, and the CLI interface, but delegates upload/check to `artifacts/r2.py`.
+`scripts/sync_artifacts.py` becomes a thinner orchestrator — it still handles discovery, priority ordering, and the CLI interface, but delegates upload/check to `artifacts/r2.py`. As part of this refactor, `sync_artifacts.py` will also switch from `wandb.init(resume="allow")` to `wandb.Api()` for artifact registration, matching the `ArtifactUploader`. This eliminates the risk of two processes writing to the same W&B run if `sync_artifacts.py` is triggered (e.g., via `trap EXIT`) while training is still active.
 
 ### 6. Failure Handling
 
@@ -147,7 +153,7 @@ Extracted from `sync_artifacts.py` so both `ArtifactUploader` and `sync_artifact
 - **W&B not initialized**: Uploader skips W&B registration, still uploads to R2.
 - **Training crash**: Daemon thread dies with the process. Any `.npz`/`.rrd` files already on disk are picked up by `sync_artifacts.py` later.
 - **`close()` timeout**: Items remaining in queue are logged. `sync_artifacts.py` handles them.
-- **Queue backpressure**: Queue has `maxsize=10`. If uploads fall behind (slow network + low `viz_freq`), `submit()` drops the oldest item and logs a warning. In practice this won't happen — each work item is ~5MB and `viz_freq` defaults to 1M timesteps.
+- **Queue backpressure**: Queue has `maxsize=10`. If uploads fall behind (slow network + low `viz_freq`), `submit()` drops the oldest item and logs a warning. Dropped items still have their `.npz` on disk — to generate `.rrd` for dropped items, run `python -m sim.viz <trajectory_dir>` and re-sync. In practice this won't happen — each work item is ~5MB and `viz_freq` defaults to 1M timesteps.
 
 ### 7. What Doesn't Change
 
