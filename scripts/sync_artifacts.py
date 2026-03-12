@@ -33,7 +33,6 @@ try:
         R2_PUBLIC_BASE,
         _human_size,
         make_r2_client,
-        register_wandb_artifact,
         rerun_viewer_url,
         upload_file,
     )
@@ -48,7 +47,6 @@ except ImportError:
         R2_PUBLIC_BASE,
         _human_size,
         make_r2_client,
-        register_wandb_artifact,
         rerun_viewer_url,
         upload_file,
     )
@@ -313,11 +311,10 @@ def _register_wandb_artifacts(
         log.info("wandb not installed — skipping W&B artifact registration.")
         return
 
-    project = project or "corvidx-drone-racing"
-    entity = entity or wandb.Api().default_entity
-
     try:
         api = wandb.Api()
+        project = project or "corvidx-drone-racing"
+        entity = entity or api.default_entity
         run_path = f"{entity}/{project}/{run_id}"
 
         # Register an aggregate reference artifact with all uploaded R2 URLs
