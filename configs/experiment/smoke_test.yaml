@@ -16,6 +16,7 @@ eval_freq: 10_000
 checkpoint_freq: 25_000
 viz_freq: 25_000
 n_viz_episodes: 2
+gate_metrics_freq: 4_000
 
 sim:
   n_envs: 4

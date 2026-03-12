@@ -134,7 +134,8 @@ def _setup_callbacks(cfg: DictConfig, eval_env: VecEnvAdapter | None = None, upl
         )
 
     # Gate racing metrics (gates/laps/termination breakdown)
-    callbacks.append(GateMetricsCallback(log_freq=max(1, 100_000 // n_envs)))
+    gate_metrics_freq = cfg.get("gate_metrics_freq", 100_000)
+    callbacks.append(GateMetricsCallback(log_freq=max(1, gate_metrics_freq // n_envs)))
 
     # Trajectory recording for visualisation
     viz_freq = cfg.get("viz_freq", 1_000_000)
