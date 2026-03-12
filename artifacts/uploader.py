@@ -20,7 +20,6 @@ from typing import Optional, Tuple
 from artifacts.r2 import (
     DEFAULT_BUCKET,
     make_r2_client,
-    register_wandb_artifact,
     rerun_viewer_url,
     upload_file,
 )
@@ -38,20 +37,10 @@ class ArtifactUploader:
     ----------
     run_id:
         W&B run ID — also used as the R2 path prefix (``runs/{run_id}/...``).
-    wandb_entity:
-        W&B entity (user or team) for constructing the ``run_path``.
-    wandb_project:
-        W&B project name for constructing the ``run_path``.
     """
 
-    def __init__(
-        self,
-        run_id: str,
-        wandb_entity: str,
-        wandb_project: str,
-    ) -> None:
+    def __init__(self, run_id: str) -> None:
         self._run_id = run_id
-        self._run_path = f"{wandb_entity}/{wandb_project}/{run_id}"
         self._enabled = True
 
         # ----- R2 client ---------------------------------------------------
@@ -78,18 +67,18 @@ class ArtifactUploader:
             self._enabled = False
             return
 
-        # ----- W&B API (thread-safe) ---------------------------------------
+        # ----- W&B live run (for artifact logging) --------------------------
         try:
             import wandb
 
-            self._wandb_api = wandb.Api()
-        except Exception as exc:
-            log.warning(
-                "Could not create wandb.Api() — artifact registration will be "
-                "skipped: %s",
-                exc,
-            )
-            self._wandb_api = None
+            self._wandb_run = wandb.run
+            if self._wandb_run is None:
+                log.warning(
+                    "No active wandb.run — artifact registration will be skipped."
+                )
+        except ImportError:
+            log.warning("wandb not installed — artifact registration will be skipped.")
+            self._wandb_run = None
 
         # ----- Queue & worker thread ---------------------------------------
         self._queue: queue.Queue[Optional[_WorkItem]] = queue.Queue(maxsize=10)
@@ -252,19 +241,26 @@ class ArtifactUploader:
                 rrd_key = None
 
         # --- 4. Register W&B artifacts ------------------------------------
-        if self._wandb_api is None:
+        if self._wandb_run is None:
             return
 
         if rrd_key is not None:
             viewer_url = rerun_viewer_url(rrd_key)
             artifact_name = f"rerun-step_{step}-{stem}"
             try:
-                register_wandb_artifact(
-                    self._wandb_api,
-                    self._run_path,
+                import wandb
+
+                artifact = wandb.Artifact(
+                    name=artifact_name,
+                    type="rerun-recording",
+                    description=f"Rerun viewer: {viewer_url}",
+                )
+                artifact.add_reference(viewer_url)
+                self._wandb_run.log_artifact(artifact)
+                log.info(
+                    "W&B artifact '%s' registered → %s",
                     artifact_name,
                     viewer_url,
-                    artifact_type="rerun-recording",
                 )
             except Exception:
                 log.warning(

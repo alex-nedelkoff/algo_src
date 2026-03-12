@@ -214,11 +214,7 @@ def main(cfg: DictConfig) -> None:
 
             from artifacts.uploader import ArtifactUploader
 
-            uploader = ArtifactUploader(
-                run_id=wandb_run.id,
-                wandb_entity=wandb_run.entity,
-                wandb_project=wandb_run.project,
-            )
+            uploader = ArtifactUploader(run_id=wandb_run.id)
         except ImportError as exc:
             log.warning("Import failed, skipping W&B logging: %s", exc)
 
