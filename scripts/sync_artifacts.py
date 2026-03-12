@@ -31,7 +31,7 @@ try:
     from artifacts.r2 import (
         DEFAULT_BUCKET,
         R2_PUBLIC_BASE,
-        _human_size,
+        human_size,
         make_r2_client,
         rerun_viewer_url,
         upload_file,
@@ -45,7 +45,7 @@ except ImportError:
     from artifacts.r2 import (
         DEFAULT_BUCKET,
         R2_PUBLIC_BASE,
-        _human_size,
+        human_size,
         make_r2_client,
         rerun_viewer_url,
         upload_file,
@@ -159,6 +159,10 @@ def _upload_bytes(
             resp = client.head_object(Bucket=bucket, Key=r2_key)
             if resp["ContentLength"] == size:
                 remote_etag = resp.get("ETag", "").strip('"')
+                if "-" in remote_etag:
+                    # Multi-part upload etag — size match is sufficient
+                    log.info("  [skip] %s (already uploaded, same size+etag)", r2_key)
+                    return None
                 local_md5 = hashlib.md5(data).hexdigest()
                 if remote_etag == local_md5:
                     log.info("  [skip] %s (already uploaded, same size+etag)", r2_key)
@@ -166,7 +170,7 @@ def _upload_bytes(
         except Exception:
             pass
 
-    log.info("  [upload] %s  (%s, in-memory zip)", r2_key, _human_size(size))
+    log.info("  [upload] %s  (%s, in-memory zip)", r2_key, human_size(size))
     client.put_object(Bucket=bucket, Key=r2_key, Body=data)
     return f"{R2_PUBLIC_BASE}/{r2_key}"
 
@@ -445,7 +449,7 @@ def run_sync(
     print("=" * 60)
     print(f"Sync summary for run: {resolved_run_id}")
     print("=" * 60)
-    print(f"  Uploaded : {len(uploaded_urls)} file(s)  ({_human_size(total_bytes)})")
+    print(f"  Uploaded : {len(uploaded_urls)} file(s)  ({human_size(total_bytes)})")
     print(f"  Skipped  : {len(skipped)} file(s) (already on R2)")
     if timed_out:
         print(f"  Timed out: {len(timed_out)} file(s) — increase --timeout or re-run")

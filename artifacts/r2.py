@@ -85,7 +85,7 @@ def _object_exists(
         return False
 
 
-def _human_size(n_bytes: int | float) -> str:
+def human_size(n_bytes: int | float) -> str:
     """Format a byte count as a human-readable string."""
     for unit in ("B", "KB", "MB", "GB"):
         if n_bytes < 1024:
@@ -118,7 +118,7 @@ def upload_file(
         log.info("  [skip] %s (already uploaded, same size+etag)", r2_key)
         return None
 
-    log.info("  [upload] %s  (%s)", r2_key, _human_size(size))
+    log.info("  [upload] %s  (%s)", r2_key, human_size(size))
     client.upload_file(str(local_path), bucket, r2_key)
     public_url = f"{R2_PUBLIC_BASE}/{r2_key}"
     return public_url
