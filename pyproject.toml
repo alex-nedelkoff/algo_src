@@ -39,6 +39,10 @@ perception = [
 viz = [
     "rerun-sdk",
 ]
+tb = [
+    "tbparse",
+    "pandas",
+]
 dev = [
     "pytest",
     "ruff",
@@ -47,7 +51,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["control", "perception", "sim"]
+packages = ["control", "perception", "sim", "utils"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -65,4 +69,4 @@ select = ["E", "F", "I", "N", "W", "UP"]
 ignore = []
 
 [tool.ruff.lint.isort]
-known-first-party = ["control", "perception", "sim", "training", "evaluation"]
+known-first-party = ["control", "perception", "sim", "training", "evaluation", "utils"]
