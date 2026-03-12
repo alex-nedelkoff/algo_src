@@ -267,7 +267,8 @@ def _rule_value_loss_explosion(df: pd.DataFrame) -> list[Finding]:
         return []
 
     window = min(100, len(series) - 1)
-    rolling_avg = series.rolling(window=window, min_periods=1).mean()
+    # Shift by 1 so the rolling average excludes the current point.
+    rolling_avg = series.rolling(window=window, min_periods=1).mean().shift(1)
 
     # Find first point where value > 10x its rolling average (both positive).
     ratio = series / rolling_avg.replace(0, np.nan)

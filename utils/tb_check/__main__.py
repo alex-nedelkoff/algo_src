@@ -72,17 +72,22 @@ def main() -> int:
     findings1 = diagnostics.run_diagnostics(df1)
 
     # Format and output
-    if args.diag_only:
-        # Diagnostic findings only mode (single run)
-        output = formatter.format_diagnostics_only(findings1)
-    elif args.compare:
-        # Comparison mode
+    if args.compare:
         findings2 = diagnostics.run_diagnostics(df2)
-        output = formatter.format_comparison(
-            df1, df2, args.log_dir, args.compare, findings1, findings2
-        )
+        if args.diag_only:
+            output = "\n\n".join([
+                f"── run1: {args.log_dir} ──",
+                formatter.format_diagnostics_only(findings1),
+                f"── run2: {args.compare} ──",
+                formatter.format_diagnostics_only(findings2),
+            ])
+        else:
+            output = formatter.format_comparison(
+                df1, df2, args.log_dir, args.compare, findings1, findings2
+            )
+    elif args.diag_only:
+        output = formatter.format_diagnostics_only(findings1)
     else:
-        # Single-run summary mode
         output = formatter.format_summary(df1, args.log_dir, findings1)
 
     print(output)

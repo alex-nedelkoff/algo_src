@@ -26,7 +26,7 @@ def load_run(path: str, last_n: int | None = None) -> pd.DataFrame:
     try:
         reader = SummaryReader(path, pivot=False)
         df: pd.DataFrame = reader.scalars
-    except ValueError:
+    except (ValueError, FileNotFoundError, OSError):
         return pd.DataFrame(columns=["step", "tag", "value"])
 
     if df is None or df.empty:
