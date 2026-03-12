@@ -198,10 +198,10 @@ class GateMetricsCallback(BaseCallback):
                 "racing/avg_speed", float(np.mean(self._avg_speed))
             )
 
-        # Time to first gate
+        # Steps to first gate
         if self._first_gate_step:
             self.logger.record(
-                "racing/time_to_first_gate",
+                "racing/steps_to_first_gate",
                 float(np.mean(self._first_gate_step)),
             )
 

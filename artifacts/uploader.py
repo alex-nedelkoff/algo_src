@@ -162,6 +162,24 @@ class ArtifactUploader:
                 remaining,
             )
 
+        # Log the Rerun HTML panel once — single data point means no slider.
+        if self._wandb_run is not None and self._rerun_rows:
+            try:
+                html = self._build_rerun_html()
+                self._wandb_run.log(
+                    {"Rerun Recordings": self._wandb.Html(html)},
+                    commit=False,
+                )
+                log.info(
+                    "W&B Rerun panel logged (%d recordings)",
+                    len(self._rerun_rows),
+                )
+            except Exception:
+                log.warning(
+                    "Failed to log W&B Rerun panel — skipping.",
+                    exc_info=True,
+                )
+
     # ------------------------------------------------------------------
     # Worker
     # ------------------------------------------------------------------
@@ -245,29 +263,17 @@ class ArtifactUploader:
                 )
                 rrd_key = None
 
-        # --- 4. Log Rerun viewer URL to W&B HTML panel -----------------------
-        if self._wandb_run is None or rrd_key is None:
+        # --- 4. Accumulate Rerun viewer URL for final W&B panel ---------------
+        if rrd_key is None:
             return
 
         viewer_url = rerun_viewer_url(rrd_key)
         self._rerun_rows.append((step, stem, viewer_url))
-        try:
-            html = self._build_rerun_html()
-            self._wandb_run.log(
-                {"Rerun Recordings": self._wandb.Html(html)},
-                commit=False,
-            )
-            log.info("W&B Rerun panel updated (%d rows)", len(self._rerun_rows))
-        except Exception:
-            log.warning(
-                "Failed to update W&B Rerun panel — skipping.",
-                exc_info=True,
-            )
 
     def _build_rerun_html(self) -> str:
         """Build an HTML table of Rerun viewer links."""
         rows_html = ""
-        for step, episode, url in sorted(self._rerun_rows):
+        for step, episode, url in sorted(self._rerun_rows, reverse=True):
             rows_html += (
                 f"<tr>"
                 f"<td style='padding:4px 12px'>{step:,}</td>"
