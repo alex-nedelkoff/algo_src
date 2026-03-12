@@ -7,7 +7,7 @@ defaults:
   - override /perception: corner_noise
   - override /reward: mavlab_m23
   - override /domain_rand: uniform_30pct
-  - override /logging: tensorboard
+  - override /logging: wandb
 
 # Enable asymmetric mode in perception wrapper
 perception:

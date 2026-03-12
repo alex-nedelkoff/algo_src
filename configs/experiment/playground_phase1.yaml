@@ -7,7 +7,7 @@ defaults:
   - override /perception: none
   - override /reward: mavlab_m23
   - override /domain_rand: uniform_30pct
-  - override /logging: tensorboard
+  - override /logging: wandb
 
 total_timesteps: 100_000_000
 seed: 42

@@ -8,7 +8,7 @@ defaults:
   - override /perception: none
   - override /reward: monorace_safe
   - override /domain_rand: uniform_30pct
-  - override /logging: tensorboard
+  - override /logging: wandb
 
 seed: 42
 total_timesteps: 50_000
