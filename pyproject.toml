@@ -46,6 +46,9 @@ tb = [
 artifacts = [
     "boto3",
 ]
+playground = [
+    "sympy>=1.13",
+]
 dev = [
     "pytest",
     "ruff",
@@ -54,7 +57,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["control", "perception", "sim", "training", "utils"]
+packages = ["control", "perception", "sim", "state_estimation", "training", "utils"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -72,4 +75,4 @@ select = ["E", "F", "I", "N", "W", "UP"]
 ignore = []
 
 [tool.ruff.lint.isort]
-known-first-party = ["control", "perception", "sim", "training", "evaluation", "utils"]
+known-first-party = ["control", "perception", "sim", "state_estimation", "training", "evaluation", "utils"]

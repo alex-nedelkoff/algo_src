@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -32,6 +32,18 @@ def build_ppo(cfg: DictConfig) -> PPO:
     ctrl = cfg.control
     net_arch = OmegaConf.to_container(ctrl.net_arch, resolve=True) if "net_arch" in ctrl else None
 
+    # Collect extra policy_kwargs from config (e.g. features_extractor_class)
+    extra_policy_kwargs: dict = {}
+    if "policy_kwargs" in ctrl:
+        raw = OmegaConf.to_container(ctrl.policy_kwargs, resolve=True)
+        if isinstance(raw, dict):
+            # Resolve any _target_ references (e.g. features_extractor_class)
+            for k, v in raw.items():
+                if isinstance(v, dict) and "_target_" in v:
+                    extra_policy_kwargs[k] = hydra.utils.get_class(v["_target_"])
+                else:
+                    extra_policy_kwargs[k] = v
+
     return PPO(
         learning_rate=ctrl.learning_rate,
         n_steps=ctrl.n_steps,
@@ -47,12 +59,17 @@ def build_ppo(cfg: DictConfig) -> PPO:
         net_arch=net_arch,
         activation_fn=ctrl.activation_fn,
         use_sde=ctrl.get("use_sde", False),
+        log_std_init=ctrl.get("log_std_init", 0.0),
+        extra_policy_kwargs=extra_policy_kwargs,
         tensorboard_log=str(Path(cfg.output_dir) / "tb_logs") if cfg.get("output_dir") else None,
     )
 
 
 def setup_callbacks(
-    cfg: DictConfig, eval_env=None, uploader: ArtifactUploader | None = None
+    cfg: DictConfig,
+    eval_env=None,
+    uploader: ArtifactUploader | None = None,
+    env_factory: Any = None,
 ) -> list:
     """Create SB3 training callbacks from config.
 
@@ -100,6 +117,8 @@ def setup_callbacks(
             viz_freq=viz_freq,
             n_envs=n_envs,
             save_path=str(output_dir / "checkpoints"),
+            env_factory=env_factory,
+            eval_reward_cfg=cfg.get("reward"),
             n_viz_episodes=n_viz_episodes,
             uploader=uploader,
         )
@@ -149,7 +168,9 @@ class RLTrainingLoop:
             ppo.load(resume_path, env=train_env)
 
         # 6. Setup callbacks
-        callbacks = setup_callbacks(cfg, eval_env=eval_env, uploader=uploader)
+        callbacks = setup_callbacks(
+            cfg, eval_env=eval_env, uploader=uploader, env_factory=env_factory
+        )
 
         # 7. Train
         log.info("Starting training for %d timesteps...", cfg.total_timesteps)

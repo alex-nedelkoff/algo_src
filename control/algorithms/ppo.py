@@ -87,6 +87,8 @@ class PPO(Algorithm):
         self.critic_obs_dim = critic_obs_dim
         self.actor_obs_dim = actor_obs_dim
         self.tensorboard_log = tensorboard_log
+        self.log_std_init: float = kwargs.pop("log_std_init", 0.0)
+        self.extra_policy_kwargs: dict[str, Any] = kwargs.pop("extra_policy_kwargs", {})
 
         # MonoRace M23 default: separate 3×64 policy and value networks.
         # When hidden_dims is empty, SB3's FlattenExtractor is used (identity for Box)
@@ -115,12 +117,15 @@ class PPO(Algorithm):
         kwargs: dict[str, Any] = {
             "net_arch": self.net_arch,
             "activation_fn": act_fn,
-            "log_std_init": 0.0,
+            "log_std_init": self.log_std_init,
         }
 
         if self.hidden_dims:
             kwargs["features_extractor_class"] = GCNetExtractor
             kwargs["features_extractor_kwargs"] = {"hidden_dims": self.hidden_dims}
+
+        # Merge any extra policy kwargs (e.g. custom features_extractor_class)
+        kwargs.update(self.extra_policy_kwargs)
 
         return kwargs
 

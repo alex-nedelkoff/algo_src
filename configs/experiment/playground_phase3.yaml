@@ -1,0 +1,17 @@
+# @package _global_
+# Phase 3: Asymmetric actor-critic (50D obs: noisy 24D + clean 24D + 2D metadata)
+defaults:
+  - override /loop: rl
+  - override /sim: playground_quad
+  - override /control: ppo_playground_asymmetric
+  - override /perception: corner_noise
+  - override /reward: mavlab_m23
+  - override /domain_rand: uniform_30pct
+  - override /logging: tensorboard
+
+# Enable asymmetric mode in perception wrapper
+perception:
+  asymmetric: true
+
+total_timesteps: 100_000_000
+seed: 42

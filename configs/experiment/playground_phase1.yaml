@@ -1,0 +1,13 @@
+# @package _global_
+# Phase 1: Baseline PPO with SymPy dynamics and PD rate controller
+defaults:
+  - override /loop: rl
+  - override /sim: playground_quad
+  - override /control: ppo_playground
+  - override /perception: none
+  - override /reward: mavlab_m23
+  - override /domain_rand: uniform_30pct
+  - override /logging: tensorboard
+
+total_timesteps: 100_000_000
+seed: 42

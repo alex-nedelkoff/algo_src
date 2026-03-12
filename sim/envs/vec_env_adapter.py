@@ -13,11 +13,8 @@ from numpy.typing import NDArray
 
 from stable_baselines3.common.vec_env import VecEnv
 
-from sim.envs.gate_race_env import GateRaceEnv
-
-
 class VecEnvAdapter(VecEnv):
-    """Adapt an internally-vectorized GateRaceEnv to the SB3 VecEnv interface.
+    """Adapt an internally-vectorized racing env to the SB3 VecEnv interface.
 
     SB3 expects:
       - step() returns (obs, rewards, dones, infos) where infos is a list of dicts
@@ -26,10 +23,11 @@ class VecEnvAdapter(VecEnv):
       - reset() returns just obs
 
     Args:
-        env: A GateRaceEnv instance (with n_envs >= 1).
+        env: Any vectorized racing env with n_envs, observation_space,
+            action_space, reset(), step(), and close() attributes.
     """
 
-    def __init__(self, env: GateRaceEnv) -> None:
+    def __init__(self, env: Any) -> None:
         self.env = env
         super().__init__(
             num_envs=env.n_envs,
@@ -94,12 +92,22 @@ class VecEnvAdapter(VecEnv):
                     if "termination_reason" in episode_metrics:
                         env_info["episode"]["termination_reason"] = int(episode_metrics["termination_reason"][i])
                     if "reward_components" in episode_metrics:
-                        from sim.envs.gate_race_env import REWARD_COMPONENT_NAMES
                         rc = episode_metrics["reward_components"][i]
-                        env_info["episode"]["reward_components"] = {
-                            name: float(rc[j])
-                            for j, name in enumerate(REWARD_COMPONENT_NAMES)
-                        }
+                        if isinstance(rc, dict):
+                            env_info["episode"]["reward_components"] = {
+                                k: float(v) for k, v in rc.items()
+                            }
+                        elif "reward_component_names" in episode_metrics:
+                            names = episode_metrics["reward_component_names"]
+                            env_info["episode"]["reward_components"] = {
+                                name: float(rc[j])
+                                for j, name in enumerate(names)
+                            }
+                        else:
+                            env_info["episode"]["reward_components"] = {
+                                f"component_{j}": float(rc[j])
+                                for j in range(len(rc))
+                            }
                     if "avg_speed" in episode_metrics:
                         env_info["episode"]["avg_speed"] = float(episode_metrics["avg_speed"][i])
                     if "first_gate_step" in episode_metrics:

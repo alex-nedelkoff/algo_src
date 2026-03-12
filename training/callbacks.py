@@ -59,13 +59,8 @@ class GateMetricsCallback(BaseCallback):
         self._term_reasons: deque[int] = deque(maxlen=window_size)
         self._lap_times: deque[float] = deque(maxlen=window_size)
 
-        # Reward component buffers
-        self._rew_progress: deque[float] = deque(maxlen=window_size)
-        self._rew_body_rate: deque[float] = deque(maxlen=window_size)
-        self._rew_action_smooth: deque[float] = deque(maxlen=window_size)
-        self._rew_gate_passage: deque[float] = deque(maxlen=window_size)
-        self._rew_gate_offset: deque[float] = deque(maxlen=window_size)
-        self._rew_crash_penalty: deque[float] = deque(maxlen=window_size)
+        # Reward component buffers (populated dynamically from first episode)
+        self._reward_component_buffers: dict[str, deque[float]] = {}
 
         # Speed and first-gate buffers
         self._avg_speed: deque[float] = deque(maxlen=window_size)
@@ -107,15 +102,13 @@ class GateMetricsCallback(BaseCallback):
                 lap_time = (ep_len * 0.01) / laps
                 self._lap_times.append(lap_time)
 
-            # Reward component breakdown
+            # Reward component breakdown (dynamic names)
             rc = ep.get("reward_components")
-            if rc is not None:
-                self._rew_progress.append(rc.get("progress", 0.0))
-                self._rew_body_rate.append(rc.get("body_rate", 0.0))
-                self._rew_action_smooth.append(rc.get("action_smooth", 0.0))
-                self._rew_gate_passage.append(rc.get("gate_passage", 0.0))
-                self._rew_gate_offset.append(rc.get("gate_offset", 0.0))
-                self._rew_crash_penalty.append(rc.get("crash_penalty", 0.0))
+            if rc is not None and isinstance(rc, dict):
+                for name, val in rc.items():
+                    if name not in self._reward_component_buffers:
+                        self._reward_component_buffers[name] = deque(maxlen=self.window_size)
+                    self._reward_component_buffers[name].append(float(val))
 
             # Average speed
             avg_spd = ep.get("avg_speed")
@@ -165,32 +158,13 @@ class GateMetricsCallback(BaseCallback):
             self.logger.record("racing/lap_time_mean", float(lt.mean()))
             self.logger.record("racing/lap_time_best", float(lt.min()))
 
-        # Reward component breakdown
-        if self._rew_gate_passage:
-            self.logger.record(
-                "racing/reward_gate_passage",
-                float(np.mean(self._rew_gate_passage)),
-            )
-            self.logger.record(
-                "racing/reward_progress",
-                float(np.mean(self._rew_progress)),
-            )
-            self.logger.record(
-                "racing/reward_body_rate",
-                float(np.mean(self._rew_body_rate)),
-            )
-            self.logger.record(
-                "racing/reward_action_smooth",
-                float(np.mean(self._rew_action_smooth)),
-            )
-            self.logger.record(
-                "racing/reward_gate_offset",
-                float(np.mean(self._rew_gate_offset)),
-            )
-            self.logger.record(
-                "racing/reward_crash_penalty",
-                float(np.mean(self._rew_crash_penalty)),
-            )
+        # Reward component breakdown (dynamic)
+        for name, buf in self._reward_component_buffers.items():
+            if buf:
+                self.logger.record(
+                    f"racing/reward_{name}",
+                    float(np.mean(buf)),
+                )
 
         # Average speed
         if self._avg_speed:
