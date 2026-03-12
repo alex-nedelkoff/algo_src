@@ -71,6 +71,7 @@ class ArtifactUploader:
         try:
             import wandb
 
+            self._wandb = wandb
             self._wandb_run = wandb.run
             if self._wandb_run is None:
                 log.warning(
@@ -78,7 +79,11 @@ class ArtifactUploader:
                 )
         except ImportError:
             log.warning("wandb not installed — Rerun URLs will not be logged.")
+            self._wandb = None
             self._wandb_run = None
+
+        # Accumulate rows for the Rerun HTML panel
+        self._rerun_rows: list[tuple[int, str, str]] = []
 
         # ----- Queue & worker thread ---------------------------------------
         self._queue: queue.Queue[Optional[_WorkItem]] = queue.Queue(maxsize=10)
@@ -240,18 +245,46 @@ class ArtifactUploader:
                 )
                 rrd_key = None
 
-        # --- 4. Log Rerun viewer URL to W&B summary -------------------------
+        # --- 4. Log Rerun viewer URL to W&B HTML panel -----------------------
         if self._wandb_run is None or rrd_key is None:
             return
 
         viewer_url = rerun_viewer_url(rrd_key)
-        summary_key = f"rerun/step_{step}/{stem}"
+        self._rerun_rows.append((step, stem, viewer_url))
         try:
-            self._wandb_run.summary[summary_key] = viewer_url
-            log.info("W&B summary[%s] → %s", summary_key, viewer_url)
+            html = self._build_rerun_html()
+            self._wandb_run.log(
+                {"Rerun Recordings": self._wandb.Html(html)},
+                commit=False,
+            )
+            log.info("W&B Rerun panel updated (%d rows)", len(self._rerun_rows))
         except Exception:
             log.warning(
-                "Failed to set W&B summary key '%s' — skipping.",
-                summary_key,
+                "Failed to update W&B Rerun panel — skipping.",
                 exc_info=True,
             )
+
+    def _build_rerun_html(self) -> str:
+        """Build an HTML table of Rerun viewer links."""
+        rows_html = ""
+        for step, episode, url in sorted(self._rerun_rows):
+            rows_html += (
+                f"<tr>"
+                f"<td style='padding:4px 12px'>{step:,}</td>"
+                f"<td style='padding:4px 12px'>{episode}</td>"
+                f"<td style='padding:4px 12px'>"
+                f"<a href='{url}' target='_blank'>Open in Rerun</a>"
+                f"</td>"
+                f"</tr>\n"
+            )
+        return (
+            "<h3 style='margin:0 0 8px'>Rerun 3D Trajectory Viewer</h3>\n"
+            "<table style='border-collapse:collapse;width:100%'>\n"
+            "<thead><tr style='border-bottom:2px solid #ddd'>"
+            "<th style='padding:4px 12px;text-align:left'>Step</th>"
+            "<th style='padding:4px 12px;text-align:left'>Episode</th>"
+            "<th style='padding:4px 12px;text-align:left'>Viewer</th>"
+            "</tr></thead>\n"
+            f"<tbody>\n{rows_html}</tbody>\n"
+            "</table>"
+        )
