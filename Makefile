@@ -6,7 +6,7 @@ BASE_TAG := algo-src-base
 
 .PHONY: build-base build-sim build-control build-control-cpu build-perception \
         train train-perception full-stack \
-        test test-sim lint jetson-export help
+        test test-sim lint jetson-export sync-artifacts help
 
 # ---------- Docker image builds ----------
 
@@ -46,6 +46,11 @@ test-sim: build-sim ## Run sim unit tests in container
 
 lint: build-base ## Run ruff + mypy in container
 	docker run --rm $(BASE_TAG) sh -c "uv pip install ruff mypy && ruff check . && mypy --ignore-missing-imports ."
+
+# ---------- Artifact sync ----------
+
+sync-artifacts: ## Upload training artifacts to R2 (RUN_DIR=outputs/...)
+	python scripts/sync_artifacts.py $(RUN_DIR)
 
 # ---------- Deployment ----------
 

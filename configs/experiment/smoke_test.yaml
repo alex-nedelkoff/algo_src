@@ -1,0 +1,24 @@
+# @package _global_
+# Minimal smoke test: MonoRace baseline with tiny budget
+# Logs to TensorBoard (local) + generates rerun trajectory artifacts
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: none
+  - override /reward: monorace_safe
+  - override /domain_rand: uniform_30pct
+  - override /logging: tensorboard
+
+seed: 42
+total_timesteps: 50_000
+eval_freq: 10_000
+checkpoint_freq: 25_000
+viz_freq: 25_000
+n_viz_episodes: 2
+
+sim:
+  n_envs: 4
+  max_steps: 1200
+  arena_bounds: 5.0
+  gate_passage_radius: 0.75
