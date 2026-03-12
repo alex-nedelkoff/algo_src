@@ -118,14 +118,22 @@ class ArtifactUploader:
             # Drop the oldest item to make room.
             try:
                 dropped = self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            else:
+                if dropped is None:
+                    # Never discard the shutdown sentinel.
+                    self._queue.put_nowait(None)
+                    log.warning(
+                        "Upload queue full — discarding step %s.", step
+                    )
+                    return
                 log.warning(
                     "Upload queue full — dropping oldest item (step %s) "
                     "to make room for step %s.",
-                    dropped[1] if dropped is not None else "?",
+                    dropped[1],
                     step,
                 )
-            except queue.Empty:
-                pass
             try:
                 self._queue.put_nowait(item)
             except queue.Full:
