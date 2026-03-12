@@ -127,12 +127,30 @@ def _make_s3_client(account_id: str, access_key: str, secret_key: str):
     return client
 
 
-def _object_exists(client, bucket: str, key: str, local_size: int) -> bool:
-    """Return True if the R2 object already exists with the same size."""
+def _md5_hex(path: Path) -> str:
+    """Compute MD5 hex digest of a local file."""
+    import hashlib
+
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _object_exists(
+    client, bucket: str, key: str, local_path: Path, local_size: int
+) -> bool:
+    """Return True if the R2 object already exists with matching size and etag."""
     try:
         resp = client.head_object(Bucket=bucket, Key=key)
         remote_size = resp["ContentLength"]
-        return remote_size == local_size
+        if remote_size != local_size:
+            return False
+        # Compare etag (MD5 for single-part uploads, quoted in response)
+        remote_etag = resp.get("ETag", "").strip('"')
+        local_md5 = _md5_hex(local_path)
+        return remote_etag == local_md5
     except Exception:
         return False
 
@@ -148,8 +166,8 @@ def _upload_file(
     """Upload a single local file to R2. Returns the public URL or None on skip."""
     size = local_path.stat().st_size
 
-    if skip_existing and _object_exists(client, bucket, r2_key, size):
-        log.info("  [skip] %s (already uploaded, same size)", r2_key)
+    if skip_existing and _object_exists(client, bucket, r2_key, local_path, size):
+        log.info("  [skip] %s (already uploaded, same size+etag)", r2_key)
         return None
 
     log.info("  [upload] %s  (%s)", r2_key, _human_size(size))
@@ -167,11 +185,21 @@ def _upload_bytes(
     skip_existing: bool = True,
 ) -> Optional[str]:
     """Upload in-memory bytes to R2."""
+    import hashlib
+
     size = len(data)
 
-    if skip_existing and _object_exists(client, bucket, r2_key, size):
-        log.info("  [skip] %s (already uploaded, same size)", r2_key)
-        return None
+    if skip_existing:
+        try:
+            resp = client.head_object(Bucket=bucket, Key=r2_key)
+            if resp["ContentLength"] == size:
+                remote_etag = resp.get("ETag", "").strip('"')
+                local_md5 = hashlib.md5(data).hexdigest()
+                if remote_etag == local_md5:
+                    log.info("  [skip] %s (already uploaded, same size+etag)", r2_key)
+                    return None
+        except Exception:
+            pass
 
     log.info("  [upload] %s  (%s, in-memory zip)", r2_key, _human_size(size))
     client.put_object(Bucket=bucket, Key=r2_key, Body=data)
