@@ -54,10 +54,10 @@ python -m utils.tb_check outputs/.../tb_logs --diag-only
 Wraps `tbparse.SummaryReader` to load event files into pandas DataFrames.
 
 **Responsibilities:**
-- Recursively find event files under a given directory
-- Load all scalar metrics into a single DataFrame with columns: `step`, `tag`, `value`
+- Use `SummaryReader(path).scalars` to load scalar metrics into a DataFrame with columns: `step`, `tag`, `value`
 - Handle multiple event files (SB3 creates new ones on resume)
 - Expose a `load_run(path: str) -> pd.DataFrame` function
+- When `--last N` is specified, filter rows where `step >= max_step - N` immediately after loading to limit memory usage
 
 ### diagnostics.py
 
@@ -78,15 +78,15 @@ class Finding:
 
 | Rule | Trigger | Severity |
 |------|---------|----------|
-| Reward plateau | Mean reward flat (< 1% change) over last 20% of training | WARN |
-| Reward collapse | Mean reward drops > 30% from peak | CRITICAL |
-| KL spike | `approx_kl` exceeds 0.05 | WARN |
-| Entropy collapse | Entropy loss drops below 10% of initial value | WARN |
-| High crash rate | Any termination reason > 50% of episodes | WARN |
+| Reward plateau | `rollout/ep_rew_mean` flat (< 1% change) over last 20% of training | WARN |
+| Reward collapse | `rollout/ep_rew_mean` drops > 30% from peak | CRITICAL |
+| KL spike | `train/approx_kl` exceeds 0.05 | WARN |
+| Entropy collapse | `train/entropy_loss` drops below 10% of initial value | WARN |
+| High crash rate | Any `termination/*` reason > 50% (excluding `termination/timeout` and `termination/none`) | WARN |
 | NaN detected | Any NaN in any metric | CRITICAL |
-| No gate progress | `gates_per_ep` stuck at 0 after 500K steps | CRITICAL |
-| Value loss explosion | Value loss > 10x its rolling average | WARN |
-| Clip fraction saturation | `clip_fraction` consistently > 0.3 | WARN |
+| No gate progress | `racing/gates_per_ep` stuck at 0 after 500K steps | CRITICAL |
+| Value loss explosion | `train/value_loss` > 10x its rolling average | WARN |
+| Clip fraction saturation | `train/clip_fraction` consistently > 0.3 | WARN |
 
 Each rule is a function `(df: pd.DataFrame) -> list[Finding]`. The engine collects all rules and runs them against the loaded data.
 
@@ -104,7 +104,7 @@ Steps: 5,200,000 | Episodes: ~12,400
  METRIC                          LATEST    MEAN     MIN      MAX      TREND
  racing/gates_per_ep              3.2      2.1      0.0      4.8       ↑
  racing/lap_time_best            12.4s    14.1s    12.4s    99.9s      ↓
- reward/reward_gate_passage       0.82     0.54     0.00     0.92      ↑
+ racing/reward_gate_passage       0.82     0.54     0.00     0.92      ↑
  train/policy_loss               -0.012   -0.008   -0.015    0.002    →
  train/approx_kl                  0.018    0.015    0.003    0.042    →
  termination/ground               0.12     0.18     0.05     0.45     ↓
@@ -119,11 +119,20 @@ Steps: 5,200,000 | Episodes: ~12,400
 
 **Compare mode:** Adds a `DELTA` column showing the difference between run2 and run1 latest values, with percentage change.
 
-**Metric ordering:** Group by prefix (`racing/`, `reward/`, `train/`, `termination/`) and sort alphabetically within groups.
+**Compare mode detail:** Comparison uses latest values from each run. No step alignment — runs may have different lengths.
 
-## Dependency
+**Metric ordering:** Group by prefix (`racing/`, `rollout/`, `train/`, `termination/`) and sort alphabetically within groups.
 
-Add `tbparse` to Docker dependencies. Specifically, add to `pyproject.toml` under `[project.optional-dependencies]` in the `control` extras group (alongside existing `tensorboard`).
+## Packaging
+
+**New package registration:**
+- Create `utils/__init__.py`
+- Add `"utils"` to `[tool.hatch.build.targets.wheel]` packages list in `pyproject.toml`
+- Add `"utils"` to `[tool.ruff.lint.isort]` known-first-party list
+
+**Dependencies:**
+- Add a new extras group `tb = ["tbparse", "pandas"]` in `pyproject.toml` (not in `control` — avoids dragging in torch/SB3 for log inspection)
+- Add `tbparse` to Docker image dependencies
 
 ## Scope Boundaries
 
@@ -139,12 +148,13 @@ Add `tbparse` to Docker dependencies. Specifically, add to `pyproject.toml` unde
 - HTML/image report generation
 - Integration into training callbacks (inline diagnostics)
 - W&B API integration (this tool reads local event files only)
+- `--json` machine-readable output
 
 ## Testing
 
 All tests run in Docker per project convention.
 
-- **loader**: Test against a small synthetic event file (write a few scalars with `torch.utils.tensorboard.SummaryWriter`, then load with `tbparse`)
+- **loader**: Test against a small synthetic event file (write a few scalars with `tensorboard.summary.writer.SummaryWriter`, then load with `tbparse`)
 - **diagnostics**: Unit test each rule with crafted DataFrames (e.g., flat reward series triggers plateau warning)
 - **formatter**: Snapshot test of formatted output strings
 - **CLI integration**: End-to-end test: write event file, run `python -m utils.tb_check`, assert output contains expected metrics and findings
