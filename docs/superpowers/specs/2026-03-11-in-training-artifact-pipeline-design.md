@@ -15,6 +15,8 @@ The post-hoc approach has two problems:
 
 Metrics (reward curves, gate success rates, lap times) already stream to W&B in real-time via `sync_tensorboard=True`. This design adds real-time visibility for **visual artifacts** (Rerun 3D visualizations and raw trajectory data).
 
+**Note**: The COR-53 spec listed "automated upload during training" as a non-goal to avoid network issues affecting training stability. This design supersedes that non-goal for small artifacts only (trajectories + Rerun). Experience showed that deferring all uploads to post-hoc leaves the ephemeral-instance data loss problem unsolved. Model checkpoints (the large, network-sensitive files) remain post-hoc.
+
 ## Goal
 
 Rerun viewer links appear in W&B within seconds of each eval checkpoint during training, so teammates can inspect 3D flight visualizations while training is still running.
@@ -42,10 +44,10 @@ Training Loop
   ├─ CheckpointCallback → local checkpoints/ (unchanged)
   │
   ├─ TrajectoryRecorderCallback
-  │    saves .npz → generate_rrd() → uploader.submit(npz, rrd)
+  │    saves .npz → uploader.submit(npz_path, step)
   │
   └─ ArtifactUploader (daemon thread + queue)
-       upload .npz + .rrd to R2 → register W&B artifacts
+       generate_rrd() → upload .npz + .rrd to R2 → register W&B artifacts
 
 Post-training
   │
@@ -60,7 +62,7 @@ Three modules involved:
 |--------|---------------|-------------|
 | `artifacts/r2.py` | Shared R2 upload + idempotency logic | New (extracted from `sync_artifacts.py`) |
 | `artifacts/uploader.py` | `ArtifactUploader` class — background thread, queue, W&B registration | New |
-| `control/trajectory_recorder.py` | After saving `.npz`, calls `generate_rrd()` then `uploader.submit()` | Changed (~10 lines) |
+| `control/trajectory_recorder.py` | After saving `.npz`, calls `uploader.submit()` | Changed (~5 lines) |
 | `scripts/sync_artifacts.py` | Post-hoc checkpoint upload, imports from `artifacts/r2.py` | Refactored (uses shared module) |
 | `control/__main__.py` | Creates `ArtifactUploader`, passes to callback, calls `close()` at end | Changed (~10 lines) |
 
@@ -72,31 +74,36 @@ Three modules involved:
 TrajectoryRecorderCallback._on_step()
   │
   ├─ 1. Run eval episodes, save .npz to checkpoints/trajectories/step_{ts}/
-  ├─ 2. generate_rrd(npz_path) → .rrd saved alongside .npz (CPU-only, ~seconds)
-  └─ 3. uploader.submit(npz_path, rrd_path, step)
+  └─ 2. uploader.submit(npz_path, step)  # non-blocking, instant return
        │
        └─ ArtifactUploader (background thread)
+            ├─ generate_rrd(npz_path) → .rrd saved alongside .npz
             ├─ Upload .npz to R2: runs/{run_id}/trajectories/step_{ts}/eval_ep_{i}.npz
             ├─ Upload .rrd to R2: runs/{run_id}/rerun/step_{ts}/eval_ep_{i}.rrd
-            └─ Log to W&B run:
+            └─ Register W&B artifacts via wandb.Api() (thread-safe public API):
                  ├─ Reference artifact with R2 URLs
                  └─ Rerun viewer URL (https://app.rerun.io/version/.../?url=...)
 ```
 
+`.rrd` generation runs on the background thread, not the training thread. `generate_rrd()` iterates every timestep and renders wireframe cameras — this can take more than a few seconds for long episodes. Keeping it off the main thread avoids extending the already-blocking eval rollout window.
+
 ### 4. ArtifactUploader Lifecycle
 
 ```python
-__init__(run_id, r2_config, wandb_run)
-  # Creates R2 client (boto3)
+__init__(run_id, wandb_run_id)
+  # Creates R2 client (boto3) from env vars:
+  #   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
+  # Creates wandb.Api() for thread-safe artifact registration
   # Starts daemon thread
 
-submit(npz_path, rrd_path, step)
+submit(npz_path, step)
   # Puts work item on queue (non-blocking, instant return)
 
 _worker()  # daemon thread loop
   # Pulls from queue
-  # Uploads via artifacts/r2.py (shared logic)
-  # Registers W&B artifacts
+  # Calls generate_rrd(npz_path) → .rrd file
+  # Uploads .npz + .rrd via artifacts/r2.py (shared logic)
+  # Registers W&B artifacts via wandb.Api() (not the live Run object)
   # Logs errors, never raises
 
 close(timeout=60)
@@ -105,9 +112,13 @@ close(timeout=60)
   # Logs any items that didn't make it
 ```
 
+**R2 credentials**: Read from environment variables (same as `sync_artifacts.py`), not Hydra config. Secrets stay out of config files.
+
+**W&B thread safety**: The background thread uses `wandb.Api()` (the public REST API client) to register artifacts, not the live `wandb.Run` object. The `Run` object is not thread-safe and is already used by `sync_tensorboard` on the main thread. `wandb.Api()` is independent and safe to use from any thread.
+
 **Wiring in `control/__main__.py`:**
 ```python
-uploader = ArtifactUploader(run_id=wandb_run.id, r2_config=cfg.r2, wandb_run=wandb_run)
+uploader = ArtifactUploader(run_id=wandb_run.id, wandb_run_id=wandb_run.id)
 trajectory_callback = TrajectoryRecorderCallback(..., uploader=uploader)
 # ... training ...
 uploader.close(timeout=60)  # best-effort drain
@@ -123,7 +134,7 @@ Extracted from `sync_artifacts.py` so both `ArtifactUploader` and `sync_artifact
 |----------|---------|
 | `make_r2_client(account_id, access_key, secret_key)` | Creates boto3 S3 client pointed at R2 |
 | `upload_file(client, local_path, bucket, r2_key)` | Upload with idempotency (size + etag check) |
-| `register_wandb_artifact(wandb_run, r2_key, artifact_type)` | Log R2 URL as W&B reference artifact |
+| `register_wandb_artifact(api, run_path, r2_key, artifact_type)` | Log R2 URL as W&B reference artifact via `wandb.Api()` |
 | `rerun_viewer_url(r2_public_base, r2_key, rerun_version)` | Build `app.rerun.io` viewer URL |
 
 `scripts/sync_artifacts.py` becomes a thinner orchestrator — it still handles discovery, priority ordering, and the CLI interface, but delegates upload/check to `artifacts/r2.py`.
@@ -131,10 +142,12 @@ Extracted from `sync_artifacts.py` so both `ArtifactUploader` and `sync_artifact
 ### 6. Failure Handling
 
 - **Upload failure**: Logged as warning, never raised. Training continues unaffected. `sync_artifacts.py` catches missed uploads post-hoc via idempotency checks.
-- **R2 credentials missing**: `ArtifactUploader.__init__` logs a warning and enters a no-op mode. `.rrd` files are still generated locally (available for post-hoc upload).
+- **R2 credentials missing**: `ArtifactUploader.__init__` logs a warning and enters a no-op mode. `.npz` files are still saved locally (available for post-hoc upload).
+- **`rerun-sdk` not installed**: `_worker` catches `ImportError` from `generate_rrd()`, logs a warning, and uploads the `.npz` only (no `.rrd`). Training is unaffected.
 - **W&B not initialized**: Uploader skips W&B registration, still uploads to R2.
 - **Training crash**: Daemon thread dies with the process. Any `.npz`/`.rrd` files already on disk are picked up by `sync_artifacts.py` later.
 - **`close()` timeout**: Items remaining in queue are logged. `sync_artifacts.py` handles them.
+- **Queue backpressure**: Queue has `maxsize=10`. If uploads fall behind (slow network + low `viz_freq`), `submit()` drops the oldest item and logs a warning. In practice this won't happen — each work item is ~5MB and `viz_freq` defaults to 1M timesteps.
 
 ### 7. What Doesn't Change
 
@@ -162,8 +175,8 @@ No new dependencies. `boto3` (R2 uploads) and `rerun-sdk` (.rrd generation) are 
 |------|--------|-------------|
 | `artifacts/__init__.py` | New — package init | ~0 |
 | `artifacts/r2.py` | New — extracted R2 upload core | ~120 (moved from sync_artifacts.py) |
-| `artifacts/uploader.py` | New — `ArtifactUploader` class | ~80 |
-| `control/trajectory_recorder.py` | Changed — add `generate_rrd()` + `uploader.submit()` after .npz save | ~10 lines added |
+| `artifacts/uploader.py` | New — `ArtifactUploader` class (thread, queue, .rrd generation, upload, W&B registration) | ~100 |
+| `control/trajectory_recorder.py` | Changed — call `uploader.submit()` after .npz save | ~5 lines added |
 | `control/__main__.py` | Changed — create uploader, pass to callback, `close()` at end | ~10 lines added |
 | `scripts/sync_artifacts.py` | Refactored — import from `artifacts/r2.py` instead of inline logic | Net negative (smaller) |
 
