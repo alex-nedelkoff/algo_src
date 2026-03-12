@@ -232,8 +232,8 @@ def generate_rrd(
 
     # --- 3b. Per-timestep logging ---
     for t in range(T):
-        rr.set_time_sequence("step", t)
-        rr.set_time_seconds("time", t * dt)
+        rr.set_time("step", sequence=t)
+        rr.set_time("time", duration=t * dt)
 
         # Drone transform — swizzle quaternion from (w,x,y,z) to (x,y,z,w) for rerun
         q_wxyz = quaternions[t]
@@ -265,14 +265,14 @@ def generate_rrd(
 
         # Telemetry: motor RPMs
         for m in range(4):
-            rr.log(f"telemetry/motors/rpm_{m}", rr.Scalar(float(motor_rpms[t, m])))
+            rr.log(f"telemetry/motors/rpm_{m}", rr.Scalars(float(motor_rpms[t, m])))
 
         # Telemetry: body rates
         rate_names = ["roll", "pitch", "yaw"]
         for axis in range(3):
             rr.log(
                 f"telemetry/body_rates/{rate_names[axis]}",
-                rr.Scalar(float(body_rates[t, axis])),
+                rr.Scalars(float(body_rates[t, axis])),
             )
 
         # Telemetry: acceleration
@@ -280,12 +280,12 @@ def generate_rrd(
         for axis in range(3):
             rr.log(
                 f"telemetry/acceleration/{accel_names[axis]}",
-                rr.Scalar(float(accelerations[t, axis])),
+                rr.Scalars(float(accelerations[t, axis])),
             )
 
         # Telemetry: reward
-        rr.log("telemetry/reward", rr.Scalar(float(rewards[t])))
-        rr.log("telemetry/reward_cumulative", rr.Scalar(float(reward_cumsum[t])))
+        rr.log("telemetry/reward", rr.Scalars(float(rewards[t])))
+        rr.log("telemetry/reward_cumulative", rr.Scalars(float(reward_cumsum[t])))
 
         # Events: gate passages
         if t in gate_event_map:
