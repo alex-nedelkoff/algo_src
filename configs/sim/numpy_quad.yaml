@@ -1,4 +1,4 @@
-_target_: sim.envs.gate_race_env.GateRaceEnv
+_target_: sim.envs.numpy_quad_factory.NumpyQuadEnvFactory
 
 dt: 0.01
 n_envs: 100

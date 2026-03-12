@@ -1,5 +1,5 @@
 # Perception noise injection for sim-to-real transfer
-enabled: true
+_target_: perception.wrappers.noise.NoiseInjectionWrapper
 
 # HMM-based detection dropout
 dropout_hmm:

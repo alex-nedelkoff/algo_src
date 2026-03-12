@@ -1,4 +1,5 @@
 defaults:
+  - loop: rl
   - sim: numpy_quad
   - control: ppo
   - perception: none

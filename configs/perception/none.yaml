@@ -1,2 +1,2 @@
 # Pure state training — no perception noise or dropout
-enabled: false
+_target_: perception.wrappers.identity.IdentityWrapper

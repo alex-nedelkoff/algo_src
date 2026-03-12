@@ -9,4 +9,4 @@ RUN uv pip install --python /app/.venv/bin/python \
 
 WORKDIR /app
 
-CMD ["python", "-m", "control"]
+CMD ["python", "-m", "training"]

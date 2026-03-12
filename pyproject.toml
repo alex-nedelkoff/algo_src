@@ -54,7 +54,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["control", "perception", "sim", "utils"]
+packages = ["control", "perception", "sim", "training", "utils"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
