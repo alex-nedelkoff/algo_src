@@ -6,13 +6,11 @@ old ``control.__main__`` monolith.
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 from pathlib import Path
 
 import hydra.utils
 from hydra import compose, initialize_config_dir
-from omegaconf import OmegaConf
 
 from training.loops.rl import build_ppo
 
