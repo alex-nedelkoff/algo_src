@@ -200,8 +200,8 @@ def main(cfg: DictConfig) -> None:
                 wandb_entity=wandb_run.entity,
                 wandb_project=wandb_run.project,
             )
-        except ImportError:
-            log.warning("wandb not installed, skipping W&B logging")
+        except ImportError as exc:
+            log.warning("Import failed, skipping W&B logging: %s", exc)
 
     callbacks = _setup_callbacks(cfg, eval_env=eval_env, uploader=uploader)
 
