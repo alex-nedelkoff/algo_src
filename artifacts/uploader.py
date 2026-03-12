@@ -134,6 +134,8 @@ class ArtifactUploader:
                     dropped[1],
                     step,
                 )
+            # The worker thread may have consumed the freed slot between
+            # get_nowait() and this put_nowait(), so guard the re-insert.
             try:
                 self._queue.put_nowait(item)
             except queue.Full:
@@ -175,7 +177,7 @@ class ArtifactUploader:
         while True:
             item = self._queue.get()
             if item is None:
-                # Sentinel — shut down.
+                self._queue.task_done()
                 break
             try:
                 self._process(item)
@@ -185,6 +187,8 @@ class ArtifactUploader:
                     item,
                     exc_info=True,
                 )
+            finally:
+                self._queue.task_done()
 
     def _process(self, item: _WorkItem) -> None:
         npz_dir, step = item
