@@ -80,6 +80,51 @@ def make_figure8_track(
     }
 
 
+def make_oval_track(
+    gate_width: float = 0.55,
+    gate_height: float = 0.55,
+    gate_z: float = -1.5,
+) -> dict:
+    """Oval track with 4 gates at cardinal positions."""
+    # Drone flies counterclockwise: right -> top -> left -> bottom
+    gates = [
+        {"pos": np.array([3.0, 0.0, gate_z]),  "yaw": np.pi / 2},     # east, facing +y
+        {"pos": np.array([0.0, 3.0, gate_z]),  "yaw": np.pi},         # north, facing -x
+        {"pos": np.array([-3.0, 0.0, gate_z]), "yaw": -np.pi / 2},    # west, facing -y
+        {"pos": np.array([0.0, -3.0, gate_z]), "yaw": 0.0},           # south, facing +x
+    ]
+    return {
+        "gates": gates,
+        "gate_width": gate_width,
+        "gate_height": gate_height,
+        "n_gates": len(gates),
+    }
+
+
+def make_s_curve_track(
+    gate_width: float = 0.55,
+    gate_height: float = 0.55,
+    gate_z: float = -1.5,
+) -> dict:
+    """S-curve track with 6 gates and alternating left/right turns."""
+    # Yaw values computed as bisector of (−approach) and exit directions
+    # so that approach_sd < 0 and exit_sd > 0 for every gate.
+    gates = [
+        {"pos": np.array([-1.0, -3.0, gate_z]), "yaw":  1.8356},   # 105.2°
+        {"pos": np.array([2.0, -0.5, gate_z]),  "yaw":  np.pi / 2}, # 90.0°
+        {"pos": np.array([-1.0, 2.0, gate_z]),  "yaw": -2.9738},    # −170.4°
+        {"pos": np.array([-2.5, -0.5, gate_z]), "yaw": -1.3152},    # −75.4°
+        {"pos": np.array([1.0, -2.5, gate_z]),  "yaw": -0.6523},    # −37.4°
+        {"pos": np.array([2.0, -3.5, gate_z]),  "yaw": -2.0461},    # −117.2°
+    ]
+    return {
+        "gates": gates,
+        "gate_width": gate_width,
+        "gate_height": gate_height,
+        "n_gates": len(gates),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
