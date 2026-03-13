@@ -7,8 +7,8 @@ the FIXED line must not be touched.
 # ---- EDITABLE BELOW ---- #
 
 REWARD_WEIGHTS = {
-    "lambda_gate": 10.0,      # 1.0–50.0
-    "lambda_prog": 1.0,       # 0.1–5.0
+    "lambda_gate": 15.0,      # 1.0–50.0
+    "lambda_prog": 2.0,       # 0.1–5.0
     "lambda_rate": 0.001,     # 0.0–0.01
     "lambda_offset": 0.0,     # 0.0–5.0
     "lambda_perc": 0.0,       # 0.0–1.0
@@ -24,10 +24,10 @@ EKF_PARAMS = {
 }
 
 TRAINING_PARAMS = {
-    "learning_rate": 3e-4,    # 1e-5–1e-3
+    "learning_rate": 1e-4,    # 1e-5–1e-3
     "ent_coef": 0.005,        # 0.0–0.05
     "clip_range": 0.2,        # 0.1–0.4
-    "gae_lambda": 0.95,       # 0.9–0.99
+    "gae_lambda": 0.98,       # 0.9–0.99
     "gamma": 0.999,           # 0.99–0.9999
 }
 
@@ -50,10 +50,11 @@ from autoresearch.prepare import (
     wrap_ekf,
     load_and_configure_model,
     run_eval,
+    save_checkpoint,
 )
 
 CHECKPOINT = "../playground/runs/phase4_ekf_ppo_v2/final_model.zip"
-N_STEPS = 10_000_000
+N_STEPS = 500_000
 N_ENVS = 500
 
 
@@ -66,6 +67,7 @@ def main(exp_id: int) -> None:
     env = wrap_ekf(env, **EKF_PARAMS)
     model = load_and_configure_model(env, CHECKPOINT, TRAINING_PARAMS)
     model.learn(total_timesteps=N_STEPS)
+    save_checkpoint(model, exp_id)
 
     eval_env = make_training_env(10, 0.0, preset_name, seed + 1000)
     eval_env = wrap_ekf(eval_env, **EKF_PARAMS)

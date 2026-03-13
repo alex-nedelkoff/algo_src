@@ -83,7 +83,22 @@ def load_and_configure_model(
     model.clip_range = lambda _, v=clip_val: v
     model.gae_lambda = training_params["gae_lambda"]
     model.gamma = training_params["gamma"]
+    # Locked hyperparameters — not agent-editable but critical for wall-clock time.
+    # Without these, SB3 defaults (n_steps=2048, batch_size=64) make training ~80x slower.
+    model.n_steps = 1000
+    model.batch_size = 5000
     return model
+
+
+def save_checkpoint(model: Any, exp_id: int) -> str:
+    """Save model checkpoint to autoresearch/checkpoints/exp_NNN.zip."""
+    from pathlib import Path
+
+    ckpt_dir = Path(__file__).parent / "checkpoints"
+    ckpt_dir.mkdir(exist_ok=True)
+    path = ckpt_dir / f"exp_{exp_id:03d}.zip"
+    model.save(str(path))
+    return str(path)
 
 
 def run_eval(

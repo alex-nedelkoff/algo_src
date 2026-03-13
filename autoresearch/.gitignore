@@ -2,3 +2,5 @@
 results.tsv
 diffs/
 train.py.orig
+checkpoints/
+viz/
