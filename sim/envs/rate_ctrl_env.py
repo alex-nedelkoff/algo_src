@@ -99,6 +99,12 @@ TERM_NONE = 0
 TERM_CRASH = 1
 TERM_TIMEOUT = 2
 
+RATE_CTRL_TERM_NAMES = {
+    0: "none",
+    1: "crash",
+    2: "timeout",
+}
+
 
 class RateCtrlEnv:
     """Vectorized quadrotor gate-racing environment with rate-control actions.
