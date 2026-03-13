@@ -22,7 +22,7 @@ before continuing the parameter search.
 1. Establish a valid baseline score on the fixed track
 2. Run a systematic parameter sweep to find the best configuration
 3. Make the autoresearch pipeline produce results that generalize across tracks
-4. Fix infrastructure gaps (param logging, eval sample size)
+4. Fix infrastructure gaps (param logging, eval sample size, W&B integration)
 
 ## Design
 
@@ -198,7 +198,106 @@ and can apply the normalization before calling the reward function.
 **Files:**
 - Modify: `sim/envs/rate_ctrl_env.py` — apply per-track progress normalization in reward computation
 
-### 6. Acceptance Criteria
+### 6. W&B Integration
+
+Each autoresearch experiment logs as a **separate wandb run** to match the
+team's existing pattern in `corvidx-drone-racing`.
+
+#### 6a. Run Lifecycle
+
+Each experiment in `train.py` does:
+1. `wandb.init()` at the start — creates a new run
+2. SB3 `.learn()` with `sync_tensorboard=True` — streams training metrics
+3. `wandb.log()` after eval — logs final eval results
+4. `wandb.finish()` — closes the run
+
+#### 6b. Config Logged at Init
+
+The `wandb.init(config=...)` call dumps all 4 param dicts plus experiment
+metadata so runs are filterable/sortable in the W&B runs table:
+
+```python
+wandb.init(
+    project="corvidx-drone-racing",
+    entity=None,  # uses logged-in user's default, matching configs/logging/wandb.yaml
+    group="autoresearch",
+    tags=["autoresearch", "phase2", f"exp_{exp_id}"],
+    config={
+        "exp_id": exp_id,
+        "seed": seed,
+        "n_steps": N_STEPS,
+        "n_envs": N_ENVS,
+        "checkpoint": CHECKPOINT,
+        "reward_weights": REWARD_WEIGHTS,
+        "ekf_params": EKF_PARAMS,
+        "training_params": TRAINING_PARAMS,
+        "domain_rand": DOMAIN_RAND,
+    },
+    sync_tensorboard=True,
+)
+```
+
+Using `entity=None` matches the existing pattern in `configs/logging/wandb.yaml`
+(where entity defaults to null). The `group="autoresearch"` tag lets the team
+filter autoresearch runs from regular training runs.
+
+#### 6c. Training Metrics (via TensorBoard sync)
+
+SB3 writes TensorBoard events during `.learn()` **only if `tensorboard_log`
+is set on the model**. The checkpoint loaded via `SB3_PPO.load()` does not
+have this configured, so it must be set explicitly after loading:
+
+```python
+model.tensorboard_log = f"autoresearch/tb_logs/exp_{exp_id:03d}"
+```
+
+This goes in the fixed section of `train.py`, after `load_and_configure_model()`
+returns. With this set, `sync_tensorboard=True` in `wandb.init()` syncs the
+following SB3 metrics to wandb automatically:
+
+- `train/entropy_loss`, `train/policy_gradient_loss`, `train/value_loss`
+- `train/approx_kl`, `train/clip_fraction`, `train/explained_variance`
+- `rollout/ep_rew_mean`, `rollout/ep_len_mean`
+
+No custom callback needed — SB3 handles this natively once `tensorboard_log`
+is configured.
+
+#### 6d. Eval Metrics (logged explicitly)
+
+After `run_eval()`, log the eval results as a final summary:
+
+```python
+wandb.log({
+    "eval/score": results["score"],
+    "eval/avg_gates": results["avg_gates"],
+    "eval/crash_rate": results["crash_rate"],
+    "eval/alt_std": results["alt_std"],
+    "eval/avg_steps": results["avg_steps"],
+    "eval/max_gates": results["max_gates"],
+})
+wandb.run.summary["score"] = results["score"]
+```
+
+Using `wandb.run.summary` for `score` makes it the primary sort column in
+the runs table.
+
+When multi-track eval is implemented (section 4c), per-track scores should
+also be logged (e.g., `eval/score_figure8`, `eval/score_oval`) so track-level
+performance is visible in the wandb dashboard.
+
+#### 6e. Implementation
+
+Add wandb init/log/finish to the **fixed section** of `train.py`. The wandb
+import and calls go below the FIXED line so the tuning agent cannot modify
+logging behavior. Wandb is optional — if import fails, experiments still run
+and log to `results.tsv`.
+
+**Files:**
+- Modify: `autoresearch/train.py` (fixed section) — add wandb lifecycle
+- No changes to `prepare.py` for wandb (keeps separation of concerns)
+
+### 7. Acceptance Criteria
+
 
 **Phase 1 (re-baseline):**
 - At least one of experiments 10-12 produces a score > 0 with < 50% crash rate
@@ -217,10 +316,10 @@ and can apply the normalization before calling the reward function.
   the single-track best on each individual track (no catastrophic forgetting).
 - Per-track eval scores are recorded and comparable.
 
-### 7. Scope
+### 8. Scope
 
 **In scope:**
-- Infrastructure fixes (param logging, 200-episode eval)
+- Infrastructure fixes (param logging, 200-episode eval, W&B integration)
 - Phase 1 re-baseline (3 experiments)
 - Phase 2 systematic sweep (10 experiments)
 - Multi-track training (track library, track sampling, multi-track eval)
@@ -240,7 +339,7 @@ and can apply the normalization before calling the reward function.
 - **Stop multi-track experiments** if aggregate score plateaus for 5 experiments.
 
 
-1. Infrastructure fixes (param logging + longer eval)
+1. Infrastructure fixes (param logging + longer eval + W&B integration)
 2. Phase 1 experiments 10-12 (re-baseline on fixed gates)
 3. Phase 2 experiments 13-22 (systematic sweep)
 4. Multi-track infrastructure (track library + sampling + eval)
