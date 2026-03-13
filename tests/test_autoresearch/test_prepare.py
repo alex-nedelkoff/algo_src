@@ -232,3 +232,26 @@ class TestLogExperiment:
         lines = tsv.read_text().strip().split("\n")
         assert len(lines) == 3  # header + 2 rows
         assert lines[2].split("\t")[0] == "1"
+
+
+class TestMultiTrackEnv:
+    """Test multi-track environment construction."""
+
+    def test_make_training_env_with_tracks(self) -> None:
+        from autoresearch.prepare import make_training_env
+        from sim.envs.rate_ctrl_env import make_figure8_track, make_oval_track
+
+        weights = {
+            "lambda_gate": 10.0, "lambda_prog": 1.0, "lambda_rate": 0.001,
+            "lambda_offset": 0.0, "lambda_perc": 0.0, "lambda_delta_u": 0.001,
+            "lambda_crash": 10.0, "lambda_alive": 0.0, "v_max": 0.0,
+        }
+        register_reward_preset("test_multi", weights)
+        tracks = [make_figure8_track(), make_oval_track()]
+        env = make_training_env(
+            n_envs=4, dr_percentage=0.0, preset_name="test_multi",
+            seed=42, tracks=tracks,
+        )
+        assert env.num_envs == 4
+        env.close()
+        del PRESETS["test_multi"]

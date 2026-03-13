@@ -34,6 +34,7 @@ def make_training_env(
     dr_percentage: float,
     preset_name: str,
     seed: int,
+    tracks: list[dict] | None = None,
 ) -> Any:
     """Build a vectorized training environment.
 
@@ -43,12 +44,16 @@ def make_training_env(
     from sim.envs.rate_ctrl_env import RateCtrlEnv
     from sim.envs.vec_env_adapter import VecEnvAdapter
 
-    inner = RateCtrlEnv(
+    kwargs: dict[str, Any] = dict(
         n_envs=n_envs,
         seed=seed,
         dr_percentage=dr_percentage,
         reward_preset=preset_name,
     )
+    if tracks is not None:
+        kwargs["tracks"] = tracks
+
+    inner = RateCtrlEnv(**kwargs)
     return VecEnvAdapter(inner)
 
 
