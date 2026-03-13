@@ -64,9 +64,40 @@ def main(exp_id: int) -> None:
     preset_name = f"autoresearch_exp{exp_id}"
     register_reward_preset(preset_name, REWARD_WEIGHTS)
 
+    # W&B init (optional — experiments still run if wandb unavailable)
+    _wandb_active = False
+    try:
+        import wandb
+
+        wandb.init(
+            project="corvidx-drone-racing",
+            entity=None,
+            group="autoresearch",
+            tags=["autoresearch", "phase2", f"exp_{exp_id}"],
+            config={
+                "exp_id": exp_id,
+                "seed": seed,
+                "n_steps": N_STEPS,
+                "n_envs": N_ENVS,
+                "checkpoint": CHECKPOINT,
+                "reward_weights": REWARD_WEIGHTS,
+                "ekf_params": EKF_PARAMS,
+                "training_params": TRAINING_PARAMS,
+                "domain_rand": DOMAIN_RAND,
+            },
+            sync_tensorboard=True,
+        )
+        _wandb_active = True
+    except Exception:
+        pass
+
     env = make_training_env(N_ENVS, DOMAIN_RAND["percentage"], preset_name, seed)
     env = wrap_ekf(env, **EKF_PARAMS)
     model = load_and_configure_model(env, CHECKPOINT, TRAINING_PARAMS)
+
+    # Enable TensorBoard logging for wandb sync
+    model.tensorboard_log = f"autoresearch/tb_logs/exp_{exp_id:03d}"
+
     model.learn(total_timesteps=N_STEPS)
     save_checkpoint(model, exp_id)
 
@@ -79,6 +110,21 @@ def main(exp_id: int) -> None:
         reward_weights=REWARD_WEIGHTS, ekf_params=EKF_PARAMS,
         training_params=TRAINING_PARAMS, domain_rand=DOMAIN_RAND,
     )
+
+    # Log eval metrics to W&B
+    if _wandb_active:
+        import wandb
+
+        wandb.log({
+            "eval/score": results["score"],
+            "eval/avg_gates": results["avg_gates"],
+            "eval/crash_rate": results["crash_rate"],
+            "eval/alt_std": results["alt_std"],
+            "eval/avg_steps": results["avg_steps"],
+            "eval/max_gates": results["max_gates"],
+        })
+        wandb.run.summary["score"] = results["score"]
+        wandb.finish()
 
     print(json.dumps(results))
 

@@ -4,3 +4,4 @@ diffs/
 train.py.orig
 checkpoints/
 viz/
+tb_logs/
