@@ -30,27 +30,23 @@ R2_SECRET_ACCESS_KEY=...
 R2_BUCKET=corvidx-artifacts
 ```
 
-The training entrypoint auto-loads `.env` via `_load_dotenv()`, so R2 credentials are picked up automatically. `WANDB_API_KEY` must also be exported to the shell for Docker compose environment variable substitution.
+All credentials are injected into Docker containers at runtime via `env_file` in `docker-compose.yml`. No manual exporting needed.
 
-### 2. Create docker-compose.override.yml
+### 2. Choose your experiment
 
 ```bash
 cp docker-compose.override.yml.example docker-compose.override.yml
 ```
 
-Edit the `control` service to pass the W&B key and set your experiment:
+Edit the command to set your experiment:
 
 ```yaml
 services:
   control:
-    volumes:
-      - ./outputs:/app/outputs
-    environment:
-      - WANDB_API_KEY=${WANDB_API_KEY}
     command: ["python", "-m", "training", "+experiment=monorace_baseline"]
 ```
 
-Change `+experiment=monorace_baseline` to whichever experiment you want to run.
+Change `+experiment=monorace_baseline` to whichever experiment you want to run. That's the only thing you need to change in this file.
 
 ### 3. Verify GPU access
 
@@ -87,17 +83,16 @@ python -m training +experiment=monorace_baseline --cfg job
 ### Quick start
 
 ```bash
-source .env && export WANDB_API_KEY && make train
+make train
 ```
 
-This builds the GPU Docker image and launches the control service with your override config.
+This builds the GPU Docker image, injects credentials from `.env`, and launches training with your experiment config from `docker-compose.override.yml`.
 
 ### Direct docker run (alternative)
 
 ```bash
-source .env && export WANDB_API_KEY
 docker run --rm --gpus all \
-  -e WANDB_API_KEY \
+  --env-file .env \
   -v $(pwd)/configs:/app/configs:ro \
   -v $(pwd)/outputs:/app/outputs \
   algo-src-control \
@@ -174,10 +169,7 @@ make sync-artifacts RUN_DIR=outputs/<run-dir>
 ## Troubleshooting
 
 ### "WANDB_API_KEY not set"
-Make sure you've both sourced and exported:
-```bash
-source .env && export WANDB_API_KEY
-```
+Verify your `.env` file exists at the repo root and contains `WANDB_API_KEY=...`. Docker compose reads it automatically via `env_file`.
 
 ### W&B panels empty
 - Check the run appeared in the `corvidx-drone-racing` project
@@ -199,8 +191,8 @@ The control Docker image requires `--gpus all`. If using `make train`, docker co
 cp docker-compose.override.yml.example docker-compose.override.yml
 # Edit the command to your experiment
 
-# Run smoke test
-source .env && export WANDB_API_KEY && make train
+# Run training
+make train
 
 # Check W&B
 # → https://wandb.ai/corvidx-drone-racing

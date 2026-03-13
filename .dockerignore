@@ -22,6 +22,9 @@ outputs/
 *.swp
 *.swo
 
+# Secrets (injected at runtime via docker compose env_file)
+.env
+
 # OS files
 .DS_Store
 Thumbs.db
