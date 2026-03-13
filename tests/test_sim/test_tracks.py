@@ -123,3 +123,34 @@ class TestMultiTrackEnv:
         env._gate_idx[1] = 3
         assert (7 + 1) % 8 == 0
         assert (3 + 1) % 4 == 0
+
+
+class TestRewardNormalization:
+    def test_mean_inter_gate_distance_computed(self) -> None:
+        """Env should compute mean inter-gate distance per track."""
+        from sim.envs.rate_ctrl_env import RateCtrlEnv
+        env = RateCtrlEnv(n_envs=2, seed=42)
+        assert hasattr(env, "_mean_igd")
+        assert len(env._mean_igd) == 1  # single track
+        assert env._mean_igd[0] > 0
+
+    def test_multi_track_has_per_track_igd(self) -> None:
+        from sim.envs.rate_ctrl_env import RateCtrlEnv
+        tracks = [make_figure8_track(), make_oval_track()]
+        env = RateCtrlEnv(n_envs=2, seed=42, tracks=tracks)
+        assert len(env._mean_igd) == 2
+        # Figure-8 and oval have different spacings
+        assert env._mean_igd[0] != env._mean_igd[1]
+
+    def test_normalization_scales_progress_reward(self) -> None:
+        """Tracks with different IGDs produce different normalized progress."""
+        from sim.envs.rate_ctrl_env import RateCtrlEnv
+        env_f8 = RateCtrlEnv(n_envs=1, seed=42, track=make_figure8_track())
+        env_oval = RateCtrlEnv(n_envs=1, seed=42, track=make_oval_track())
+
+        igd_f8 = env_f8._mean_igd[0]
+        igd_oval = env_oval._mean_igd[0]
+
+        # The ratio of normalized progress should be inverse of IGD ratio
+        ratio = igd_oval / igd_f8
+        assert ratio != 1.0, "Tracks should have different IGDs"

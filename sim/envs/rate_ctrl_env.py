@@ -239,6 +239,17 @@ class RateCtrlEnv:
         self._gate_positions = self._track_gate_positions[0]
         self._gate_yaws = self._track_gate_yaws[0]
 
+        # Compute mean inter-gate distance per track (for reward normalization)
+        self._mean_igd: list[float] = []
+        for t_idx in range(len(self._tracks)):
+            positions = self._track_gate_positions[t_idx]
+            n = self._track_n_gates[t_idx]
+            dists = [
+                float(np.linalg.norm(positions[(i + 1) % n] - positions[i]))
+                for i in range(n)
+            ]
+            self._mean_igd.append(float(np.mean(dists)))
+
         # Per-env track assignment
         self._track_idx = np.zeros(n_envs, dtype=np.int32)
 
@@ -502,9 +513,22 @@ class RateCtrlEnv:
         offset = np.zeros(self.n_envs)
         theta_cam = np.zeros(self.n_envs)
 
+        # Normalize progress by mean inter-gate distance (per-env)
+        # This makes d2g_old - d2g_new (raw progress) geometry-independent.
+        # NOTE: When v_max > 0, compute_reward clamps raw progress to v_max*dt
+        # (in meters), but after normalization progress is dimensionless.
+        # Safe when v_max=0.0 (all current experiments). If v_max>0 needed
+        # later, normalize the clamp too: v_max * dt / igd.
+        if len(self._tracks) > 1:
+            igd = np.array([self._mean_igd[self._track_idx[i]] for i in range(self.n_envs)])
+        else:
+            igd = np.full(self.n_envs, self._mean_igd[0])
+        d2g_old_norm = d2g_old / igd
+        d2g_new_norm = d2g_new / igd
+
         rewards = compute_reward(
-            d2g_old=d2g_old,
-            d2g_new=d2g_new,
+            d2g_old=d2g_old_norm,
+            d2g_new=d2g_new_norm,
             omega=omega,
             delta_action=delta_action,
             gate_passed=gate_passed,
