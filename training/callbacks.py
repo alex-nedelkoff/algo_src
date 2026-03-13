@@ -72,6 +72,12 @@ class GateMetricsCallback(BaseCallback):
         self._total_laps = 0
         self._last_log_time = 0.0
 
+        # All-time bests
+        self._best_lap_time: float = float("inf")
+        self._best_gates_per_ep: int = 0
+        self._best_laps_per_ep: int = 0
+        self._best_ep_reward: float = float("-inf")
+
     def _on_step(self) -> bool:
         """Called after each env.step(). Extract episode metrics from infos."""
         infos = self.locals.get("infos", [])
@@ -96,11 +102,21 @@ class GateMetricsCallback(BaseCallback):
             self._total_gates += gates
             self._total_laps += laps
 
+            # Track all-time bests
+            if gates > self._best_gates_per_ep:
+                self._best_gates_per_ep = gates
+            if laps > self._best_laps_per_ep:
+                self._best_laps_per_ep = laps
+            if ep_rew > self._best_ep_reward:
+                self._best_ep_reward = ep_rew
+
             # Estimate lap time: if laps > 0, time per lap = ep_len * dt / laps
-            # dt is 0.01s, so ep_len steps = ep_len * 0.01 seconds
+            # dt is 0.01s (both monorace and playground effective RL dt)
             if laps > 0:
                 lap_time = (ep_len * 0.01) / laps
                 self._lap_times.append(lap_time)
+                if lap_time < self._best_lap_time:
+                    self._best_lap_time = lap_time
 
             # Reward component breakdown (dynamic names)
             rc = ep.get("reward_components")
@@ -157,6 +173,17 @@ class GateMetricsCallback(BaseCallback):
             lt = np.array(self._lap_times)
             self.logger.record("racing/lap_time_mean", float(lt.mean()))
             self.logger.record("racing/lap_time_best", float(lt.min()))
+
+        # All-time bests
+        if self._best_lap_time < float("inf"):
+            self.logger.record("racing/best_lap_time_ever", self._best_lap_time)
+        self.logger.record("racing/best_gates_per_ep_ever", self._best_gates_per_ep)
+        self.logger.record("racing/best_laps_per_ep_ever", self._best_laps_per_ep)
+        self.logger.record("racing/best_ep_reward_ever", self._best_ep_reward)
+
+        # Max laps in rolling window
+        self.logger.record("racing/laps_per_ep_max", int(laps.max()))
+        self.logger.record("racing/total_episodes", self._total_episodes)
 
         # Reward component breakdown (dynamic)
         for name, buf in self._reward_component_buffers.items():
