@@ -584,7 +584,10 @@ class RateCtrlEnv:
     def _per_env_gate_data(
         self, gate_indices: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Get gate positions and yaws for each env's current gate index."""
+        """Get gate positions and yaws for each env's current gate index.
+
+        gate_indices must be n_envs-length (one index per env).
+        """
         if len(self._tracks) == 1:
             return (
                 self._gate_positions[gate_indices],
