@@ -1,11 +1,63 @@
 ---
 name: experiment-onboarder
-description: Guide sessions through onboarding new components (environments, perception models, control algorithms, renderers) into the algo_src framework, ensuring metrics contract compliance and W&B/Rerun visualization integration. Triggers on "add a new env", "onboard", "create a new experiment", "port this simulator", "new perception model", "new control algo".
+description: Guide sessions through onboarding new components (environments, perception models, control algorithms, renderers) into the algo_src framework, ensuring metrics contract compliance and W&B/Rerun visualization integration. Proactively detects framework gaps and drives evolution. Triggers on "add a new env", "onboard", "create a new experiment", "port this simulator", "new perception model", "new control algo".
 ---
 
 # Experiment Onboarder
 
-Guides you through onboarding a new component into the algo_src framework. Detects the component type and presents the relevant checklist.
+Guides you through onboarding a new component into the algo_src framework. Proactively detects when a component doesn't fit the current framework and drives or escalates framework evolution.
+
+## Framework Assumptions
+
+These are the invariants that current code depends on. **Check each one against the new component before proceeding to checklists.** If any assumption is violated, follow the Framework Evolution Protocol below.
+
+| # | Assumption | Enforced by |
+|---|-----------|-------------|
+| A1 | Perception and control are separate modules (`perception/`, `control/`) | Training entrypoint, Hydra config structure |
+| A2 | All environments are quadrotor-based with 4 motors | `TrajectoryProvider.get_state()` returns `motor_rpms` (4,) |
+| A3 | State includes quaternion orientation (w,x,y,z) | `TrajectoryProvider.get_state()` requires `quaternion` (4,) |
+| A4 | `EpisodeMetrics` fields are mandatory for all envs; racing fields default to zero for non-racing | `validate_episode_metrics()` in `metrics/contract.py` |
+| A5 | Envs are internally vectorized (n_envs parameter, batched arrays) | `VecEnvAdapter`, all env constructors |
+| A6 | Actions are motor-level (RPM or rate commands, 4-dimensional) | `action_space` in existing envs |
+| A7 | Hydra config composition: `configs/sim/`, `configs/experiment/` | Training entrypoint |
+| A8 | `TrajectoryProvider.get_state()` returns exactly: position (3,), quaternion (4,), velocity (3,), body_rates (3,), motor_rpms (4,) | `validate_trajectory_state()`, `TrajectoryRecorderCallback` |
+| A9 | Gate-based racing is the primary task (gates, laps, gate geometry) | `EpisodeMetrics`, `TrajectoryProvider.get_gate_geometry()` |
+
+**When to update this table:** After any framework evolution, invoke `/superpowers:skill-creator` to update these assumptions and the checklists below.
+
+## Step 0: Gap Detection
+
+Before jumping to checklists, profile the new component:
+
+1. **Ask:** "Describe what this component does and what makes it different from existing ones."
+2. **Compare each assumption** (A1-A9) against the component. Surface mismatches as named gaps.
+3. **Classify each gap:**
+   - **Back-compatible** — solvable by adding optional fields, new protocol methods, or config options without changing existing code
+   - **Breaking** — requires changes to existing contracts, protocols, or consumer code
+
+**If no gaps:** Proceed to Component Detection and checklists.
+**If gaps found:** Follow the Framework Evolution Protocol.
+
+## Framework Evolution Protocol
+
+### Back-compatible gaps (drive end-to-end)
+
+1. Name the gap and the assumption it violates
+2. Propose the minimal additive change (e.g., "add optional `acceleration` key to `get_state()`")
+3. Invoke `/superpowers:brainstorming` to validate the proposal and design the change
+4. Implement the framework change via the normal plan → execute cycle
+5. Invoke `/superpowers:skill-creator` to update this skill's assumptions and checklists
+6. Continue onboarding with the updated framework
+
+### Breaking gaps (escalate to team)
+
+1. Document the gap: what assumption is violated, why it can't be solved additively
+2. Propose 2-3 options with trade-offs
+3. Flag for team discussion — output a summary suitable for a Linear issue
+4. **Pause onboarding** until the breaking change is resolved and landed
+5. After resolution, invoke `/superpowers:skill-creator` to update this skill
+
+**Encourage framework evolution** — gaps mean we're pushing the envelope. An organized, evolving framework enables the whole team to collaborate effectively.
 
 ## Component Detection
 
