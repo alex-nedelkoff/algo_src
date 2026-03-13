@@ -65,11 +65,11 @@ def make_figure8_track(
     gates = [
         {"pos": np.array([2.0, 2.0, gate_z]),   "yaw": np.pi},
         {"pos": np.array([-0.5, 1.0, gate_z]),  "yaw": -np.pi * 0.75},
-        {"pos": np.array([-2.0, -2.0, gate_z]), "yaw": 0.0},
+        {"pos": np.array([-2.0, -2.0, gate_z]), "yaw": np.pi},
         {"pos": np.array([-3.5, 0.0, gate_z]),  "yaw": np.pi / 2},
         {"pos": np.array([-2.0, 2.0, gate_z]),  "yaw": 0.0},
         {"pos": np.array([0.5, 1.0, gate_z]),   "yaw": -np.pi * 0.25},
-        {"pos": np.array([2.0, -2.0, gate_z]),  "yaw": np.pi},
+        {"pos": np.array([2.0, -2.0, gate_z]),  "yaw": 0.0},
         {"pos": np.array([3.5, 0.0, gate_z]),   "yaw": np.pi / 2},
     ]
     return {
