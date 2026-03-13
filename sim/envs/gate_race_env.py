@@ -713,6 +713,7 @@ class GateRaceEnv(gym.Env):
                 "episode_length": self._step_counts.copy(),
                 "termination_reason": self._termination_reasons.copy(),
                 "reward_components": self._episode_reward_components.copy(),
+                "reward_component_names": REWARD_COMPONENT_NAMES,
                 "avg_speed": avg_speed.copy(),
                 "first_gate_step": self._first_gate_step.copy(),
             }

@@ -30,7 +30,7 @@ from gymnasium import spaces
 from sim.dynamics.sympy_quad import NOMINAL_PARAMS, build_dynamics_fn
 from sim.motor_model import motor_step
 from sim.envs.playground_obs import gate_relative_obs
-from sim.rewards_mavlab import compute_reward
+from sim.rewards_mavlab import compute_reward_components, MAVLAB_REWARD_COMPONENT_NAMES
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +191,7 @@ class RateCtrlEnv:
 
         # Per-episode accumulators for info dict
         self._ep_reward = np.zeros(n_envs, dtype=np.float64)
+        self._ep_reward_components = np.zeros((n_envs, len(MAVLAB_REWARD_COMPONENT_NAMES)), dtype=np.float64)
         self._ep_gates_passed = np.zeros(n_envs, dtype=np.int32)
         self._ep_laps = np.zeros(n_envs, dtype=np.int32)
 
@@ -288,6 +289,7 @@ class RateCtrlEnv:
 
         # Reset episode accumulators
         self._ep_reward[env_mask] = 0.0
+        self._ep_reward_components[env_mask] = 0.0
         self._ep_gates_passed[env_mask] = 0
         self._ep_laps[env_mask] = 0
 
@@ -402,7 +404,7 @@ class RateCtrlEnv:
         offset = np.zeros(self.n_envs)
         theta_cam = np.zeros(self.n_envs)
 
-        rewards = compute_reward(
+        rewards, step_components = compute_reward_components(
             d2g_old=d2g_old,
             d2g_new=d2g_new,
             omega=omega,
@@ -419,6 +421,7 @@ class RateCtrlEnv:
 
         # Update episode accumulators
         self._ep_reward += rewards
+        self._ep_reward_components += step_components
         self._ep_gates_passed += gate_passed.astype(np.int32)
         # Track lap completion
         lap_completed = gate_passed & (self._gate_idx == 0)
@@ -441,6 +444,8 @@ class RateCtrlEnv:
                 "gates_passed": self._ep_gates_passed.copy(),
                 "laps_completed": self._ep_laps.copy(),
                 "termination_reason": term_reason,
+                "reward_components": self._ep_reward_components.copy(),
+                "reward_component_names": MAVLAB_REWARD_COMPONENT_NAMES,
             },
         }
 
