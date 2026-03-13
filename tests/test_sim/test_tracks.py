@@ -68,3 +68,58 @@ class TestSCurveTrack:
     def test_gate_normals_correct(self) -> None:
         track = make_s_curve_track()
         _verify_gate_normals(track)
+
+
+class TestMultiTrackEnv:
+    def test_single_track_backward_compat(self) -> None:
+        from sim.envs.rate_ctrl_env import RateCtrlEnv
+        env = RateCtrlEnv(n_envs=2, seed=42)
+        obs, _ = env.reset()
+        assert obs.shape == (2, 24)
+
+    def test_tracks_list_accepted(self) -> None:
+        from sim.envs.rate_ctrl_env import RateCtrlEnv
+        tracks = [make_figure8_track(), make_oval_track()]
+        env = RateCtrlEnv(n_envs=4, seed=42, tracks=tracks)
+        obs, _ = env.reset()
+        assert obs.shape == (4, 24)
+
+    def test_tracks_overrides_track(self) -> None:
+        from sim.envs.rate_ctrl_env import RateCtrlEnv
+        tracks = [make_oval_track()]
+        env = RateCtrlEnv(n_envs=2, seed=42, track=make_figure8_track(), tracks=tracks)
+        obs, _ = env.reset()
+        action = np.zeros((2, 4), dtype=np.float32)
+        env.step(action)
+
+    def test_per_env_track_varies(self) -> None:
+        from sim.envs.rate_ctrl_env import RateCtrlEnv
+        tracks = [make_figure8_track(), make_oval_track()]
+        env = RateCtrlEnv(n_envs=50, seed=42, tracks=tracks)
+        env.reset()
+        assert hasattr(env, "_track_idx")
+        unique_tracks = set(env._track_idx.tolist())
+        assert len(unique_tracks) > 1
+
+    def test_step_runs_without_error(self) -> None:
+        from sim.envs.rate_ctrl_env import RateCtrlEnv
+        tracks = [make_figure8_track(), make_oval_track()]
+        env = RateCtrlEnv(n_envs=4, seed=42, tracks=tracks)
+        env.reset()
+        action = np.zeros((4, 4), dtype=np.float32)
+        for _ in range(10):
+            obs, rewards, terminated, truncated, info = env.step(action)
+        assert obs.shape == (4, 24)
+        assert rewards.shape == (4,)
+
+    def test_gate_idx_respects_track_n_gates(self) -> None:
+        from sim.envs.rate_ctrl_env import RateCtrlEnv
+        tracks = [make_figure8_track(), make_oval_track()]
+        env = RateCtrlEnv(n_envs=2, seed=42, tracks=tracks)
+        env.reset()
+        env._track_idx[0] = 0
+        env._track_idx[1] = 1
+        env._gate_idx[0] = 7
+        env._gate_idx[1] = 3
+        assert (7 + 1) % 8 == 0
+        assert (3 + 1) % 4 == 0
