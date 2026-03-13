@@ -708,14 +708,23 @@ class GateRaceEnv(gym.Env):
 
             ep_info = {
                 "r": self._episode_rewards.copy(),
+                "l": self._step_counts.copy(),
+                "effective_dt": self.dt,
                 "gates_passed": self._gates_passed.copy(),
                 "laps_completed": self._laps_completed.copy(),
-                "episode_length": self._step_counts.copy(),
-                "termination_reason": self._termination_reasons.copy(),
-                "reward_components": self._episode_reward_components.copy(),
-                "reward_component_names": REWARD_COMPONENT_NAMES,
+                "termination": np.array([
+                    GATE_RACE_TERM_NAMES[int(c)]
+                    for c in self._termination_reasons
+                ]),
+                "success": self._termination_reasons == TERM_TIMEOUT,
+                "success_criterion": "survived_full_episode",
                 "avg_speed": avg_speed.copy(),
                 "first_gate_step": self._first_gate_step.copy(),
+                "reward_components": np.array([
+                    {name: float(self._episode_reward_components[i, j])
+                     for j, name in enumerate(REWARD_COMPONENT_NAMES)}
+                    for i in range(self.n_envs)
+                ], dtype=object),
             }
 
             done_indices = np.where(done)[0]
@@ -847,3 +856,38 @@ class GateRaceEnv(gym.Env):
         if self.n_envs == 1:
             return obs[0]
         return obs
+
+    # --- TrajectoryProvider protocol ---
+
+    def get_state(self, env_idx: int) -> dict[str, np.ndarray]:
+        """Return current state for one environment."""
+        state = self._states[env_idx]
+        return {
+            "position": state[POS].copy(),
+            "quaternion": state[QUAT].copy(),
+            "velocity": state[VEL].copy(),
+            "body_rates": state[OMEGA].copy(),
+            "motor_rpms": state[MOTOR].copy(),
+        }
+
+    def get_gate_geometry(self) -> dict[str, np.ndarray]:
+        """Return gate geometry for the track."""
+        n_gates = self.track.num_gates
+        positions = np.zeros((n_gates, 3), dtype=np.float64)
+        orientations = np.zeros((n_gates, 4), dtype=np.float64)
+        half_extents = np.zeros((n_gates, 2), dtype=np.float64)
+        radius = self.gate_passage_radius
+        for g in range(n_gates):
+            gate = self.track.gates[g]
+            positions[g] = gate.position
+            orientations[g] = gate.orientation
+            half_extents[g] = [radius, radius]
+        return {
+            "positions": positions,
+            "orientations": orientations,
+            "half_extents": half_extents,
+        }
+
+    def get_step_reward_components(self, env_idx: int) -> tuple[list[str], np.ndarray]:
+        """Return per-step reward component breakdown."""
+        return REWARD_COMPONENT_NAMES, self._step_reward_components[env_idx].copy()
