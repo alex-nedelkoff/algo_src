@@ -11,18 +11,24 @@ Guides you through setting up and running training experiments with full W&B met
 
 ### 1. Get credentials
 
-Ask the team lead for the `.env` file (shared via email/1Password). It contains:
+Create a `.env` file at the repo root (`algo_src/.env`). It's gitignored — never commit it.
+
+**W&B API key** — get your own from [wandb.ai/authorize](https://wandb.ai/authorize). Create a free account if you don't have one, then join the `corvidx-drone-racing` project (ask the team lead for an invite).
+
+**R2 credentials** — ask the team lead for the R2 keys (shared via email). These are shared across the team.
+
+Your `.env` should look like:
 
 ```
+# Your personal W&B key
+WANDB_API_KEY=wandb_v1_your_key_here
+
+# Shared R2 credentials (from team lead)
 R2_ACCOUNT_ID=...
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
 R2_BUCKET=corvidx-artifacts
-
-WANDB_API_KEY=...
 ```
-
-Place it at the repo root (`algo_src/.env`). It's gitignored — never commit it.
 
 The training entrypoint auto-loads `.env` via `_load_dotenv()`, so R2 credentials are picked up automatically. `WANDB_API_KEY` must also be exported to the shell for Docker compose environment variable substitution.
 
