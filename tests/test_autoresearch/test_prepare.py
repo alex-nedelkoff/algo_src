@@ -168,3 +168,67 @@ class TestRunEval:
         assert abs(results["score"] - expected_score) < 5e-4
         ekf_env.close()
         del PRESETS["test_eval"]
+
+
+class TestLogExperiment:
+    """Test experiment logging to results.tsv."""
+
+    def test_creates_tsv_with_header(self, tmp_path) -> None:
+        from autoresearch.prepare import log_experiment
+
+        tsv = tmp_path / "results.tsv"
+        results = {
+            "score": 5.0, "avg_gates": 6.0, "crash_rate": 0.5,
+            "alt_std": 0.1, "avg_steps": 800.0, "max_gates": 10,
+        }
+        reward_weights = {
+            "lambda_gate": 10.0, "lambda_prog": 1.0, "lambda_rate": 0.001,
+            "lambda_offset": 0.0, "lambda_perc": 0.0, "lambda_delta_u": 0.001,
+            "lambda_crash": 10.0, "lambda_alive": 0.0, "v_max": 0.0,
+        }
+        ekf_params = {"corner_noise_k": 2.0, "corner_dropout_onset": None}
+        training_params = {
+            "learning_rate": 1e-4, "ent_coef": 0.005, "clip_range": 0.2,
+            "gae_lambda": 0.98, "gamma": 0.999,
+        }
+        domain_rand = {"percentage": 0.3}
+
+        log_experiment(
+            exp_id=0, seed=42, results=results,
+            reward_weights=reward_weights, ekf_params=ekf_params,
+            training_params=training_params, domain_rand=domain_rand,
+            results_file=str(tsv),
+        )
+
+        lines = tsv.read_text().strip().split("\n")
+        assert len(lines) == 2  # header + 1 row
+        assert lines[0].startswith("exp_id\t")
+        assert "lambda_gate" in lines[0]
+        row = lines[1].split("\t")
+        assert row[0] == "0"  # exp_id
+        assert row[2] == "5.0"  # score
+
+    def test_appends_to_existing_tsv(self, tmp_path) -> None:
+        from autoresearch.prepare import log_experiment
+
+        tsv = tmp_path / "results.tsv"
+        results = {
+            "score": 5.0, "avg_gates": 6.0, "crash_rate": 0.5,
+            "alt_std": 0.1, "avg_steps": 800.0, "max_gates": 10,
+        }
+        rw = {
+            "lambda_gate": 10.0, "lambda_prog": 1.0, "lambda_rate": 0.001,
+            "lambda_offset": 0.0, "lambda_perc": 0.0, "lambda_delta_u": 0.001,
+            "lambda_crash": 10.0, "lambda_alive": 0.0, "v_max": 0.0,
+        }
+        ekf = {"corner_noise_k": 2.0, "corner_dropout_onset": None}
+        tp = {"learning_rate": 1e-4, "ent_coef": 0.005, "clip_range": 0.2,
+              "gae_lambda": 0.98, "gamma": 0.999}
+        dr = {"percentage": 0.3}
+
+        log_experiment(0, 42, results, rw, ekf, tp, dr, str(tsv))
+        log_experiment(1, 43, results, rw, ekf, tp, dr, str(tsv))
+
+        lines = tsv.read_text().strip().split("\n")
+        assert len(lines) == 3  # header + 2 rows
+        assert lines[2].split("\t")[0] == "1"

@@ -154,3 +154,65 @@ def run_eval(
         "max_gates": max_gates,
         "score": round(score, 4),
     }
+
+
+def log_experiment(
+    exp_id: int,
+    seed: int,
+    results: dict[str, float],
+    reward_weights: dict[str, float],
+    ekf_params: dict[str, Any],
+    training_params: dict[str, float],
+    domain_rand: dict[str, float],
+    results_file: str = "autoresearch/results.tsv",
+) -> None:
+    """Append one experiment row to results.tsv."""
+    from datetime import datetime
+    from pathlib import Path
+
+    header_cols = [
+        "exp_id", "timestamp", "score", "avg_gates", "crash_rate",
+        "alt_std", "avg_steps", "max_gates", "seed",
+        "lambda_gate", "lambda_prog", "lambda_rate", "lambda_offset",
+        "lambda_perc", "lambda_delta_u", "lambda_crash", "lambda_alive",
+        "v_max", "corner_noise_k", "corner_dropout_onset",
+        "learning_rate", "ent_coef", "clip_range", "gae_lambda", "gamma",
+        "dr_percentage",
+    ]
+
+    path = Path(results_file)
+    write_header = not path.exists()
+
+    row_vals = [
+        str(exp_id),
+        datetime.now().isoformat(timespec="seconds"),
+        str(results["score"]),
+        str(results["avg_gates"]),
+        str(results["crash_rate"]),
+        str(results["alt_std"]),
+        str(results["avg_steps"]),
+        str(results["max_gates"]),
+        str(seed),
+        str(reward_weights["lambda_gate"]),
+        str(reward_weights["lambda_prog"]),
+        str(reward_weights["lambda_rate"]),
+        str(reward_weights["lambda_offset"]),
+        str(reward_weights["lambda_perc"]),
+        str(reward_weights["lambda_delta_u"]),
+        str(reward_weights["lambda_crash"]),
+        str(reward_weights["lambda_alive"]),
+        str(reward_weights["v_max"]),
+        str(ekf_params["corner_noise_k"]),
+        str(ekf_params.get("corner_dropout_onset", "None")),
+        str(training_params["learning_rate"]),
+        str(training_params["ent_coef"]),
+        str(training_params["clip_range"]),
+        str(training_params["gae_lambda"]),
+        str(training_params["gamma"]),
+        str(domain_rand["percentage"]),
+    ]
+
+    with open(path, "a") as f:
+        if write_header:
+            f.write("\t".join(header_cols) + "\n")
+        f.write("\t".join(row_vals) + "\n")
