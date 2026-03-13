@@ -89,6 +89,7 @@ class PPO(Algorithm):
         self.tensorboard_log = tensorboard_log
         self.log_std_init: float = kwargs.pop("log_std_init", 0.0)
         self.extra_policy_kwargs: dict[str, Any] = kwargs.pop("extra_policy_kwargs", {})
+        self.action_bias_init: list[float] | None = kwargs.pop("action_bias_init", None)
 
         # MonoRace M23 default: separate 3×64 policy and value networks.
         # When hidden_dims is empty, SB3's FlattenExtractor is used (identity for Box)
@@ -160,6 +161,13 @@ class PPO(Algorithm):
         """Train PPO on the given environment."""
         if self._model is None:
             self._model = self._create_model(env)
+            if self.action_bias_init is not None:
+                import torch
+
+                with torch.no_grad():
+                    bias = self._model.policy.action_net.bias
+                    for i, val in enumerate(self.action_bias_init):
+                        bias[i] = val
         self._model.learn(
             total_timesteps=total_timesteps,
             callback=callbacks,

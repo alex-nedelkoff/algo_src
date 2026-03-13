@@ -13,6 +13,7 @@ max_grad_norm: 0.5
 policy_type: MlpPolicy
 activation_fn: relu
 log_std_init: -2.0
+action_bias_init: [0.228, 0.5, 0.5, 0.5]  # hover thrust + centered rates
 
 net_arch:
   pi: [64, 64, 64]

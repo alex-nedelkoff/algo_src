@@ -1,7 +1,7 @@
 _target_: sim.envs.playground_factory.PlaygroundEnvFactory
 
 dt: 0.002           # 500 Hz physics (with action_repeat=5 -> 100 Hz RL)
-n_envs: 100
+n_envs: 500
 max_steps: 1200      # 12s episodes at 100 Hz RL
 action_repeat: 5
 reward_preset: M23
