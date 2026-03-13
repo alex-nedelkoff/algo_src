@@ -177,7 +177,7 @@ class RateCtrlEnv:
             low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float64,
         )
         self.action_space = spaces.Box(
-            low=0.0, high=1.0, shape=(ACT_DIM,), dtype=np.float64,
+            low=0.0, high=1.0, shape=(ACT_DIM,), dtype=np.float32,
         )
 
         # Allocate persistent arrays

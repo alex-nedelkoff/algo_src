@@ -151,11 +151,25 @@ class RLTrainingLoop:
         perception_wrapper = hydra.utils.instantiate(cfg.perception)
         train_env = perception_wrapper.wrap(train_env)
 
+        # 2b. Wrap with EKF filtering if configured
+        if "ekf" in cfg:
+            from sim.envs.ekf_env_wrapper import EKFVecEnvWrapper
+
+            ekf_kwargs = OmegaConf.to_container(cfg.ekf, resolve=True)
+            log.info("Applying EKF wrapper (corner_noise_k=%s)", ekf_kwargs.get("corner_noise_k"))
+            train_env = EKFVecEnvWrapper(train_env, **ekf_kwargs)
+
         # 3. Build eval env (no domain rand, fewer envs)
         eval_dr_cfg = OmegaConf.create(OmegaConf.to_container(cfg.domain_rand, resolve=True))
         OmegaConf.update(eval_dr_cfg, "enabled", False)
         eval_env = env_factory.make_eval_env(eval_dr_cfg, cfg.reward, n_envs=cfg.n_eval_episodes)
         eval_env = perception_wrapper.wrap(eval_env)
+
+        if "ekf" in cfg:
+            from sim.envs.ekf_env_wrapper import EKFVecEnvWrapper
+
+            eval_ekf_kwargs = OmegaConf.to_container(cfg.ekf, resolve=True)
+            eval_env = EKFVecEnvWrapper(eval_env, **eval_ekf_kwargs)
 
         # 4. Build PPO trainer
         log.info("Building PPO trainer...")
