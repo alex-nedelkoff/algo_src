@@ -63,6 +63,18 @@ TERM_BODY_RATE = 6       # per-axis omega > max_body_rate
 TERM_GATE_COLLISION = 7  # crossed gate plane outside opening
 TERM_TIMEOUT = 8         # step >= max_steps (truncation)
 
+GATE_RACE_TERM_NAMES = {
+    0: "none",
+    1: "ground",
+    2: "ceiling",
+    3: "quat",
+    4: "nan",
+    5: "arena_oob",
+    6: "body_rate",
+    7: "gate_collision",
+    8: "timeout",
+}
+
 
 def _gate_normal(gate_state: GateState) -> NDArray[np.float64]:
     """Compute the forward-facing normal vector of a gate.
