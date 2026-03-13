@@ -61,6 +61,7 @@ def build_ppo(cfg: DictConfig) -> PPO:
         use_sde=ctrl.get("use_sde", False),
         log_std_init=ctrl.get("log_std_init", 0.0),
         extra_policy_kwargs=extra_policy_kwargs,
+        action_bias_init=list(ctrl.action_bias_init) if ctrl.get("action_bias_init") else None,
         tensorboard_log=str(Path(cfg.output_dir) / "tb_logs") if cfg.get("output_dir") else None,
     )
 
