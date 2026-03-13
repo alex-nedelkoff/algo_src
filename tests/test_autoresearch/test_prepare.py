@@ -255,3 +255,33 @@ class TestMultiTrackEnv:
         assert env.num_envs == 4
         env.close()
         del PRESETS["test_multi"]
+
+
+class TestMultiTrackEval:
+    """Test multi-track evaluation pipeline."""
+
+    def test_eval_with_multi_track_env(self, tmp_path) -> None:
+        from stable_baselines3 import PPO as SB3_PPO
+        from autoresearch.prepare import make_training_env, wrap_ekf, run_eval
+        from sim.envs.rate_ctrl_env import make_figure8_track, make_oval_track
+
+        weights = {
+            "lambda_gate": 10.0, "lambda_prog": 1.0, "lambda_rate": 0.001,
+            "lambda_offset": 0.0, "lambda_perc": 0.0, "lambda_delta_u": 0.001,
+            "lambda_crash": 10.0, "lambda_alive": 0.0, "v_max": 0.0,
+        }
+        register_reward_preset("test_mt_eval", weights)
+        tracks = [make_figure8_track(), make_oval_track()]
+        env = make_training_env(
+            n_envs=4, dr_percentage=0.0, preset_name="test_mt_eval",
+            seed=42, tracks=tracks,
+        )
+        ekf_env = wrap_ekf(env, corner_noise_k=2.0)
+
+        dummy = SB3_PPO("MlpPolicy", ekf_env, n_steps=32, batch_size=32)
+        results = run_eval(dummy, ekf_env, n_episodes=5)
+
+        assert "score" in results
+        assert isinstance(results["score"], float)
+        ekf_env.close()
+        del PRESETS["test_mt_eval"]
