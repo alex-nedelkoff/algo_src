@@ -51,6 +51,7 @@ from autoresearch.prepare import (
     load_and_configure_model,
     run_eval,
     save_checkpoint,
+    log_experiment,
 )
 
 CHECKPOINT = "../playground/runs/phase4_ekf_ppo_v2/final_model.zip"
@@ -71,7 +72,14 @@ def main(exp_id: int) -> None:
 
     eval_env = make_training_env(10, 0.0, preset_name, seed + 1000)
     eval_env = wrap_ekf(eval_env, **EKF_PARAMS)
-    results = run_eval(model, eval_env)
+    results = run_eval(model, eval_env, n_episodes=200)
+
+    log_experiment(
+        exp_id=exp_id, seed=seed, results=results,
+        reward_weights=REWARD_WEIGHTS, ekf_params=EKF_PARAMS,
+        training_params=TRAINING_PARAMS, domain_rand=DOMAIN_RAND,
+    )
+
     print(json.dumps(results))
 
     env.close()

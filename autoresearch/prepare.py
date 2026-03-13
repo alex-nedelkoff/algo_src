@@ -104,7 +104,7 @@ def save_checkpoint(model: Any, exp_id: int) -> str:
 def run_eval(
     model: Any,
     env: Any,
-    n_episodes: int = 50,
+    n_episodes: int = 200,
 ) -> dict[str, float]:
     """Deterministic rollout evaluation.
 
