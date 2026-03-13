@@ -164,10 +164,10 @@ def generate_rrd(
     data = np.load(npz_path, allow_pickle=True)
 
     schema_version = int(data["schema_version"])
-    if schema_version != 1:
+    if schema_version not in (1, 2):
         raise ValueError(
             f"Unsupported trajectory schema version {schema_version} "
-            f"(expected 1). File: {npz_path}"
+            f"(expected 1 or 2). File: {npz_path}"
         )
 
     positions = data["positions"]          # (T, 3)
