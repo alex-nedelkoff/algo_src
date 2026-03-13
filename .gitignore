@@ -15,3 +15,6 @@ __pycache__/
 # Experiment outputs
 wandb/
 outputs/
+
+# Git worktrees
+.claude/worktrees/
