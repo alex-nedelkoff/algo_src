@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections import deque
+from collections import Counter, deque
 
 import numpy as np
 
@@ -14,26 +14,13 @@ try:
 except ImportError:
     _SB3_AVAILABLE = False
 
-# Termination reason codes (mirror gate_race_env.py)
-TERM_NAMES = {
-    0: "none",
-    1: "ground",
-    2: "ceiling",
-    3: "quat",
-    4: "nan",
-    5: "arena_oob",
-    6: "body_rate",
-    7: "gate_collision",
-    8: "timeout",
-}
-
 
 class GateMetricsCallback(BaseCallback):
     """Log gate passage, lap completion, and termination statistics.
 
-    Reads ``gates_passed``, ``laps_completed``, and ``termination_reason``
-    from SB3's episode info dicts (populated by VecEnvAdapter) and logs
-    rolling statistics to TensorBoard / stdout.
+    Reads contract-compliant episode info dicts from VecEnvAdapter:
+    ``termination`` (str), ``success`` (bool), ``effective_dt`` (float),
+    ``reward_components`` (dict), etc.
 
     Args:
         log_freq: Log summary every N env steps (not timesteps).
@@ -56,8 +43,9 @@ class GateMetricsCallback(BaseCallback):
         self._laps: deque[int] = deque(maxlen=window_size)
         self._ep_lens: deque[int] = deque(maxlen=window_size)
         self._ep_rewards: deque[float] = deque(maxlen=window_size)
-        self._term_reasons: deque[int] = deque(maxlen=window_size)
+        self._term_reasons: deque[str] = deque(maxlen=window_size)
         self._lap_times: deque[float] = deque(maxlen=window_size)
+        self._successes: deque[bool] = deque(maxlen=window_size)
 
         # Reward component buffers (populated dynamically from first episode)
         self._reward_component_buffers: dict[str, deque[float]] = {}
@@ -78,6 +66,10 @@ class GateMetricsCallback(BaseCallback):
         self._best_laps_per_ep: int = 0
         self._best_ep_reward: float = float("-inf")
 
+        # Contract fields
+        self._effective_dt: float | None = None
+        self._success_criterion_logged: bool = False
+
     def _on_step(self) -> bool:
         """Called after each env.step(). Extract episode metrics from infos."""
         infos = self.locals.get("infos", [])
@@ -91,13 +83,15 @@ class GateMetricsCallback(BaseCallback):
             laps = ep.get("laps_completed", 0)
             ep_len = ep.get("l", 0)
             ep_rew = ep.get("r", 0.0)
-            term = ep.get("termination_reason", 0)
+            term = ep.get("termination", "unknown")
+            success = ep.get("success", False)
 
             self._gates.append(gates)
             self._laps.append(laps)
             self._ep_lens.append(ep_len)
             self._ep_rewards.append(ep_rew)
             self._term_reasons.append(term)
+            self._successes.append(bool(success))
             self._total_episodes += 1
             self._total_gates += gates
             self._total_laps += laps
@@ -110,10 +104,28 @@ class GateMetricsCallback(BaseCallback):
             if ep_rew > self._best_ep_reward:
                 self._best_ep_reward = ep_rew
 
-            # Estimate lap time: if laps > 0, time per lap = ep_len * dt / laps
-            # dt is 0.01s (both monorace and playground effective RL dt)
+            # Capture effective_dt on first episode
+            if self._effective_dt is None:
+                self._effective_dt = ep.get("effective_dt", 0.01)
+
+            # Log success_criterion as wandb config once
+            if not self._success_criterion_logged:
+                criterion = ep.get("success_criterion", "unknown")
+                try:
+                    import wandb
+                    if wandb.run is not None:
+                        wandb.config.update(
+                            {"success_criterion": criterion},
+                            allow_val_change=True,
+                        )
+                except ImportError:
+                    pass
+                self._success_criterion_logged = True
+
+            # Lap time using effective_dt from contract
             if laps > 0:
-                lap_time = (ep_len * 0.01) / laps
+                dt = self._effective_dt or 0.01
+                lap_time = (ep_len * dt) / laps
                 self._lap_times.append(lap_time)
                 if lap_time < self._best_lap_time:
                     self._best_lap_time = lap_time
@@ -133,7 +145,7 @@ class GateMetricsCallback(BaseCallback):
 
             # First gate step (only record when a gate was actually passed)
             fgs = ep.get("first_gate_step")
-            if fgs is not None:
+            if fgs is not None and int(fgs) >= 0:
                 self._first_gate_step.append(int(fgs))
 
         # Log at frequency
@@ -146,7 +158,6 @@ class GateMetricsCallback(BaseCallback):
         """Write rolling metrics to SB3 logger."""
         gates = np.array(self._gates)
         laps = np.array(self._laps)
-        terms = np.array(self._term_reasons)
 
         # Gate metrics
         self.logger.record("racing/gates_per_ep", float(gates.mean()))
@@ -155,9 +166,8 @@ class GateMetricsCallback(BaseCallback):
         self.logger.record("racing/total_gates", self._total_gates)
         self.logger.record("racing/total_laps", self._total_laps)
 
-        # Success rate: episodes that reached timeout without crashing
-        timeouts = (terms == 8).sum()
-        success_rate = timeouts / len(terms) if len(terms) > 0 else 0.0
+        # Success rate from contract bool
+        success_rate = sum(self._successes) / len(self._successes) if self._successes else 0.0
         self.logger.record("racing/success_rate", success_rate)
 
         # Gate passage rate: fraction of episodes with at least 1 gate
@@ -206,10 +216,11 @@ class GateMetricsCallback(BaseCallback):
                 float(np.mean(self._first_gate_step)),
             )
 
-        # Termination breakdown
-        for code, name in TERM_NAMES.items():
-            count = (terms == code).sum()
-            frac = count / len(terms) if len(terms) > 0 else 0.0
+        # Termination breakdown (dynamic from string names)
+        term_counts = Counter(self._term_reasons)
+        total = len(self._term_reasons)
+        for name, count in term_counts.items():
+            frac = count / total if total > 0 else 0.0
             self.logger.record(f"termination/{name}", frac)
 
         # Print to stdout
