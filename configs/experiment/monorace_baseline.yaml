@@ -11,7 +11,7 @@ defaults:
   - override /logging: wandb
 
 seed: 42
-total_timesteps: 10_000_000
+total_timesteps: 100_000_000
 eval_freq: 100_000
 checkpoint_freq: 1_000_000
 
