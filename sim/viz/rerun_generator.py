@@ -230,6 +230,56 @@ def generate_rrd(
             static=True,
         )
 
+    # --- 3a-bis. Gate markers: always-visible points + labels + ground projections ---
+    # These ensure gates are visible from any viewing angle (top-down, side, etc.)
+    # since the wireframe rectangles become edge-on and invisible from some angles.
+    _gate_marker_radius = 0.15  # meters
+    _ground_cross_arm = 0.5  # half-length of ground cross arms in meters
+
+    for g in range(gate_positions.shape[0]):
+        pos = gate_positions[g]
+        color = _GATE_COLORS[g % len(_GATE_COLORS)]
+
+        # 1) Center marker sphere — visible from any angle
+        rr.log(
+            f"world/gates/gate_{g}/marker",
+            rr.Points3D(
+                [pos],
+                radii=[_gate_marker_radius],
+                colors=[color],
+                labels=[f"G{g}"],
+            ),
+            static=True,
+        )
+
+        # 2) Vertical stalk from gate center down to ground (z=0)
+        stalk = np.array([[pos[0], pos[1], 0.0], pos])
+        rr.log(
+            f"world/gates/gate_{g}/stalk",
+            rr.LineStrips3D(
+                [stalk],
+                colors=[(color[0] // 2, color[1] // 2, color[2] // 2)],
+            ),
+            static=True,
+        )
+
+        # 3) Ground-plane cross at the gate's XY position (z=0)
+        gx, gy = pos[0], pos[1]
+        cross_lines = np.array([
+            [gx - _ground_cross_arm, gy, 0.0],
+            [gx + _ground_cross_arm, gy, 0.0],
+            [gx, gy - _ground_cross_arm, 0.0],
+            [gx, gy + _ground_cross_arm, 0.0],
+        ])
+        rr.log(
+            f"world/gates/gate_{g}/ground",
+            rr.LineStrips3D(
+                [cross_lines[:2], cross_lines[2:]],
+                colors=[color, color],
+            ),
+            static=True,
+        )
+
     # --- 3b. Per-timestep logging ---
     for t in range(T):
         rr.set_time("step", sequence=t)
@@ -310,6 +360,11 @@ def generate_rrd(
             # Render wireframe image
             frame = render_wireframe(cam, all_edges, cam_pos, cam_quat)
             rr.log("drone/camera", rr.Image(frame))
+
+    # Flush all pending data and close the file sink before returning.
+    # Without this, the ArtifactUploader may upload a partially-written
+    # .rrd file (missing chunks that haven't been flushed yet).
+    rr.disconnect()
 
     return output_path
 
