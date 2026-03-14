@@ -1,7 +1,7 @@
-"""SB3 VecEnv adapter for internally-vectorized GateRaceEnv.
+"""SB3 VecEnv adapter for internally-vectorized racing environments.
 
-Wraps a single GateRaceEnv(n_envs=N) as an SB3-compatible VecEnv,
-preserving our fast numpy vectorization without subprocess overhead.
+Wraps a single vectorized env (n_envs=N) as an SB3-compatible VecEnv,
+preserving fast numpy vectorization without subprocess overhead.
 """
 
 from __future__ import annotations
@@ -13,6 +13,9 @@ from numpy.typing import NDArray
 
 from stable_baselines3.common.vec_env import VecEnv
 
+from metrics.contract import validate_episode_metrics, ContractViolation
+
+
 class VecEnvAdapter(VecEnv):
     """Adapt an internally-vectorized racing env to the SB3 VecEnv interface.
 
@@ -21,6 +24,9 @@ class VecEnvAdapter(VecEnv):
       - dones = terminated | truncated
       - Done envs have info["terminal_observation"] with the pre-reset obs
       - reset() returns just obs
+
+    On first episode completion, validates the episode info dict against the
+    metrics contract (one-shot). Raises ContractViolation on mismatch.
 
     Args:
         env: Any vectorized racing env with n_envs, observation_space,
@@ -36,6 +42,9 @@ class VecEnvAdapter(VecEnv):
         )
         self._actions: NDArray[np.float32] | None = None
         self._pending_seed: int | None = None
+        self._contract_validated = False
+        self._completed_episodes: list[dict[str, Any]] = []
+        self._buffer_episodes = False
 
     def reset(self) -> NDArray[np.float32]:
         """Reset all environments and return observations."""
@@ -80,39 +89,34 @@ class VecEnvAdapter(VecEnv):
             if dones[i] and terminal_obs is not None:
                 env_info["terminal_observation"] = terminal_obs[i]
                 env_info["TimeLimit.truncated"] = bool(truncated[i]) and not bool(terminated[i])
-                # Episode metrics for SB3 logging
-                # SB3 requires "r" (cumulative reward) and "l" (length)
                 if episode_metrics is not None:
-                    env_info["episode"] = {
+                    # Extract per-env scalars from batched arrays
+                    ep = {
                         "r": float(episode_metrics["r"][i]),
-                        "l": int(episode_metrics["episode_length"][i]),
+                        "l": int(episode_metrics["l"][i]),
+                        "effective_dt": float(episode_metrics["effective_dt"])
+                            if np.ndim(episode_metrics["effective_dt"]) == 0
+                            else float(episode_metrics["effective_dt"][i]),
                         "gates_passed": int(episode_metrics["gates_passed"][i]),
                         "laps_completed": int(episode_metrics["laps_completed"][i]),
+                        "termination": str(episode_metrics["termination"][i]),
+                        "success": bool(episode_metrics["success"][i]),
+                        "success_criterion": str(episode_metrics["success_criterion"])
+                            if isinstance(episode_metrics["success_criterion"], str)
+                            else str(episode_metrics["success_criterion"][i]),
+                        "avg_speed": float(episode_metrics["avg_speed"][i]),
+                        "first_gate_step": int(episode_metrics["first_gate_step"][i]),
+                        "reward_components": episode_metrics["reward_components"][i]
+                            if isinstance(episode_metrics["reward_components"][i], dict)
+                            else dict(episode_metrics["reward_components"][i]),
                     }
-                    if "termination_reason" in episode_metrics:
-                        env_info["episode"]["termination_reason"] = int(episode_metrics["termination_reason"][i])
-                    if "reward_components" in episode_metrics:
-                        rc = episode_metrics["reward_components"][i]
-                        if isinstance(rc, dict):
-                            env_info["episode"]["reward_components"] = {
-                                k: float(v) for k, v in rc.items()
-                            }
-                        elif "reward_component_names" in episode_metrics:
-                            names = episode_metrics["reward_component_names"]
-                            env_info["episode"]["reward_components"] = {
-                                name: float(rc[j])
-                                for j, name in enumerate(names)
-                            }
-                        else:
-                            env_info["episode"]["reward_components"] = {
-                                f"component_{j}": float(rc[j])
-                                for j in range(len(rc))
-                            }
-                    if "avg_speed" in episode_metrics:
-                        env_info["episode"]["avg_speed"] = float(episode_metrics["avg_speed"][i])
-                    if "first_gate_step" in episode_metrics:
-                        fgs = int(episode_metrics["first_gate_step"][i])
-                        env_info["episode"]["first_gate_step"] = fgs if fgs >= 0 else None
+                    if not self._contract_validated:
+                        env_name = type(self.env).__name__
+                        validate_episode_metrics(ep, env_name)
+                        self._contract_validated = True
+                    env_info["episode"] = ep
+                    if self._buffer_episodes:
+                        self._completed_episodes.append(ep)
             infos.append(env_info)
 
         return obs, rewards, dones, infos
@@ -146,6 +150,10 @@ class VecEnvAdapter(VecEnv):
         self, attr_name: str, value: Any, indices: Sequence[int] | None = None
     ) -> None:
         setattr(self.env, attr_name, value)
+
+    def enable_episode_buffer(self) -> None:
+        """Enable buffering completed episode dicts for eval racing metrics."""
+        self._buffer_episodes = True
 
     def seed(self, seed: int | None = None) -> list[int | None]:
         self._pending_seed = seed

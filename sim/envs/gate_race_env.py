@@ -63,6 +63,18 @@ TERM_BODY_RATE = 6       # per-axis omega > max_body_rate
 TERM_GATE_COLLISION = 7  # crossed gate plane outside opening
 TERM_TIMEOUT = 8         # step >= max_steps (truncation)
 
+GATE_RACE_TERM_NAMES = {
+    0: "none",
+    1: "ground",
+    2: "ceiling",
+    3: "quat",
+    4: "nan",
+    5: "arena_oob",
+    6: "body_rate",
+    7: "gate_collision",
+    8: "timeout",
+}
+
 
 def _gate_normal(gate_state: GateState) -> NDArray[np.float64]:
     """Compute the forward-facing normal vector of a gate.
@@ -320,6 +332,7 @@ class GateRaceEnv(gym.Env):
         # Per-episode gate/lap tracking
         self._gates_passed = np.zeros(n_envs, dtype=np.int64)
         self._laps_completed = np.zeros(n_envs, dtype=np.int64)
+        self._start_gate_indices = np.zeros(n_envs, dtype=np.int64)
         self._episode_rewards = np.zeros(n_envs, dtype=np.float64)
         self._termination_reasons = np.zeros(n_envs, dtype=np.int8)
 
@@ -371,6 +384,7 @@ class GateRaceEnv(gym.Env):
             # Pick a random gate
             gate_idx = int(rng.integers(0, self.track.num_gates))
             self._gate_indices[idx] = gate_idx
+            self._start_gate_indices[idx] = gate_idx
             gate = self.track.gates[gate_idx]
             normal = _gate_normal(gate)
 
@@ -431,7 +445,6 @@ class GateRaceEnv(gym.Env):
 
         self._states = self.dynamics.reset(self.n_envs)
         self._step_counts[:] = 0
-        self._gate_indices[:] = 0
         self._prev_actions = np.zeros((self.n_envs, 4), dtype=np.float64)
         self._gates_passed[:] = 0
         self._laps_completed[:] = 0
@@ -631,11 +644,11 @@ class GateRaceEnv(gym.Env):
                 lateral = rel_pos - curr_along_normal * normal
                 lateral_dist = float(np.linalg.norm(lateral))
                 if lateral_dist <= self.gate_passage_radius:
-                    # Gate passed! Increment gate index
-                    self._gate_indices[i] += 1
+                    # Gate passed! Increment gate index (wrapping)
+                    self._gate_indices[i] = (self._gate_indices[i] + 1) % self.track.num_gates
                     self._gates_passed[i] += 1
-                    if self._gate_indices[i] >= self.track.num_gates:
-                        self._gate_indices[i] = 0
+                    # Lap complete when we've passed num_gates gates (full circuit)
+                    if self._gates_passed[i] > 0 and self._gates_passed[i] % self.track.num_gates == 0:
                         self._laps_completed[i] += 1
 
                     # Track first gate step
@@ -708,13 +721,23 @@ class GateRaceEnv(gym.Env):
 
             ep_info = {
                 "r": self._episode_rewards.copy(),
+                "l": self._step_counts.copy(),
+                "effective_dt": self.dt,
                 "gates_passed": self._gates_passed.copy(),
                 "laps_completed": self._laps_completed.copy(),
-                "episode_length": self._step_counts.copy(),
-                "termination_reason": self._termination_reasons.copy(),
-                "reward_components": self._episode_reward_components.copy(),
+                "termination": np.array([
+                    GATE_RACE_TERM_NAMES[int(c)]
+                    for c in self._termination_reasons
+                ]),
+                "success": self._termination_reasons == TERM_TIMEOUT,
+                "success_criterion": "survived_full_episode",
                 "avg_speed": avg_speed.copy(),
                 "first_gate_step": self._first_gate_step.copy(),
+                "reward_components": np.array([
+                    {name: float(self._episode_reward_components[i, j])
+                     for j, name in enumerate(REWARD_COMPONENT_NAMES)}
+                    for i in range(self.n_envs)
+                ], dtype=object),
             }
 
             done_indices = np.where(done)[0]
@@ -730,7 +753,7 @@ class GateRaceEnv(gym.Env):
             )
             self._states[done] = reset_states
             self._step_counts[done] = 0
-            self._gate_indices[done] = 0
+            # _gate_indices and _start_gate_indices set by make_reset_states
             self._prev_actions[done] = 0.0
             self._gates_passed[done] = 0
             self._laps_completed[done] = 0
@@ -846,3 +869,38 @@ class GateRaceEnv(gym.Env):
         if self.n_envs == 1:
             return obs[0]
         return obs
+
+    # --- TrajectoryProvider protocol ---
+
+    def get_state(self, env_idx: int) -> dict[str, np.ndarray]:
+        """Return current state for one environment."""
+        state = self._states[env_idx]
+        return {
+            "position": state[POS].copy(),
+            "quaternion": state[QUAT].copy(),
+            "velocity": state[VEL].copy(),
+            "body_rates": state[OMEGA].copy(),
+            "motor_rpms": state[MOTOR].copy(),
+        }
+
+    def get_gate_geometry(self) -> dict[str, np.ndarray]:
+        """Return gate geometry for the track."""
+        n_gates = self.track.num_gates
+        positions = np.zeros((n_gates, 3), dtype=np.float64)
+        orientations = np.zeros((n_gates, 4), dtype=np.float64)
+        half_extents = np.zeros((n_gates, 2), dtype=np.float64)
+        radius = self.gate_passage_radius
+        for g in range(n_gates):
+            gate = self.track.gates[g]
+            positions[g] = gate.position
+            orientations[g] = gate.orientation
+            half_extents[g] = [radius, radius]
+        return {
+            "positions": positions,
+            "orientations": orientations,
+            "half_extents": half_extents,
+        }
+
+    def get_step_reward_components(self, env_idx: int) -> tuple[list[str], np.ndarray]:
+        """Return per-step reward component breakdown."""
+        return REWARD_COMPONENT_NAMES, self._step_reward_components[env_idx].copy()

@@ -138,3 +138,64 @@ def compute_reward(
     reward = r_prog + r_gate + r_alive - p_rate - p_offset - p_perc - p_delta_u - p_crash
 
     return reward
+
+
+# Component names for structured logging (matches compute_reward_components column order)
+MAVLAB_REWARD_COMPONENT_NAMES = [
+    "progress", "gate", "alive", "rate", "offset", "perc", "delta_u", "crash",
+]
+
+
+def compute_reward_components(
+    *,
+    d2g_old: np.ndarray,
+    d2g_new: np.ndarray,
+    omega: np.ndarray,
+    delta_action: np.ndarray,
+    gate_passed: np.ndarray,
+    crashed: np.ndarray,
+    offset: np.ndarray,
+    theta_cam: np.ndarray,
+    preset: str = "M23",
+    dt: float = 0.005,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute reward and per-component breakdown.
+
+    Returns
+    -------
+    rewards : (n_envs,) total reward
+    components : (n_envs, 8) per-component values in MAVLAB_REWARD_COMPONENT_NAMES order
+    """
+    p = PRESETS[preset]
+
+    d2g_old = np.asarray(d2g_old, dtype=np.float64)
+    d2g_new = np.asarray(d2g_new, dtype=np.float64)
+    omega = np.asarray(omega, dtype=np.float64)
+    delta_action = np.asarray(delta_action, dtype=np.float64)
+    gate_passed = np.asarray(gate_passed, dtype=np.float64)
+    crashed = np.asarray(crashed, dtype=np.float64)
+    offset = np.asarray(offset, dtype=np.float64)
+    theta_cam = np.asarray(theta_cam, dtype=np.float64)
+
+    raw_progress = d2g_old - d2g_new
+    if p.v_max > 0:
+        raw_progress = np.minimum(raw_progress, p.v_max * dt)
+
+    r_prog = p.lambda_prog * raw_progress
+    r_gate = p.lambda_gate * gate_passed
+    r_alive = p.lambda_alive * (1.0 - crashed)
+    p_rate = p.lambda_rate * np.sqrt(np.sum(omega ** 2, axis=-1))
+    p_offset = p.lambda_offset * offset * gate_passed
+    p_perc = p.lambda_perc * theta_cam * (theta_cam > np.pi / 3)
+    p_delta_u = p.lambda_delta_u * np.sum(np.abs(delta_action), axis=-1)
+    p_crash = p.lambda_crash * crashed
+
+    reward = r_prog + r_gate + r_alive - p_rate - p_offset - p_perc - p_delta_u - p_crash
+
+    n = d2g_old.shape[0] if d2g_old.ndim > 0 else 1
+    components = np.column_stack([
+        r_prog, r_gate, r_alive,
+        -p_rate, -p_offset, -p_perc, -p_delta_u, -p_crash,
+    ]).reshape(n, 8)
+
+    return reward, components

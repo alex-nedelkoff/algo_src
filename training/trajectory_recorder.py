@@ -7,6 +7,9 @@ visualisation.
 
 Environment construction is delegated to an ``EnvFactory`` so the recorder
 works with any sim backend (GateRaceEnv, RateCtrlEnv, etc.).
+
+Uses the TrajectoryProvider protocol from metrics.contract for env state
+extraction — no env-specific dual-path logic.
 """
 
 from __future__ import annotations
@@ -16,6 +19,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+from metrics.contract import (
+    ContractViolation,
+    TrajectoryProvider,
+    validate_trajectory_state,
+)
 
 if TYPE_CHECKING:
     from artifacts.uploader import ArtifactUploader
@@ -72,6 +81,7 @@ class TrajectoryRecorderCallback(BaseCallback):
         self._uploader = uploader
         self._env_factory = env_factory
         self._eval_reward_cfg = eval_reward_cfg
+        self._state_validated = False
 
     # ------------------------------------------------------------------
     # Helpers
@@ -82,6 +92,8 @@ class TrajectoryRecorderCallback(BaseCallback):
 
         Uses the EnvFactory if available, otherwise falls back to cloning
         from the training env (GateRaceEnv legacy path).
+
+        Validates the env implements TrajectoryProvider protocol.
         """
         if self._env_factory is not None:
             from omegaconf import OmegaConf
@@ -91,125 +103,68 @@ class TrajectoryRecorderCallback(BaseCallback):
             reward_cfg = self._eval_reward_cfg
             if reward_cfg is None:
                 reward_cfg = OmegaConf.create({})
-            return self._env_factory.make_eval_env(no_dr_cfg, reward_cfg, n_envs=1)
+            env = self._env_factory.make_eval_env(no_dr_cfg, reward_cfg, n_envs=1)
+        else:
+            # Legacy fallback: construct GateRaceEnv directly from training env
+            from sim.envs.gate_race_env import GateRaceEnv
 
-        # Legacy fallback: construct GateRaceEnv directly from training env
-        from sim.envs.gate_race_env import GateRaceEnv
+            train_env: GateRaceEnv = self.training_env.env  # type: ignore[attr-defined]
+            env = GateRaceEnv(
+                track=train_env.track,
+                params=train_env.params,
+                n_envs=1,
+                dt=train_env.dt,
+                max_steps=train_env.max_steps,
+                ceiling=train_env.ceiling,
+                reward_weights=train_env.reward_weights,
+                gate_passage_radius=train_env.gate_passage_radius,
+                v_max=train_env.v_max,
+                action_smoothness_threshold=train_env.action_smoothness_threshold,
+                esc_nonlinearity=train_env.esc_nonlinearity,
+                omega_min=train_env.omega_min,
+                max_body_rate=train_env.max_body_rate,
+                max_velocity=train_env.max_velocity,
+                arena_bounds=train_env.arena_bounds,
+                domain_randomizer=None,
+            )
 
-        train_env: GateRaceEnv = self.training_env.env  # type: ignore[attr-defined]
-        return GateRaceEnv(
-            track=train_env.track,
-            params=train_env.params,
-            n_envs=1,
-            dt=train_env.dt,
-            max_steps=train_env.max_steps,
-            ceiling=train_env.ceiling,
-            reward_weights=train_env.reward_weights,
-            gate_passage_radius=train_env.gate_passage_radius,
-            v_max=train_env.v_max,
-            action_smoothness_threshold=train_env.action_smoothness_threshold,
-            esc_nonlinearity=train_env.esc_nonlinearity,
-            omega_min=train_env.omega_min,
-            max_body_rate=train_env.max_body_rate,
-            max_velocity=train_env.max_velocity,
-            arena_bounds=train_env.arena_bounds,
-            domain_randomizer=None,
-        )
+        # Validate TrajectoryProvider protocol
+        raw_env = getattr(env, "env", env) if hasattr(env, "env") else env
+        if not isinstance(raw_env, TrajectoryProvider):
+            raise ContractViolation(
+                f"{type(raw_env).__name__} does not implement TrajectoryProvider. "
+                f"See metrics/contract.py for required methods."
+            )
+        return env
 
     def _extract_gate_geometry(self, env: Any) -> tuple[
         np.ndarray, np.ndarray, np.ndarray
     ]:
-        """Return (positions, orientations, half_extents) arrays for all gates.
-
-        Works with GateRaceEnv (Track object) or returns empty arrays
-        for envs without public gate geometry.
-        """
+        """Return gate geometry via TrajectoryProvider protocol."""
         raw_env = getattr(env, "env", env)
-
-        # GateRaceEnv path: track.gates with position/orientation
-        if hasattr(raw_env, "track") and hasattr(raw_env.track, "gates"):
-            track = raw_env.track
-            n_gates = track.num_gates
-            positions = np.zeros((n_gates, 3), dtype=np.float64)
-            orientations = np.zeros((n_gates, 4), dtype=np.float64)
-            half_extents = np.zeros((n_gates, 2), dtype=np.float64)
-            radius = getattr(raw_env, "gate_passage_radius", 0.5)
-            for g in range(n_gates):
-                gate = track.gates[g]
-                positions[g] = gate.position
-                orientations[g] = gate.orientation
-                half_extents[g] = [radius, radius]
-            return positions, orientations, half_extents
-
-        # Playground path: _gate_positions/_gate_yaws arrays
-        if hasattr(raw_env, "_gate_positions"):
-            n_gates = len(raw_env._gate_positions)
-            positions = raw_env._gate_positions.copy()
-            yaws = raw_env._gate_yaws
-            orientations = np.zeros((n_gates, 4), dtype=np.float64)
-            orientations[:, 3] = np.cos(yaws / 2)
-            orientations[:, 2] = np.sin(yaws / 2)
-            half_extents = np.full((n_gates, 2), 0.275, dtype=np.float64)
-            return positions, orientations, half_extents
-
-        return np.zeros((0, 3)), np.zeros((0, 4)), np.zeros((0, 2))
+        geom = raw_env.get_gate_geometry()
+        return geom["positions"], geom["orientations"], geom["half_extents"]
 
     def _extract_state(self, env: Any, idx: int = 0) -> dict[str, np.ndarray]:
-        """Extract state arrays from the raw env for recording.
-
-        Returns a dict with pos, quat, vel, body_rates, motor_rpms.
-        Falls back to zeros if internal state is not accessible.
-        """
+        """Extract state via TrajectoryProvider protocol."""
         raw_env = getattr(env, "env", env)
-
-        # GateRaceEnv: state layout [pos(3), vel(3), quat(4), rates(3), rpms(4)]
-        if hasattr(raw_env, "_states"):
-            state = raw_env._states[idx]
-            return {
-                "position": state[0:3].copy(),
-                "quaternion": state[6:10].copy(),
-                "velocity": state[3:6].copy(),
-                "body_rates": state[10:13].copy(),
-                "motor_rpms": state[13:17].copy(),
-            }
-
-        # Playground RateCtrlEnv: state layout [pos(3), vel(3), euler(3), rates(3), motors(4)]
-        if hasattr(raw_env, "_state"):
-            state = raw_env._state[idx]
-            # Convert euler to quaternion for storage
-            phi, theta, psi = state[6], state[7], state[8]
-            cy, sy = np.cos(psi / 2), np.sin(psi / 2)
-            cp, sp = np.cos(theta / 2), np.sin(theta / 2)
-            cr, sr = np.cos(phi / 2), np.sin(phi / 2)
-            quat = np.array([
-                sr * cp * cy - cr * sp * sy,
-                cr * sp * cy + sr * cp * sy,
-                cr * cp * sy - sr * sp * cy,
-                cr * cp * cy + sr * sp * sy,
-            ])
-            return {
-                "position": state[0:3].copy(),
-                "quaternion": quat,
-                "velocity": state[3:6].copy(),
-                "body_rates": state[9:12].copy(),
-                "motor_rpms": state[12:16].copy(),
-            }
-
-        return {
-            "position": np.zeros(3),
-            "quaternion": np.array([0, 0, 0, 1.0]),
-            "velocity": np.zeros(3),
-            "body_rates": np.zeros(3),
-            "motor_rpms": np.zeros(4),
-        }
+        state = raw_env.get_state(idx)
+        if not self._state_validated:
+            validate_trajectory_state(state, type(raw_env).__name__)
+            self._state_validated = True
+        return state
 
     def _get_gates_passed(self, env: Any, idx: int = 0) -> int:
-        """Get gates_passed counter from raw env."""
+        """Get gates_passed counter from raw env.
+
+        Uses the running counter (_gates_passed or _ep_gates_passed) which
+        never wraps, unlike _gate_idx which resets to 0 on lap completion.
+        """
         raw_env = getattr(env, "env", env)
         if hasattr(raw_env, "_gates_passed"):
             return int(raw_env._gates_passed[idx])
-        if hasattr(raw_env, "_gate_idx"):
-            return int(raw_env._gate_idx[idx])
+        if hasattr(raw_env, "_ep_gates_passed"):
+            return int(raw_env._ep_gates_passed[idx])
         return 0
 
     def _get_gate_index(self, env: Any, idx: int = 0) -> int:
@@ -222,26 +177,16 @@ class TrajectoryRecorderCallback(BaseCallback):
         return 0
 
     def _get_reward_components(self, env: Any, idx: int = 0) -> np.ndarray:
-        """Get per-step reward components from raw env."""
+        """Get per-step reward components via TrajectoryProvider."""
         raw_env = getattr(env, "env", env)
-        if hasattr(raw_env, "_step_reward_components"):
-            return raw_env._step_reward_components[idx].copy()
-        return np.zeros(0)
+        _, values = raw_env.get_step_reward_components(idx)
+        return values
 
     def _get_reward_component_names(self, env: Any) -> list[str]:
-        """Get reward component names from raw env."""
+        """Get reward component names via TrajectoryProvider."""
         raw_env = getattr(env, "env", env)
-        # GateRaceEnv has REWARD_COMPONENT_NAMES at module level
-        mod = type(raw_env).__module__
-        try:
-            import importlib
-
-            m = importlib.import_module(mod)
-            if hasattr(m, "REWARD_COMPONENT_NAMES"):
-                return list(m.REWARD_COMPONENT_NAMES)
-        except ImportError:
-            pass
-        return []
+        names, _ = raw_env.get_step_reward_components(0)
+        return names
 
     def _rollout_episode(
         self, env: Any, episode_idx: int, out_dir: Path

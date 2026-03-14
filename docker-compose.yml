@@ -31,6 +31,7 @@ services:
       context: .
       dockerfile: docker/control.Dockerfile
     profiles: ["train", "full-stack"]
+    env_file: .env
     volumes:
       - ./configs:/app/configs:ro
       - ./data:/app/data:ro
@@ -51,6 +52,7 @@ services:
       context: .
       dockerfile: docker/perception.Dockerfile
     profiles: ["train-perception", "full-stack"]
+    env_file: .env
     volumes:
       - ./configs:/app/configs:ro
       - ./data:/app/data:ro

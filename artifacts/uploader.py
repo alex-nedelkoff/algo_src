@@ -162,23 +162,13 @@ class ArtifactUploader:
                 remaining,
             )
 
-        # Log the Rerun HTML panel once — single data point means no slider.
-        if self._wandb_run is not None and self._rerun_rows:
-            try:
-                html = self._build_rerun_html()
-                self._wandb_run.log(
-                    {"Rerun Recordings": self._wandb.Html(html)},
-                    commit=False,
-                )
-                log.info(
-                    "W&B Rerun panel logged (%d recordings)",
-                    len(self._rerun_rows),
-                )
-            except Exception:
-                log.warning(
-                    "Failed to log W&B Rerun panel — skipping.",
-                    exc_info=True,
-                )
+        # Final Rerun panel update (ensures all recordings are included).
+        self._update_wandb_rerun_panel()
+        if self._rerun_rows:
+            log.info(
+                "W&B Rerun panel logged (%d recordings)",
+                len(self._rerun_rows),
+            )
 
     # ------------------------------------------------------------------
     # Worker
@@ -263,12 +253,29 @@ class ArtifactUploader:
                 )
                 rrd_key = None
 
-        # --- 4. Accumulate Rerun viewer URL for final W&B panel ---------------
+        # --- 4. Accumulate Rerun viewer URL and update W&B panel ---------------
         if rrd_key is None:
             return
 
         viewer_url = rerun_viewer_url(rrd_key)
         self._rerun_rows.append((step, stem, viewer_url))
+        self._update_wandb_rerun_panel()
+
+    def _update_wandb_rerun_panel(self) -> None:
+        """Update the W&B Rerun HTML panel with all recordings so far."""
+        if self._wandb_run is None or not self._rerun_rows:
+            return
+        try:
+            html = self._build_rerun_html()
+            self._wandb_run.log(
+                {"Rerun Recordings": self._wandb.Html(html)},
+                commit=False,
+            )
+        except Exception:
+            log.debug(
+                "Failed to update W&B Rerun panel — will retry next recording.",
+                exc_info=True,
+            )
 
     def _build_rerun_html(self) -> str:
         """Build an HTML table of Rerun viewer links."""

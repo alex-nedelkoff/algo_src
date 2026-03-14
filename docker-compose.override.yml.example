@@ -5,45 +5,22 @@
 #
 #   cp docker-compose.override.yml.example docker-compose.override.yml
 #
-# Customize the settings below to match your local environment.
+# Credentials (WANDB_API_KEY, R2_*) are loaded from .env via env_file
+# in docker-compose.yml — no need to set them here.
 
 services:
   control:
-    volumes:
-      # Mount source code for live reloading during development
-      - ./control:/app/control
-      - ./sim:/app/sim
-      # Persist training outputs outside the container
-      - ./outputs:/app/outputs
-    environment:
-      # Weights & Biases API key for experiment tracking
-      - WANDB_API_KEY=${WANDB_API_KEY}
-      # Enable debug logging
-      - LOG_LEVEL=DEBUG
-    ports:
-      # debugpy remote debugger
-      - "5678:5678"
+    # Set the experiment to run (required)
+    command: ["python", "-m", "training", "+experiment=monorace_baseline"]
+    # Optional: mount source for live reloading during development
+    # volumes:
+    #   - ./control:/app/control
+    #   - ./sim:/app/sim
+    # Optional: debugpy remote debugger
+    # ports:
+    #   - "5678:5678"
 
   perception:
-    volumes:
-      # Mount source code for live reloading during development
-      - ./perception:/app/perception
-      # Persist training outputs outside the container
-      - ./outputs:/app/outputs
-    environment:
-      # Weights & Biases API key for experiment tracking
-      - WANDB_API_KEY=${WANDB_API_KEY}
-      # Enable debug logging
-      - LOG_LEVEL=DEBUG
-    ports:
-      # debugpy remote debugger
-      - "5679:5678"
-
-  sim:
-    volumes:
-      # Mount source code for live reloading during development
-      - ./sim:/app/sim
-      # Persist outputs outside the container
-      - ./outputs:/app/outputs
-    environment:
-      - LOG_LEVEL=DEBUG
+    # command: ["python", "-m", "perception.train"]
+    # ports:
+    #   - "5679:5678"

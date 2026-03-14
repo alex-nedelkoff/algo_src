@@ -30,7 +30,7 @@ from gymnasium import spaces
 from sim.dynamics.sympy_quad import NOMINAL_PARAMS, build_dynamics_fn
 from sim.motor_model import motor_step
 from sim.envs.playground_obs import gate_relative_obs
-from sim.rewards_mavlab import compute_reward
+from sim.rewards_mavlab import compute_reward_components, MAVLAB_REWARD_COMPONENT_NAMES
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +143,12 @@ ACT_DIM = 4
 TERM_NONE = 0
 TERM_CRASH = 1
 TERM_TIMEOUT = 2
+
+RATE_CTRL_TERM_NAMES = {
+    0: "none",
+    1: "crash",
+    2: "timeout",
+}
 
 
 class RateCtrlEnv:
@@ -272,8 +278,16 @@ class RateCtrlEnv:
 
         # Per-episode accumulators for info dict
         self._ep_reward = np.zeros(n_envs, dtype=np.float64)
+        self._ep_reward_components = np.zeros((n_envs, len(MAVLAB_REWARD_COMPONENT_NAMES)), dtype=np.float64)
         self._ep_gates_passed = np.zeros(n_envs, dtype=np.int32)
         self._ep_laps = np.zeros(n_envs, dtype=np.int32)
+        self._ep_speed_sum = np.zeros(n_envs, dtype=np.float64)
+        self._ep_speed_count = np.zeros(n_envs, dtype=np.int32)
+        self._ep_first_gate_step = np.full(n_envs, -1, dtype=np.int32)
+        # Per-step reward components (for TrajectoryProvider)
+        self._step_reward_components = np.zeros(
+            (n_envs, len(MAVLAB_REWARD_COMPONENT_NAMES)), dtype=np.float64
+        )
 
     # ------------------------------------------------------------------
     # Reset
@@ -389,8 +403,13 @@ class RateCtrlEnv:
 
         # Reset episode accumulators
         self._ep_reward[env_mask] = 0.0
+        self._ep_reward_components[env_mask] = 0.0
         self._ep_gates_passed[env_mask] = 0
         self._ep_laps[env_mask] = 0
+        self._ep_speed_sum[env_mask] = 0.0
+        self._ep_speed_count[env_mask] = 0
+        self._ep_first_gate_step[env_mask] = -1
+        self._step_reward_components[env_mask] = 0.0
 
         # Initialize signed distance for plane-crossing detection
         if len(self._tracks) == 1:
@@ -513,22 +532,9 @@ class RateCtrlEnv:
         offset = np.zeros(self.n_envs)
         theta_cam = np.zeros(self.n_envs)
 
-        # Normalize progress by mean inter-gate distance (per-env)
-        # This makes d2g_old - d2g_new (raw progress) geometry-independent.
-        # NOTE: When v_max > 0, compute_reward clamps raw progress to v_max*dt
-        # (in meters), but after normalization progress is dimensionless.
-        # Safe when v_max=0.0 (all current experiments). If v_max>0 needed
-        # later, normalize the clamp too: v_max * dt / igd.
-        if len(self._tracks) > 1:
-            igd = np.array([self._mean_igd[self._track_idx[i]] for i in range(self.n_envs)])
-        else:
-            igd = np.full(self.n_envs, self._mean_igd[0])
-        d2g_old_norm = d2g_old / igd
-        d2g_new_norm = d2g_new / igd
-
-        rewards = compute_reward(
-            d2g_old=d2g_old_norm,
-            d2g_new=d2g_new_norm,
+        rewards, step_components = compute_reward_components(
+            d2g_old=d2g_old,
+            d2g_new=d2g_new,
             omega=omega,
             delta_action=delta_action,
             gate_passed=gate_passed,
@@ -540,13 +546,25 @@ class RateCtrlEnv:
         )
 
         self._prev_action = actions.copy()
+        self._step_reward_components = step_components.copy()
 
         # Update episode accumulators
         self._ep_reward += rewards
+        self._ep_reward_components += step_components
         self._ep_gates_passed += gate_passed.astype(np.int32)
         # Track lap completion
         lap_completed = gate_passed & (self._gate_idx == 0)
         self._ep_laps += lap_completed.astype(np.int32)
+
+        # Speed tracking (velocity magnitude)
+        vel = self._state[:, 3:6]
+        speed = np.linalg.norm(vel, axis=-1)
+        self._ep_speed_sum += speed
+        self._ep_speed_count += 1
+
+        # First gate step tracking
+        just_passed = gate_passed & (self._ep_first_gate_step < 0)
+        self._ep_first_gate_step[just_passed] = self._step_count[just_passed]
 
         # Build info dict (batched, VecEnvAdapter-compatible format)
         # Capture terminal obs BEFORE auto-reset
@@ -557,14 +575,33 @@ class RateCtrlEnv:
         term_reason[crashed] = TERM_CRASH
         term_reason[timed_out & ~crashed] = TERM_TIMEOUT
 
+        # Compute avg speed per env
+        avg_speed = np.where(
+            self._ep_speed_count > 0,
+            self._ep_speed_sum / self._ep_speed_count,
+            0.0,
+        )
+
         info: dict[str, Any] = {
             "terminal_obs": terminal_obs,
             "episode": {
                 "r": self._ep_reward.copy(),
-                "episode_length": self._step_count.copy(),
+                "l": self._step_count.copy(),
+                "effective_dt": self.dt * self.action_repeat,
                 "gates_passed": self._ep_gates_passed.copy(),
                 "laps_completed": self._ep_laps.copy(),
-                "termination_reason": term_reason,
+                "termination": np.array([
+                    RATE_CTRL_TERM_NAMES[int(c)] for c in term_reason
+                ]),
+                "success": term_reason == TERM_TIMEOUT,
+                "success_criterion": "survived_full_episode",
+                "avg_speed": avg_speed.copy(),
+                "first_gate_step": self._ep_first_gate_step.copy(),
+                "reward_components": np.array([
+                    {name: float(self._ep_reward_components[i, j])
+                     for j, name in enumerate(MAVLAB_REWARD_COMPONENT_NAMES)}
+                    for i in range(self.n_envs)
+                ], dtype=object),
             },
         }
 
@@ -733,3 +770,49 @@ class RateCtrlEnv:
         has_nan = np.any(~np.isfinite(self._state), axis=1)
 
         return oob_xy | oob_z | tilt | has_nan
+
+    # --- TrajectoryProvider protocol ---
+
+    def get_state(self, env_idx: int) -> dict[str, np.ndarray]:
+        """Return current state for one environment."""
+        state = self._state[env_idx]
+        # Convert Euler angles to quaternion (w, x, y, z)
+        phi, theta, psi = state[6], state[7], state[8]
+        cr, sr = np.cos(phi / 2), np.sin(phi / 2)
+        cp, sp = np.cos(theta / 2), np.sin(theta / 2)
+        cy, sy = np.cos(psi / 2), np.sin(psi / 2)
+        quat = np.array([
+            cr * cp * cy + sr * sp * sy,  # w
+            sr * cp * cy - cr * sp * sy,  # x
+            cr * sp * cy + sr * cp * sy,  # y
+            cr * cp * sy - sr * sp * cy,  # z
+        ])
+        return {
+            "position": state[0:3].copy(),
+            "quaternion": quat,
+            "velocity": state[3:6].copy(),
+            "body_rates": state[9:12].copy(),
+            "motor_rpms": state[12:16].copy(),
+        }
+
+    def get_gate_geometry(self) -> dict[str, np.ndarray]:
+        """Return gate geometry for the track."""
+        n_gates = self._n_gates
+        positions = self._gate_positions.copy()
+        yaws = self._gate_yaws
+        orientations = np.zeros((n_gates, 4), dtype=np.float64)
+        # Yaw-only quaternion: [cos(yaw/2), 0, 0, sin(yaw/2)]
+        orientations[:, 0] = np.cos(yaws / 2)
+        orientations[:, 3] = np.sin(yaws / 2)
+        hw = self._track["gate_width"] / 2
+        hh = self._track["gate_height"] / 2
+        half_extents = np.full((n_gates, 2), [hw, hh], dtype=np.float64)
+        return {
+            "positions": positions,
+            "orientations": orientations,
+            "half_extents": half_extents,
+        }
+
+    def get_step_reward_components(self, env_idx: int) -> tuple[list[str], np.ndarray]:
+        """Return per-step reward component breakdown."""
+        return list(MAVLAB_REWARD_COMPONENT_NAMES), self._step_reward_components[env_idx].copy()
