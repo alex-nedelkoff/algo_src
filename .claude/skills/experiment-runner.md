@@ -48,15 +48,24 @@ services:
 
 Change `+experiment=monorace_baseline` to whichever experiment you want to run. That's the only thing you need to change in this file.
 
-### 3. Verify GPU access
+### 3. Understand the runtime
 
-Training requires an NVIDIA GPU with Docker GPU support:
+All Python code runs inside Docker — there is no native Python environment. Two images are available:
+
+| Image | Use case | GPU required? |
+|-------|----------|---------------|
+| `algo_src-control` (GPU) | Full training runs | Yes — needs NVIDIA GPU + Container Toolkit |
+| `algo_src-control-cpu` (CPU) | Smoke tests, W&B flow verification, debugging | No |
+
+**If you have an NVIDIA GPU**, verify Docker GPU support:
 
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
 If this fails, install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
+
+**If you don't have a GPU** (e.g., Mac), use the CPU image for smoke tests and verification (see "CPU training" below).
 
 ## Available Experiments
 
@@ -80,46 +89,76 @@ python -m training +experiment=monorace_baseline --cfg job
 
 ## Launching Training
 
-### Quick start
+### GPU training (full runs)
 
 ```bash
 make train
 ```
 
-This builds the GPU Docker image, injects credentials from `.env`, and launches training with your experiment config from `docker-compose.override.yml`.
+This builds the GPU Docker image, injects credentials from `.env`, and launches training with your experiment config from `docker-compose.override.yml`. Requires an NVIDIA GPU.
 
-### Direct docker run (alternative)
+Or run directly:
 
 ```bash
 docker run --rm --gpus all \
   --env-file .env \
   -v $(pwd)/configs:/app/configs:ro \
   -v $(pwd)/outputs:/app/outputs \
-  algo-src-control \
+  algo_src-control \
   python -m training +experiment=monorace_baseline
 ```
 
+### CPU training (smoke tests / no GPU)
+
+If you don't have a GPU (e.g., on a Mac), use the CPU image:
+
+```bash
+docker run --rm \
+  --env-file .env \
+  -v $(pwd)/configs:/app/configs:ro \
+  -v $(pwd)/outputs:/app/outputs \
+  algo_src-control-cpu \
+  python -m training +experiment=smoke_test
+```
+
+CPU training is too slow for full runs but works for verifying the W&B/R2 flow and debugging configs. Build the CPU image first if needed: `make build-control-cpu`.
+
 ### CLI overrides
 
-Override any config value from the command line:
+Override any config value from the command line (works with both GPU and CPU images):
+
+```bash
+# docker run
+docker run --rm --env-file .env \
+  -v $(pwd)/configs:/app/configs:ro \
+  -v $(pwd)/outputs:/app/outputs \
+  algo_src-control \
+  python -m training +experiment=monorace_baseline \
+  sim.n_envs=200 total_timesteps=50_000_000 seed=123
+```
 
 ```yaml
-# In docker-compose.override.yml
+# Or in docker-compose.override.yml
 command: ["python", "-m", "training", "+experiment=monorace_baseline",
           "sim.n_envs=200", "total_timesteps=50_000_000", "seed=123"]
 ```
 
 ### Smoke test first
 
-Before a long run, verify everything works with the smoke test config (50K steps, ~1 min):
+Before a long run, verify everything works with the smoke test config (50K steps, ~1 min on GPU):
 
-```yaml
-command: ["python", "-m", "training", "+experiment=smoke_test"]
+```bash
+docker run --rm --gpus all \
+  --env-file .env \
+  -v $(pwd)/configs:/app/configs:ro \
+  -v $(pwd)/outputs:/app/outputs \
+  algo_src-control \
+  python -m training +experiment=smoke_test
 ```
 
 ## W&B Metrics
 
-All experiments log to the `corvidx-drone-racing` W&B project. The metrics contract (`metrics/contract.py`) ensures consistent panels across all environments.
+All experiments log to the `corvidx-drone-racing` W&B project. The metrics contract (`metrics/contract.py`) ensures consistent panels across all environments. Training and evaluation episodes are tracked separately with `racing/` and `eval_racing/` prefixes respectively.
 
 ### Racing metrics (`racing/` prefix)
 
@@ -144,6 +183,16 @@ All experiments log to the `corvidx-drone-racing` W&B project. The metrics contr
 Shows the fraction of episodes ending for each reason (dynamic, env-specific):
 - GateRaceEnv: `ground`, `ceiling`, `quat`, `nan`, `arena_oob`, `body_rate`, `gate_collision`, `timeout`
 - RateCtrlEnv: `crash`, `timeout`
+
+### Eval racing metrics (`eval_racing/` prefix)
+
+Mirrors all `racing/` panels but from evaluation episodes (no domain randomization). Useful for monitoring generalization:
+- `eval_racing/gates_per_ep`, `eval_racing/laps_per_ep`, `eval_racing/success_rate`, etc.
+- `eval_racing/best_lap_time_ever`, `eval_racing/best_gates_per_ep_ever`
+
+### Eval termination breakdown (`eval_termination/` prefix)
+
+Termination reasons for eval episodes, mirroring the `termination/` prefix.
 
 ### SB3 default metrics
 
@@ -176,8 +225,8 @@ Verify your `.env` file exists at the repo root and contains `WANDB_API_KEY=...`
 - Metrics log every `log_freq` steps (default 100) — wait for a few hundred steps
 - Racing metrics only appear after the first episode completes
 
-### "No NVIDIA GPU detected"
-The control Docker image requires `--gpus all`. If using `make train`, docker compose handles this via the `deploy.resources.reservations.devices` section. If using `docker run`, pass `--gpus all` explicitly.
+### "No NVIDIA GPU detected" / "could not select device driver nvidia"
+`make train` uses the GPU image which requires `--gpus all`. If you don't have an NVIDIA GPU, use the CPU image instead (see "CPU training" above). If you do have a GPU but see this error, install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 
 ### Training runs but no R2 uploads
 - Verify `.env` has all 4 `R2_*` variables

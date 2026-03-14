@@ -80,7 +80,7 @@ def setup_callbacks(
     """
     from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 
-    from training.callbacks import GateMetricsCallback
+    from training.callbacks import EvalRacingCallback, GateMetricsCallback
     from training.trajectory_recorder import TrajectoryRecorderCallback
 
     callbacks = []
@@ -96,6 +96,8 @@ def setup_callbacks(
     )
 
     if eval_env is not None:
+        eval_env.enable_episode_buffer()
+        eval_racing = EvalRacingCallback(eval_env)
         callbacks.append(
             EvalCallback(
                 eval_env,
@@ -103,6 +105,7 @@ def setup_callbacks(
                 eval_freq=max(1, cfg.eval_freq // n_envs),
                 best_model_save_path=str(output_dir / "best_model"),
                 log_path=str(output_dir / "eval_logs"),
+                callback_after_eval=eval_racing,
             )
         )
 

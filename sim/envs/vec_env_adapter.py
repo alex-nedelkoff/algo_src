@@ -43,6 +43,8 @@ class VecEnvAdapter(VecEnv):
         self._actions: NDArray[np.float32] | None = None
         self._pending_seed: int | None = None
         self._contract_validated = False
+        self._completed_episodes: list[dict[str, Any]] = []
+        self._buffer_episodes = False
 
     def reset(self) -> NDArray[np.float32]:
         """Reset all environments and return observations."""
@@ -113,6 +115,8 @@ class VecEnvAdapter(VecEnv):
                         validate_episode_metrics(ep, env_name)
                         self._contract_validated = True
                     env_info["episode"] = ep
+                    if self._buffer_episodes:
+                        self._completed_episodes.append(ep)
             infos.append(env_info)
 
         return obs, rewards, dones, infos
@@ -146,6 +150,10 @@ class VecEnvAdapter(VecEnv):
         self, attr_name: str, value: Any, indices: Sequence[int] | None = None
     ) -> None:
         setattr(self.env, attr_name, value)
+
+    def enable_episode_buffer(self) -> None:
+        """Enable buffering completed episode dicts for eval racing metrics."""
+        self._buffer_episodes = True
 
     def seed(self, seed: int | None = None) -> list[int | None]:
         self._pending_seed = seed

@@ -332,6 +332,7 @@ class GateRaceEnv(gym.Env):
         # Per-episode gate/lap tracking
         self._gates_passed = np.zeros(n_envs, dtype=np.int64)
         self._laps_completed = np.zeros(n_envs, dtype=np.int64)
+        self._start_gate_indices = np.zeros(n_envs, dtype=np.int64)
         self._episode_rewards = np.zeros(n_envs, dtype=np.float64)
         self._termination_reasons = np.zeros(n_envs, dtype=np.int8)
 
@@ -383,6 +384,7 @@ class GateRaceEnv(gym.Env):
             # Pick a random gate
             gate_idx = int(rng.integers(0, self.track.num_gates))
             self._gate_indices[idx] = gate_idx
+            self._start_gate_indices[idx] = gate_idx
             gate = self.track.gates[gate_idx]
             normal = _gate_normal(gate)
 
@@ -443,7 +445,6 @@ class GateRaceEnv(gym.Env):
 
         self._states = self.dynamics.reset(self.n_envs)
         self._step_counts[:] = 0
-        self._gate_indices[:] = 0
         self._prev_actions = np.zeros((self.n_envs, 4), dtype=np.float64)
         self._gates_passed[:] = 0
         self._laps_completed[:] = 0
@@ -643,11 +644,11 @@ class GateRaceEnv(gym.Env):
                 lateral = rel_pos - curr_along_normal * normal
                 lateral_dist = float(np.linalg.norm(lateral))
                 if lateral_dist <= self.gate_passage_radius:
-                    # Gate passed! Increment gate index
-                    self._gate_indices[i] += 1
+                    # Gate passed! Increment gate index (wrapping)
+                    self._gate_indices[i] = (self._gate_indices[i] + 1) % self.track.num_gates
                     self._gates_passed[i] += 1
-                    if self._gate_indices[i] >= self.track.num_gates:
-                        self._gate_indices[i] = 0
+                    # Lap complete when we've passed num_gates gates (full circuit)
+                    if self._gates_passed[i] > 0 and self._gates_passed[i] % self.track.num_gates == 0:
                         self._laps_completed[i] += 1
 
                     # Track first gate step
@@ -752,7 +753,7 @@ class GateRaceEnv(gym.Env):
             )
             self._states[done] = reset_states
             self._step_counts[done] = 0
-            self._gate_indices[done] = 0
+            # _gate_indices and _start_gate_indices set by make_reset_states
             self._prev_actions[done] = 0.0
             self._gates_passed[done] = 0
             self._laps_completed[done] = 0

@@ -129,8 +129,10 @@ docker run --rm algo-src-control-cpu python -m training \
 ```
 
 Verify:
-- [ ] W&B metrics appear with correct names under `racing/` and `termination/` prefixes
+- [ ] W&B metrics appear with correct names under `racing/` and `termination/` prefixes (training episodes)
+- [ ] If eval is enabled: `eval_racing/` and `eval_termination/` prefixes also appear (eval episodes)
 - [ ] `racing/success_rate` is not always 0%
+- [ ] Reward components show named labels (`reward_progress`, `reward_gate_passage`, etc.) not `reward_component_0`
 - [ ] Termination breakdown shows string names (not int codes or mismatched labels)
 - [ ] Trajectory .npz files are generated with non-empty `reward_components`
 - [ ] Rerun `.rrd` generates from the `.npz` without errors

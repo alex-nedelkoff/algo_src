@@ -25,6 +25,7 @@ class GateMetricsCallback(BaseCallback):
     Args:
         log_freq: Log summary every N env steps (not timesteps).
         window_size: Rolling window size for statistics.
+        prefix: Metric prefix (default "racing" for train, use "eval_racing" for eval).
         verbose: Verbosity level.
     """
 
@@ -32,11 +33,13 @@ class GateMetricsCallback(BaseCallback):
         self,
         log_freq: int = 1000,
         window_size: int = 200,
+        prefix: str = "racing",
         verbose: int = 1,
     ) -> None:
         super().__init__(verbose)
         self.log_freq = log_freq
         self.window_size = window_size
+        self.prefix = prefix
 
         # Rolling buffers
         self._gates: deque[int] = deque(maxlen=window_size)
@@ -132,11 +135,18 @@ class GateMetricsCallback(BaseCallback):
 
             # Reward component breakdown (dynamic names)
             rc = ep.get("reward_components")
-            if rc is not None and isinstance(rc, dict):
-                for name, val in rc.items():
-                    if name not in self._reward_component_buffers:
-                        self._reward_component_buffers[name] = deque(maxlen=self.window_size)
-                    self._reward_component_buffers[name].append(float(val))
+            if rc is not None:
+                # Coerce to dict if needed (numpy object arrays, lists of tuples, etc.)
+                if not isinstance(rc, dict):
+                    try:
+                        rc = dict(rc)
+                    except (TypeError, ValueError):
+                        rc = None
+                if rc is not None:
+                    for name, val in rc.items():
+                        if name not in self._reward_component_buffers:
+                            self._reward_component_buffers[name] = deque(maxlen=self.window_size)
+                        self._reward_component_buffers[name].append(float(val))
 
             # Average speed
             avg_spd = ep.get("avg_speed")
@@ -156,72 +166,74 @@ class GateMetricsCallback(BaseCallback):
 
     def _log_metrics(self) -> None:
         """Write rolling metrics to SB3 logger."""
+        p = self.prefix
         gates = np.array(self._gates)
         laps = np.array(self._laps)
 
         # Gate metrics
-        self.logger.record("racing/gates_per_ep", float(gates.mean()))
-        self.logger.record("racing/gates_per_ep_max", int(gates.max()))
-        self.logger.record("racing/laps_per_ep", float(laps.mean()))
-        self.logger.record("racing/total_gates", self._total_gates)
-        self.logger.record("racing/total_laps", self._total_laps)
+        self.logger.record(f"{p}/gates_per_ep", float(gates.mean()))
+        self.logger.record(f"{p}/gates_per_ep_max", int(gates.max()))
+        self.logger.record(f"{p}/laps_per_ep", float(laps.mean()))
+        self.logger.record(f"{p}/total_gates", self._total_gates)
+        self.logger.record(f"{p}/total_laps", self._total_laps)
 
         # Success rate from contract bool
         success_rate = sum(self._successes) / len(self._successes) if self._successes else 0.0
-        self.logger.record("racing/success_rate", success_rate)
+        self.logger.record(f"{p}/success_rate", success_rate)
 
         # Gate passage rate: fraction of episodes with at least 1 gate
         gate_passers = (gates > 0).sum()
-        self.logger.record("racing/gate_passage_rate", gate_passers / len(gates))
+        self.logger.record(f"{p}/gate_passage_rate", gate_passers / len(gates))
 
         # Lap completion rate: fraction of episodes with at least 1 lap
         lap_completers = (laps > 0).sum()
-        self.logger.record("racing/lap_completion_rate", lap_completers / len(laps))
+        self.logger.record(f"{p}/lap_completion_rate", lap_completers / len(laps))
 
         # Lap times
         if self._lap_times:
             lt = np.array(self._lap_times)
-            self.logger.record("racing/lap_time_mean", float(lt.mean()))
-            self.logger.record("racing/lap_time_best", float(lt.min()))
+            self.logger.record(f"{p}/lap_time_mean", float(lt.mean()))
+            self.logger.record(f"{p}/lap_time_best", float(lt.min()))
 
         # All-time bests
         if self._best_lap_time < float("inf"):
-            self.logger.record("racing/best_lap_time_ever", self._best_lap_time)
-        self.logger.record("racing/best_gates_per_ep_ever", self._best_gates_per_ep)
-        self.logger.record("racing/best_laps_per_ep_ever", self._best_laps_per_ep)
-        self.logger.record("racing/best_ep_reward_ever", self._best_ep_reward)
+            self.logger.record(f"{p}/best_lap_time_ever", self._best_lap_time)
+        self.logger.record(f"{p}/best_gates_per_ep_ever", self._best_gates_per_ep)
+        self.logger.record(f"{p}/best_laps_per_ep_ever", self._best_laps_per_ep)
+        self.logger.record(f"{p}/best_ep_reward_ever", self._best_ep_reward)
 
         # Max laps in rolling window
-        self.logger.record("racing/laps_per_ep_max", int(laps.max()))
-        self.logger.record("racing/total_episodes", self._total_episodes)
+        self.logger.record(f"{p}/laps_per_ep_max", int(laps.max()))
+        self.logger.record(f"{p}/total_episodes", self._total_episodes)
 
         # Reward component breakdown (dynamic)
         for name, buf in self._reward_component_buffers.items():
             if buf:
                 self.logger.record(
-                    f"racing/reward_{name}",
+                    f"{p}/reward_{name}",
                     float(np.mean(buf)),
                 )
 
         # Average speed
         if self._avg_speed:
             self.logger.record(
-                "racing/avg_speed", float(np.mean(self._avg_speed))
+                f"{p}/avg_speed", float(np.mean(self._avg_speed))
             )
 
         # Steps to first gate
         if self._first_gate_step:
             self.logger.record(
-                "racing/steps_to_first_gate",
+                f"{p}/steps_to_first_gate",
                 float(np.mean(self._first_gate_step)),
             )
 
         # Termination breakdown (dynamic from string names)
+        term_prefix = "eval_termination" if p != "racing" else "termination"
         term_counts = Counter(self._term_reasons)
         total = len(self._term_reasons)
         for name, count in term_counts.items():
             frac = count / total if total > 0 else 0.0
-            self.logger.record(f"termination/{name}", frac)
+            self.logger.record(f"{term_prefix}/{name}", frac)
 
         # Print to stdout
         if self.verbose >= 1:
@@ -239,3 +251,46 @@ class GateMetricsCallback(BaseCallback):
                     f"total_laps={self._total_laps}"
                     f"{lt_str}"
                 )
+
+
+class EvalRacingCallback(BaseCallback):
+    """Collect racing metrics from eval episodes.
+
+    Attach as ``callback_after_eval`` on SB3's ``EvalCallback``.
+    After each eval round, reads buffered episode dicts from the eval
+    env's ``_completed_episodes`` list and logs under ``eval_racing/``.
+
+    The eval env (VecEnvAdapter) must have ``_completed_episodes``
+    buffering enabled — call ``eval_env.enable_episode_buffer()``
+    before training starts.
+    """
+
+    def __init__(self, eval_env, window_size: int = 200, verbose: int = 0) -> None:
+        super().__init__(verbose)
+        self.eval_env = eval_env
+        self._metrics = GateMetricsCallback(
+            log_freq=1, window_size=window_size, prefix="eval_racing", verbose=0,
+        )
+
+    def init_callback(self, model) -> None:
+        super().init_callback(model)
+        self._metrics.init_callback(model)
+
+    def _on_step(self) -> bool:
+        """Called by EvalCallback after eval episodes complete."""
+        # Drain buffered episodes from the eval env
+        episodes = getattr(self.eval_env, "_completed_episodes", [])
+        if not episodes:
+            return True
+
+        for ep in episodes:
+            self._metrics.locals = {"infos": [{"episode": ep}]}
+            self._metrics.n_calls += 1
+            self._metrics._on_step()
+
+        # Force log and clear buffer
+        if self._metrics._gates:
+            self._metrics._log_metrics()
+        self.eval_env._completed_episodes.clear()
+
+        return True
