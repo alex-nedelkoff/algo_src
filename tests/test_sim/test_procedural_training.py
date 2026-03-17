@@ -115,6 +115,39 @@ class TestEnvWithFixedTracks:
             GateRaceEnv(n_envs=3, tracks=tracks)
 
 
+def test_training_smoke_with_lookahead():
+    """Verify training runs with n_lookahead_gates=2 (28-dim obs)."""
+    import numpy as np
+    from omegaconf import OmegaConf
+    from sim.envs.numpy_quad_factory import NumpyQuadEnvFactory
+
+    factory = NumpyQuadEnvFactory(
+        n_envs=2,
+        n_lookahead_gates=2,
+        max_steps=50,
+    )
+    dr_cfg = OmegaConf.create({"enabled": False})
+    reward_cfg = OmegaConf.create({
+        "weights": {"gate_passage": 1.0, "gate_progress": 1.0},
+        "v_max": 10.0,
+    })
+    vec_env = factory.make_vec_env(dr_cfg, reward_cfg)
+
+    # Verify obs space
+    assert vec_env.observation_space.shape == (28,)
+
+    # Step through a few iterations
+    obs = vec_env.reset()
+    assert obs.shape == (2, 28)
+    for _ in range(10):
+        action = np.zeros((2, 4), dtype=np.float32)
+        obs, rewards, dones, infos = vec_env.step(action)
+        assert obs.shape == (2, 28)
+        assert np.all(np.isfinite(obs))
+
+    vec_env.close()
+
+
 def test_factory_passes_n_lookahead_gates():
     """Factory passes n_lookahead_gates to GateRaceEnv."""
     from omegaconf import OmegaConf
