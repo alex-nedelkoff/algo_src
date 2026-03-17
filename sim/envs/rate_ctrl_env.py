@@ -796,7 +796,11 @@ class RateCtrlEnv:
         }
 
     def get_gate_geometry(self, env_idx: int = 0) -> dict[str, np.ndarray]:
-        """Return gate geometry for the track."""
+        """Return gate geometry for the track.
+
+        Note: env_idx is accepted for protocol compatibility but currently
+        returns track 0 geometry regardless. RateCtrlEnv uses a single track.
+        """
         n_gates = self._n_gates
         positions = self._gate_positions.copy()
         yaws = self._gate_yaws

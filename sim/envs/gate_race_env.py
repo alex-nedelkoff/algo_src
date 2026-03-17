@@ -306,6 +306,8 @@ class GateRaceEnv(gym.Env):
         if track is None:
             from sim.tracks import build_figure8_track
             track = build_figure8_track()
+        # Safe: Track is an immutable geometry container (no per-env state).
+        # When track_generator is set, each entry is replaced on reset.
         self._tracks: list[Track] = [track] * n_envs
         self.track_generator: ProceduralTrackGenerator | None = track_generator
 
