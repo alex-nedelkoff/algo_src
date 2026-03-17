@@ -752,6 +752,11 @@ class GateRaceEnv(gym.Env):
                      for j, name in enumerate(REWARD_COMPONENT_NAMES)}
                     for i in range(self.n_envs)
                 ], dtype=object),
+                "n_gates": np.array([self._tracks[i].num_gates for i in range(self.n_envs)]),
+                "track_id": np.array([
+                    hash(tuple(tuple(g.position) for g in self._tracks[i].gates))
+                    for i in range(self.n_envs)
+                ]),
             }
 
             done_indices = np.where(done)[0]
