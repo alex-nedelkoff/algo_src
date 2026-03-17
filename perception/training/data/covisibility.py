@@ -10,21 +10,23 @@ Algorithm:
   7. Depth check:      |z_reprojected - depth_j[v', u']| < threshold
   8. Score:            overlap = count(valid) / S
 
-Optimizations:
-  - Pre-compute all world-frame point clouds once
-  - Pre-compute all T_w_c inverses once
-  - Pose-distance pruning: skip pairs too far apart
-  - Row-level progress logging
+Each pair's computation is cache-friendly (4×S fits in L2).
+Parallelized across CPU cores via fork — workers inherit shared data,
+no pickling overhead.
 """
 
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
 import time
 
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+# Module-level shared state for worker processes (inherited via fork, not pickled)
+_shared = {}
 
 
 def unproject_pixels(
@@ -62,7 +64,6 @@ def unproject_pixels(
     v, u = sampled[:, 0], sampled[:, 1]
     z = depth[v, u].astype(np.float64)
 
-    # Unproject: pts = z * K_inv @ [u, v, 1]^T
     K_inv = np.linalg.inv(K.astype(np.float64))
     pixels_h = np.stack([u, v, np.ones_like(u)], axis=1).astype(np.float64)  # (S, 3)
     rays = (K_inv @ pixels_h.T).T  # (S, 3)
@@ -81,12 +82,7 @@ def _overlap_directed(
 ) -> float:
     """Compute directed overlap: project world points into frame j.
 
-    Args:
-        pts_world_h: (4, S) homogeneous world-frame points.
-        T_cj_w: (4, 4) world-to-camera-j transform.
-        depth_j: (H, W) depth map.
-        K: (3, 3) intrinsics.
-        depth_threshold: Relative depth tolerance.
+    Operates on small arrays (4×S) that fit in CPU L2 cache.
     """
     S = pts_world_h.shape[1]
     if S == 0:
@@ -94,26 +90,20 @@ def _overlap_directed(
 
     H, W = depth_j.shape
 
-    # To camera j frame
     pts_cam_j = T_cj_w @ pts_world_h  # (4, S)
     z_j = pts_cam_j[2, :]
 
-    # Check z > 0
     valid = z_j > 0
 
-    # Project to image j
     uv_h = K @ pts_cam_j[:3, :]  # (3, S)
-    # Avoid divide-by-zero for invalid z
     z_safe = np.where(valid, z_j, 1.0)
     u_j = uv_h[0, :] / z_safe
     v_j = uv_h[1, :] / z_safe
 
-    # In-bounds check
     u_int = np.round(u_j).astype(np.int64)
     v_int = np.round(v_j).astype(np.int64)
     valid &= (u_int >= 0) & (u_int < W) & (v_int >= 0) & (v_int < H)
 
-    # Depth consistency
     valid_idx = np.where(valid)[0]
     if len(valid_idx) > 0:
         d_actual = depth_j[v_int[valid_idx], u_int[valid_idx]].astype(np.float64)
@@ -125,7 +115,6 @@ def _overlap_directed(
     return float(np.sum(valid)) / S
 
 
-# Keep the original API for backward compat and tests
 def compute_pairwise_overlap(
     pts_cam_i: np.ndarray,
     T_w_ci: np.ndarray,
@@ -138,13 +127,32 @@ def compute_pairwise_overlap(
     S = len(pts_cam_i)
     if S == 0:
         return 0.0
-
     K64 = K.astype(np.float64)
-    pts_h = np.hstack([pts_cam_i, np.ones((S, 1))]).T  # (4, S)
+    pts_h = np.hstack([pts_cam_i, np.ones((S, 1))]).T
     pts_world = T_w_ci.astype(np.float64) @ pts_h
     T_cj_w = np.linalg.inv(T_w_cj.astype(np.float64))
-
     return _overlap_directed(pts_world, T_cj_w, depth_j, K64, depth_threshold)
+
+
+def _compute_row(i: int) -> tuple[int, np.ndarray]:
+    """Compute overlap[i, j] for all j > i. Reads from module-level _shared."""
+    pts_list = _shared["pts"]
+    T_inv = _shared["T_inv"]
+    depths = _shared["depths"]
+    K = _shared["K"]
+    dt = _shared["depth_threshold"]
+    N = _shared["N"]
+
+    row = np.zeros(N, dtype=np.float64)
+    pts_i = pts_list[i]
+    T_inv_i = T_inv[i]
+
+    for j in range(i + 1, N):
+        score_ij = _overlap_directed(pts_i, T_inv[j], depths[j], K, dt)
+        score_ji = _overlap_directed(pts_list[j], T_inv_i, depths[i], K, dt)
+        row[j] = (score_ij + score_ji) / 2.0
+
+    return i, row
 
 
 def compute_scene_covisibility(
@@ -155,10 +163,12 @@ def compute_scene_covisibility(
     depth_threshold: float = 0.1,
     seed: int = 42,
     max_pose_distance: float | None = None,
+    n_workers: int | None = None,
 ) -> np.ndarray:
     """Compute full N x N symmetric covisibility matrix for a scene.
 
-    Pre-computes world-frame points and pose inverses to avoid redundant work.
+    Parallelized across CPU cores. Workers inherit shared data via fork
+    (no pickling). Per-pair computation is cache-friendly (4×S in L2).
 
     Args:
         depths: List of N depth maps, each (H, W).
@@ -169,10 +179,13 @@ def compute_scene_covisibility(
         seed: Random seed for reproducibility.
         max_pose_distance: If set, skip pairs with translation distance above
                           this threshold (they'll have zero overlap anyway).
+        n_workers: Number of parallel workers. Defaults to CPU count.
 
     Returns:
         overlap: (N, N) symmetric overlap matrix with 1.0 on diagonal.
     """
+    global _shared
+
     N = len(depths)
     assert poses.shape[0] == N, f"Got {N} depths but {poses.shape[0]} poses"
 
@@ -181,73 +194,81 @@ def compute_scene_covisibility(
     overlap = np.eye(N, dtype=np.float64)
 
     total_pairs = N * (N - 1) // 2
-    log.info("  Covisibility: %d frames, %d pairs to compute", N, total_pairs)
+    if n_workers is None:
+        n_workers = min(mp.cpu_count(), N)
 
-    # Pre-compute world-frame point clouds (avoids re-transforming per pair)
+    log.info("  Covisibility: %d frames, %d pairs, %d workers", N, total_pairs, n_workers)
+
+    # Pre-compute world-frame point clouds
     log.info("  Pre-computing world-frame point clouds ...")
-    all_pts_world_h = []  # each (4, S)
     poses64 = poses.astype(np.float64)
+    all_pts_world_h = []
     for i in range(N):
         pts_cam, _ = unproject_pixels(depths[i], K, num_samples, rng)
         S = len(pts_cam)
         if S > 0:
-            pts_h = np.vstack([pts_cam.T, np.ones((1, S))])  # (4, S)
+            pts_h = np.vstack([pts_cam.T, np.ones((1, S))])
             pts_world = poses64[i] @ pts_h
         else:
             pts_world = np.empty((4, 0), dtype=np.float64)
         all_pts_world_h.append(pts_world)
 
-    # Pre-compute all pose inverses
     all_T_inv = np.linalg.inv(poses64)  # (N, 4, 4)
 
-    # Pre-compute pose distances for pruning
-    positions = poses64[:, :3, 3]  # (N, 3)
-    if max_pose_distance is not None:
-        # Pairwise distance matrix
-        diff = positions[:, None, :] - positions[None, :, :]  # (N, N, 3)
-        pose_dists = np.linalg.norm(diff, axis=2)  # (N, N)
+    # Set up shared state (inherited by forked workers, not pickled)
+    _shared = {
+        "pts": all_pts_world_h,
+        "T_inv": all_T_inv,
+        "depths": depths,
+        "K": K64,
+        "depth_threshold": depth_threshold,
+        "N": N,
+    }
 
-    # Compute upper triangle with progress
     t0 = time.time()
-    pairs_done = 0
-    pairs_skipped = 0
 
-    for i in range(N):
-        row_start = time.time()
-        for j in range(i + 1, N):
-            # Pose-distance pruning
-            if max_pose_distance is not None and pose_dists[i, j] > max_pose_distance:
-                pairs_skipped += 1
-                pairs_done += 1
-                continue
+    if n_workers <= 1:
+        # Single-threaded
+        for i in range(N):
+            _, row = _compute_row(i)
+            overlap[i, i + 1:] = row[i + 1:]
+            overlap[i + 1:, i] = row[i + 1:]
 
-            # Directed overlap i→j
-            score_ij = _overlap_directed(
-                all_pts_world_h[i], all_T_inv[j], depths[j], K64, depth_threshold
-            )
-            # Directed overlap j→i
-            score_ji = _overlap_directed(
-                all_pts_world_h[j], all_T_inv[i], depths[i], K64, depth_threshold
-            )
-            score = (score_ij + score_ji) / 2.0
-            overlap[i, j] = score
-            overlap[j, i] = score
-            pairs_done += 1
+            if (i + 1) % 100 == 0 or i == N - 1:
+                elapsed = time.time() - t0
+                pairs_done = sum(N - k - 1 for k in range(i + 1))
+                rate = pairs_done / elapsed if elapsed > 0 else 0
+                eta = (total_pairs - pairs_done) / rate if rate > 0 else 0
+                log.info(
+                    "  Row %d/%d | %d/%d pairs (%.0f/s) | ETA %.0fs",
+                    i + 1, N, pairs_done, total_pairs, rate, eta,
+                )
+    else:
+        # Parallel via fork — workers read _shared directly
+        log.info("  Starting parallel computation (%d workers) ...", n_workers)
+        ctx = mp.get_context("fork")
+        rows_done = 0
 
-        # Log progress every 100 rows
-        if (i + 1) % 100 == 0 or i == N - 1:
-            elapsed = time.time() - t0
-            rate = pairs_done / elapsed if elapsed > 0 else 0
-            eta = (total_pairs - pairs_done) / rate if rate > 0 else 0
-            log.info(
-                "  Row %d/%d | %d/%d pairs (%.0f/s) | skipped %d | ETA %.0fs",
-                i + 1, N, pairs_done, total_pairs, rate, pairs_skipped, eta,
-            )
+        with ctx.Pool(n_workers) as pool:
+            for i, row in pool.imap_unordered(_compute_row, range(N)):
+                overlap[i, i + 1:] = row[i + 1:]
+                overlap[i + 1:, i] = row[i + 1:]
+                rows_done += 1
+
+                if rows_done % 100 == 0 or rows_done == N:
+                    elapsed = time.time() - t0
+                    rate = total_pairs * rows_done / N / elapsed if elapsed > 0 else 0
+                    log.info(
+                        "  %d/%d rows (%.0f est pairs/s) | %.0fs elapsed",
+                        rows_done, N, rate, elapsed,
+                    )
+
+    _shared = {}  # release references
 
     elapsed = time.time() - t0
     log.info(
-        "  Covisibility done: %d pairs in %.1fs (%.0f pairs/s), %d skipped",
-        pairs_done, elapsed, pairs_done / elapsed if elapsed > 0 else 0, pairs_skipped,
+        "  Covisibility done: %d pairs in %.1fs (%.0f pairs/s)",
+        total_pairs, elapsed, total_pairs / elapsed if elapsed > 0 else 0,
     )
 
     return overlap
