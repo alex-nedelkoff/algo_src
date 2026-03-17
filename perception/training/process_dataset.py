@@ -38,6 +38,9 @@ def _get_loader(dataset: str, data_dir: Path, scene_id: str):
     if dataset == "replica":
         from perception.training.data.replica.loader import ReplicaScene
         return ReplicaScene(data_dir, scene_id)
+    elif dataset == "uzh-fpv":
+        from perception.training.data.uzh_fpv.loader import UZHFPVScene
+        return UZHFPVScene(data_dir, scene_id)
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -51,6 +54,9 @@ def _get_scene_list(dataset: str, scenes: list[str] | None, data_dir: Path) -> l
         from perception.training.data.replica.constants import SCENES
         # Only return scenes that exist
         return [s for s in SCENES if (data_dir / s / "results").exists()]
+    elif dataset == "uzh-fpv":
+        from perception.training.data.uzh_fpv.loader import UZHFPVScene
+        return UZHFPVScene.available_scenes(data_dir)
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -150,7 +156,7 @@ def process_scene(
 def main() -> None:
     parser = argparse.ArgumentParser(description="VPR covisibility data pipeline")
     parser.add_argument(
-        "--dataset", required=True, choices=["replica"],
+        "--dataset", required=True, choices=["replica", "uzh-fpv"],
         help="Dataset to process",
     )
     parser.add_argument("--data-dir", required=True, type=Path, help="Path to raw dataset")
