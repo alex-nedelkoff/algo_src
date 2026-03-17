@@ -149,6 +149,12 @@ class RLTrainingLoop:
         # 1. Build training environment via EnvFactory
         log.info("Building training env (n_envs=%d)...", cfg.sim.n_envs)
         env_factory = hydra.utils.instantiate(cfg.sim)
+
+        # Wire track generation config (top-level, not under sim)
+        if "track_gen" in cfg:
+            env_factory._track_gen_cfg = cfg.track_gen
+            env_factory._seed = cfg.get("seed", 42)
+
         train_env = env_factory.make_vec_env(cfg.domain_rand, cfg.reward)
 
         # 2. Wrap with perception (no-op if identity)
