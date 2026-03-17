@@ -57,6 +57,11 @@ def main(cfg: DictConfig) -> None:
         try:
             import wandb
 
+            # Ensure tensorboard log dir exists before wandb.init() —
+            # sync_tensorboard hangs if the directory doesn't exist yet.
+            tb_dir = Path(cfg.output_dir) / "tb_logs"
+            tb_dir.mkdir(parents=True, exist_ok=True)
+
             wandb_run = wandb.init(
                 project=cfg.logging.project,
                 entity=cfg.logging.get("entity"),
