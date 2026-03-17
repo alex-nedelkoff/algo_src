@@ -795,7 +795,7 @@ class RateCtrlEnv:
             "motor_rpms": state[12:16].copy(),
         }
 
-    def get_gate_geometry(self) -> dict[str, np.ndarray]:
+    def get_gate_geometry(self, env_idx: int = 0) -> dict[str, np.ndarray]:
         """Return gate geometry for the track."""
         n_gates = self._n_gates
         positions = self._gate_positions.copy()

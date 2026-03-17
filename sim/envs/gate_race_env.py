@@ -28,6 +28,7 @@ REWARD_COMPONENT_NAMES = [
     "gate_passage", "gate_offset", "crash_penalty",
 ]
 from sim.tracks import Track
+from sim.procedural_tracks import ProceduralTrackGenerator
 from sim.types import Action, GateState, QuadState
 from sim.dynamics.numpy_quad import (
     GRAVITY,
@@ -276,6 +277,7 @@ class GateRaceEnv(gym.Env):
         max_body_rate: float = 17.45,
         max_velocity: float = 50.0,
         arena_bounds: float = 20.0,
+        track_generator: ProceduralTrackGenerator | None = None,
     ) -> None:
         super().__init__()
 
@@ -304,7 +306,8 @@ class GateRaceEnv(gym.Env):
         if track is None:
             from sim.tracks import build_figure8_track
             track = build_figure8_track()
-        self.track = track
+        self._tracks: list[Track] = [track] * n_envs
+        self.track_generator: ProceduralTrackGenerator | None = track_generator
 
         # Dynamics
         self.params = params or VehicleParams()
@@ -350,6 +353,11 @@ class GateRaceEnv(gym.Env):
         # Per-episode first gate step tracking
         self._first_gate_step = np.full(n_envs, -1, dtype=np.int64)  # -1 = no gate passed
 
+    @property
+    def track(self) -> Track:
+        """First env's track (backwards compatibility)."""
+        return self._tracks[0]
+
     def _apply_domain_rand(self, env_indices: NDArray[np.intp]) -> None:
         """Draw fresh randomized physics for specified envs."""
         if self._domain_randomizer is None:
@@ -382,10 +390,10 @@ class GateRaceEnv(gym.Env):
 
         for idx in env_indices:
             # Pick a random gate
-            gate_idx = int(rng.integers(0, self.track.num_gates))
+            gate_idx = int(rng.integers(0, self._tracks[idx].num_gates))
             self._gate_indices[idx] = gate_idx
             self._start_gate_indices[idx] = gate_idx
-            gate = self.track.gates[gate_idx]
+            gate = self._tracks[idx].gates[gate_idx]
             normal = _gate_normal(gate)
 
             # Position: behind gate along negative normal + small lateral noise
@@ -420,7 +428,7 @@ class GateRaceEnv(gym.Env):
         """
         for idx in env_indices:
             gate_idx = int(self._gate_indices[idx])
-            gate = self.track.gates[gate_idx % self.track.num_gates]
+            gate = self._tracks[idx].gates[gate_idx % self._tracks[idx].num_gates]
             rel_pos = self._states[idx, POS] - gate.position
             self._prev_gate_dists[idx] = float(np.linalg.norm(rel_pos))
             normal = _gate_normal(gate)
@@ -460,6 +468,10 @@ class GateRaceEnv(gym.Env):
 
         if self._domain_randomizer is not None:
             self._apply_domain_rand(all_indices)
+
+        if self.track_generator is not None:
+            for i in range(self.n_envs):
+                self._tracks[i] = self.track_generator.generate(self.np_random)
 
         if self.random_gate_start:
             self._randomize_start(all_indices)
@@ -601,7 +613,7 @@ class GateRaceEnv(gym.Env):
 
             # Current target gate
             gate_idx = int(self._gate_indices[i])
-            gate = self.track.gates[gate_idx % self.track.num_gates]
+            gate = self._tracks[i].gates[gate_idx % self._tracks[i].num_gates]
 
             state_obj = QuadState.from_vector(self._states[i])
             action_obj = Action(values=action[i] if action.shape[0] > 1 else action[0])
@@ -645,10 +657,10 @@ class GateRaceEnv(gym.Env):
                 lateral_dist = float(np.linalg.norm(lateral))
                 if lateral_dist <= self.gate_passage_radius:
                     # Gate passed! Increment gate index (wrapping)
-                    self._gate_indices[i] = (self._gate_indices[i] + 1) % self.track.num_gates
+                    self._gate_indices[i] = (self._gate_indices[i] + 1) % self._tracks[i].num_gates
                     self._gates_passed[i] += 1
                     # Lap complete when we've passed num_gates gates (full circuit)
-                    if self._gates_passed[i] > 0 and self._gates_passed[i] % self.track.num_gates == 0:
+                    if self._gates_passed[i] > 0 and self._gates_passed[i] % self._tracks[i].num_gates == 0:
                         self._laps_completed[i] += 1
 
                     # Track first gate step
@@ -675,8 +687,8 @@ class GateRaceEnv(gym.Env):
                     self._step_reward_components[i, RC_GATE_OFFSET] = offset_val
 
                     # CRITICAL: recompute curr_dist against NEW target gate
-                    new_gate = self.track.gates[
-                        int(self._gate_indices[i]) % self.track.num_gates
+                    new_gate = self._tracks[i].gates[
+                        int(self._gate_indices[i]) % self._tracks[i].num_gates
                     ]
                     curr_dist = float(np.linalg.norm(
                         self._states[i, POS] - new_gate.position
@@ -764,6 +776,10 @@ class GateRaceEnv(gym.Env):
             self._episode_speed_count[done] = 0
             self._first_gate_step[done] = -1
 
+            if self.track_generator is not None:
+                for idx in done_indices:
+                    self._tracks[idx] = self.track_generator.generate(self.np_random)
+
             if self.random_gate_start:
                 self._randomize_start(done_indices)
 
@@ -807,8 +823,8 @@ class GateRaceEnv(gym.Env):
         for i in range(self.n_envs):
             state = self._states[i]
             gate_idx = int(self._gate_indices[i])
-            gate = self.track.gates[gate_idx % self.track.num_gates]
-            next_gate = self.track.gates[(gate_idx + 1) % self.track.num_gates]
+            gate = self._tracks[i].gates[gate_idx % self._tracks[i].num_gates]
+            next_gate = self._tracks[i].gates[(gate_idx + 1) % self._tracks[i].num_gates]
 
             # Gate yaw from its orientation quaternion
             gate_yaw = _quat_to_yaw(gate.orientation)
@@ -883,15 +899,16 @@ class GateRaceEnv(gym.Env):
             "motor_rpms": state[MOTOR].copy(),
         }
 
-    def get_gate_geometry(self) -> dict[str, np.ndarray]:
-        """Return gate geometry for the track."""
-        n_gates = self.track.num_gates
+    def get_gate_geometry(self, env_idx: int = 0) -> dict[str, np.ndarray]:
+        """Return gate geometry for a specific environment's track."""
+        track = self._tracks[env_idx]
+        n_gates = track.num_gates
         positions = np.zeros((n_gates, 3), dtype=np.float64)
         orientations = np.zeros((n_gates, 4), dtype=np.float64)
         half_extents = np.zeros((n_gates, 2), dtype=np.float64)
         radius = self.gate_passage_radius
         for g in range(n_gates):
-            gate = self.track.gates[g]
+            gate = track.gates[g]
             positions[g] = gate.position
             orientations[g] = gate.orientation
             half_extents[g] = [radius, radius]

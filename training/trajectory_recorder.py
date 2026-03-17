@@ -137,12 +137,12 @@ class TrajectoryRecorderCallback(BaseCallback):
             )
         return env
 
-    def _extract_gate_geometry(self, env: Any) -> tuple[
+    def _extract_gate_geometry(self, env: Any, env_idx: int = 0) -> tuple[
         np.ndarray, np.ndarray, np.ndarray
     ]:
         """Return gate geometry via TrajectoryProvider protocol."""
         raw_env = getattr(env, "env", env)
-        geom = raw_env.get_gate_geometry()
+        geom = raw_env.get_gate_geometry(env_idx=env_idx)
         return geom["positions"], geom["orientations"], geom["half_extents"]
 
     def _extract_state(self, env: Any, idx: int = 0) -> dict[str, np.ndarray]:
@@ -266,7 +266,7 @@ class TrajectoryRecorderCallback(BaseCallback):
 
         # Build arrays
         gate_positions, gate_orientations, gate_half_extents = (
-            self._extract_gate_geometry(env)
+            self._extract_gate_geometry(env, env_idx=0)
         )
 
         gate_events = (
