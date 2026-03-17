@@ -48,6 +48,8 @@ class NumpyQuadEnvFactory:
         max_body_rate: Max body angular rate before crash (rad/s).
         max_velocity: Velocity clamp for float32 overflow protection (m/s).
         arena_bounds: Half-width of lateral arena (m).
+        track_gen: Procedural track generation config (DictConfig or None).
+        seed: Random seed for reproducible eval track generation.
     """
 
     def __init__(
@@ -67,6 +69,8 @@ class NumpyQuadEnvFactory:
         max_body_rate: float = 17.45,
         max_velocity: float = 50.0,
         arena_bounds: float = 20.0,
+        track_gen: DictConfig | None = None,
+        seed: int = 42,
     ) -> None:
         self.n_envs = n_envs
         self.dt = dt
@@ -82,6 +86,8 @@ class NumpyQuadEnvFactory:
         self.max_body_rate = max_body_rate
         self.max_velocity = max_velocity
         self.arena_bounds = arena_bounds
+        self._track_gen_cfg = track_gen
+        self._seed = seed
 
         # Resolve params: accept VehicleParams directly (Hydra recursive
         # instantiation) or DictConfig (manual construction).
@@ -97,10 +103,12 @@ class NumpyQuadEnvFactory:
         reward_cfg: DictConfig,
     ) -> VecEnvAdapter:
         """Build a training VecEnv with domain randomization."""
+        track_generator = self._make_track_generator()
         return self._build(
             n_envs=self.n_envs,
             domain_rand_cfg=domain_rand_cfg,
             reward_cfg=reward_cfg,
+            track_generator=track_generator,
         )
 
     def make_eval_env(
@@ -116,21 +124,49 @@ class NumpyQuadEnvFactory:
         )
         OmegaConf.update(eval_dr_cfg, "enabled", False)
 
+        # For eval: fixed tracks (no generator), round-robin from
+        # 10 pre-generated tracks for reproducibility.
+        eval_tracks = None
+        if self._track_gen_cfg is not None:
+            import numpy as np
+
+            tg = self._make_track_generator()
+            eval_rng = np.random.default_rng(self._seed + 1000)
+            n_eval_tracks = 10
+            fixed = [tg.generate(eval_rng) for _ in range(n_eval_tracks)]
+            eval_tracks = [fixed[i % n_eval_tracks] for i in range(n_envs)]
+
         return self._build(
             n_envs=n_envs,
             domain_rand_cfg=eval_dr_cfg,
             reward_cfg=reward_cfg,
+            tracks=eval_tracks,
         )
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
+    def _make_track_generator(self):
+        """Construct a ProceduralTrackGenerator from config, or None."""
+        if self._track_gen_cfg is None:
+            return None
+        from sim.procedural_tracks import ProceduralTrackGenerator
+
+        tg_dict = OmegaConf.to_container(self._track_gen_cfg, resolve=True)
+        return ProceduralTrackGenerator(
+            arena_half_width=self.arena_bounds,
+            **tg_dict,
+        )
+
     def _build(
         self,
         n_envs: int,
         domain_rand_cfg: DictConfig,
         reward_cfg: DictConfig,
+        *,
+        track_generator=None,
+        tracks=None,
     ) -> VecEnvAdapter:
         """Shared builder for both training and eval envs."""
         # Domain randomization
@@ -169,6 +205,8 @@ class NumpyQuadEnvFactory:
             max_body_rate=self.max_body_rate,
             max_velocity=self.max_velocity,
             arena_bounds=self.arena_bounds,
+            track_generator=track_generator,
+            tracks=tracks,
         )
 
         log.info(

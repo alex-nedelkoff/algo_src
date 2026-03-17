@@ -278,6 +278,7 @@ class GateRaceEnv(gym.Env):
         max_velocity: float = 50.0,
         arena_bounds: float = 20.0,
         track_generator: ProceduralTrackGenerator | None = None,
+        tracks: list[Track] | None = None,
     ) -> None:
         super().__init__()
 
@@ -302,13 +303,17 @@ class GateRaceEnv(gym.Env):
         self.max_velocity = max_velocity
         self.arena_bounds = arena_bounds
 
-        # Default track: figure-8 with 8 gates (MonoRace M23, 5m×5m arena)
-        if track is None:
+        # Track initialization: explicit list > single track > default figure-8
+        if tracks is not None:
+            assert len(tracks) == n_envs, (
+                f"tracks list length ({len(tracks)}) must match n_envs ({n_envs})"
+            )
+            self._tracks: list[Track] = list(tracks)
+        elif track is not None:
+            self._tracks = [track] * n_envs
+        else:
             from sim.tracks import build_figure8_track
-            track = build_figure8_track()
-        # Safe: Track is an immutable geometry container (no per-env state).
-        # When track_generator is set, each entry is replaced on reset.
-        self._tracks: list[Track] = [track] * n_envs
+            self._tracks = [build_figure8_track()] * n_envs
         self.track_generator: ProceduralTrackGenerator | None = track_generator
 
         # Dynamics
