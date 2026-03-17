@@ -113,3 +113,18 @@ class TestEnvWithFixedTracks:
         tracks = [build_figure8_track() for _ in range(2)]
         with pytest.raises((ValueError, AssertionError)):
             GateRaceEnv(n_envs=3, tracks=tracks)
+
+
+def test_factory_passes_n_lookahead_gates():
+    """Factory passes n_lookahead_gates to GateRaceEnv."""
+    from omegaconf import OmegaConf
+    from sim.envs.numpy_quad_factory import NumpyQuadEnvFactory
+
+    factory = NumpyQuadEnvFactory(n_envs=2, n_lookahead_gates=3)
+    dr_cfg = OmegaConf.create({"enabled": False})
+    reward_cfg = OmegaConf.create({"weights": {"gate_passage": 1.0}, "v_max": 10.0})
+    vec_env = factory.make_vec_env(dr_cfg, reward_cfg)
+    raw_env = vec_env.env
+    assert raw_env._n_lookahead_gates == 3
+    assert raw_env._obs_dim == 20 + 4 * 3  # 32
+    vec_env.close()

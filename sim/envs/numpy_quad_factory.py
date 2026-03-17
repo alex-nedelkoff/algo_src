@@ -50,6 +50,7 @@ class NumpyQuadEnvFactory:
         arena_bounds: Half-width of lateral arena (m).
         track_gen: Procedural track generation config (DictConfig or None).
         seed: Random seed for reproducible eval track generation.
+        n_lookahead_gates: Number of future gates in observation (1 = current behavior).
     """
 
     def __init__(
@@ -71,6 +72,7 @@ class NumpyQuadEnvFactory:
         arena_bounds: float = 20.0,
         track_gen: DictConfig | None = None,
         seed: int = 42,
+        n_lookahead_gates: int = 1,
     ) -> None:
         self.n_envs = n_envs
         self.dt = dt
@@ -88,6 +90,7 @@ class NumpyQuadEnvFactory:
         self.arena_bounds = arena_bounds
         self._track_gen_cfg = track_gen
         self._seed = seed
+        self._n_lookahead_gates = n_lookahead_gates
 
         # Resolve params: accept VehicleParams directly (Hydra recursive
         # instantiation) or DictConfig (manual construction).
@@ -207,6 +210,7 @@ class NumpyQuadEnvFactory:
             arena_bounds=self.arena_bounds,
             track_generator=track_generator,
             tracks=tracks,
+            n_lookahead_gates=self._n_lookahead_gates,
         )
 
         log.info(
