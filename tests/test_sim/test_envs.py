@@ -221,13 +221,13 @@ class TestESCModel:
         np.testing.assert_allclose(omega[0, 0], hover_omega, rtol=1e-6)
 
     def test_prev_action_in_obs_is_normalized(self) -> None:
-        """Previous action in observation [20:24] should be in [-1, 1]."""
+        """Previous action in observation [16:20] should be in [-1, 1]."""
         env = GateRaceEnv(n_envs=1)
         env.reset(seed=42)
         action = np.array([0.5, -0.3, 0.1, 0.8], dtype=np.float32)
         obs, _, _, _, _ = env.step(action)
-        # obs[20:24] should equal the action we just passed
-        np.testing.assert_allclose(obs[20:24], action, atol=1e-6)
+        # obs[16:20] should equal the action we just passed
+        np.testing.assert_allclose(obs[16:20], action, atol=1e-6)
 
 
 class TestHoverEnv:
