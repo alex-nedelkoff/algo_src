@@ -35,6 +35,7 @@ perception = [
     "onnx",
     "onnxruntime-gpu",
     "albumentations",
+    "pyarrow>=14.0",
 ]
 viz = [
     "rerun-sdk",
