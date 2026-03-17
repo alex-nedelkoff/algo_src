@@ -1,13 +1,18 @@
 """Batch FoundationStereo inference on rectified stereo pairs → dense depth maps.
 
-Must be run inside the `foundation_stereo` conda env.
+Run inside the corvidx/foundation-stereo Docker container:
 
-Usage:
-  conda activate foundation_stereo
-  python -m perception.training.run_foundation_stereo \
-      --input-dir ~/corvidx/data/uzh-fpv/rectified/indoor_forward_3_snapdragon/ \
-      --ckpt ~/corvidx/model_checkpoints/foundation_stereo/23-51-11/model_best_bp2.pth \
-      --output-dir ~/corvidx/data/uzh-fpv/depth/indoor_forward_3_snapdragon/
+  docker run --gpus all --network=host --rm \\
+      -v ~/corvidx/data:/data \\
+      -v ~/corvidx/model_checkpoints:/checkpoints \\
+      -v ~/corvidx/repos/FoundationStereo:/opt/FoundationStereo \\
+      corvidx/foundation-stereo:latest \\
+      /opt/FoundationStereo/run_foundation_stereo.py \\
+      --input-dir /data/uzh-fpv/rectified/indoor_forward_3_snapdragon/ \\
+      --ckpt /checkpoints/foundation_stereo/23-51-11/model_best_bp2.pth \\
+      --output-dir /data/uzh-fpv/depth/indoor_forward_3_snapdragon/
+
+Or copy this script into the container and run directly.
 """
 
 from __future__ import annotations
