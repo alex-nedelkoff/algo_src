@@ -1,19 +1,20 @@
 """Dimension-by-dimension verification tests for the MonoRace observation vector.
 
-Validates that _compute_obs() in GateRaceEnv produces a 24-dim observation
-matching the MonoRace paper spec:
+Validates that _compute_obs() in GateRaceEnv produces a (20 + 4*N)-dim observation
+where N = n_lookahead_gates (default 1 = 24 dims total):
 
-| Idx   | Content                          | Dim | Frame           |
-|-------|----------------------------------|-----|-----------------|
-| 0-2   | Position -> current gate         | 3   | Gate-yaw frame  |
-| 3-5   | Velocity                         | 3   | Gate-yaw frame  |
-| 6-7   | Roll, Pitch                      | 2   | World frame     |
-| 8     | Yaw (gate-relative)              | 1   | drone - gate    |
-| 9-11  | Body angular rates               | 3   | Body frame      |
-| 12-15 | Motor speeds                     | 4   | Normalized [-1,1] |
-| 16-18 | Pos -> next gate (from cur gate) | 3   | Gate-yaw frame  |
-| 19    | Relative yaw next->current gate  | 1   | Wrapped [-pi,pi]|
-| 20-23 | Previous action                  | 4   | Normalized [-1,1] |
+| Idx       | Content                          | Dim | Frame           |
+|-----------|----------------------------------|-----|-----------------|
+| 0-2       | Position -> current gate         | 3   | Gate-yaw frame  |
+| 3-5       | Velocity                         | 3   | Gate-yaw frame  |
+| 6-7       | Roll, Pitch                      | 2   | World frame     |
+| 8         | Yaw (gate-relative)              | 1   | drone - gate    |
+| 9-11      | Body angular rates               | 3   | Body frame      |
+| 12-15     | Motor speeds                     | 4   | Normalized [-1,1] |
+| 16-19     | Previous action                  | 4   | Normalized [-1,1] |
+| 20-20+4*N | Lookahead gates (4 each)         | 4*N | Gate-yaw frame  |
+
+Each lookahead gate block (4 dims): rel_pos(3) + yaw_delta(1)
 
 Gate-yaw transform:
     cos_y, sin_y = cos(gate_yaw), sin(gate_yaw)
@@ -86,6 +87,7 @@ def _make_env(
     gate_positions: list[list[float]] | None = None,
     gate_yaws: list[float] | None = None,
     n_envs: int = 1,
+    n_lookahead_gates: int = 1,
 ) -> GateRaceEnv:
     """Create a GateRaceEnv with gates at known positions and yaw angles.
 
@@ -93,6 +95,7 @@ def _make_env(
         gate_positions: List of [x, y, z] gate positions. Default 3 gates.
         gate_yaws: List of yaw angles (radians) for each gate. Default 0s.
         n_envs: Number of parallel environments.
+        n_lookahead_gates: Number of lookahead gates in the observation.
 
     Returns:
         A freshly-constructed (but not yet reset) GateRaceEnv.
@@ -119,6 +122,7 @@ def _make_env(
         n_envs=n_envs,
         max_steps=10000,
         ceiling=50.0,
+        n_lookahead_gates=n_lookahead_gates,
     )
 
 
@@ -152,18 +156,18 @@ def _set_state(
 # ---------------------------------------------------------------------------
 
 class TestObsShape:
-    """Observation shape must be (24,) for single env, (N,24) for multi-env."""
+    """Observation shape must be (obs_dim,) for single env, (N, obs_dim) for multi-env."""
 
     def test_single_env_shape(self) -> None:
         env = _make_env(n_envs=1)
         obs, _ = env.reset(seed=0)
-        assert obs.shape == (24,), f"Expected (24,), got {obs.shape}"
+        assert obs.shape == (env._obs_dim,), f"Expected ({env._obs_dim},), got {obs.shape}"
 
     def test_multi_env_shape(self) -> None:
         n = 4
         env = _make_env(n_envs=n)
         obs, _ = env.reset(seed=0)
-        assert obs.shape == (n, 24), f"Expected ({n}, 24), got {obs.shape}"
+        assert obs.shape == (n, env._obs_dim), f"Expected ({n}, {env._obs_dim}), got {obs.shape}"
 
     def test_obs_dim_constant_is_24(self) -> None:
         assert OBS_DIM == 24, f"OBS_DIM should be 24, got {OBS_DIM}"
@@ -408,7 +412,7 @@ class TestObsMotorNormalization:
 class TestObsNextGatePosition:
     """Relative position from current gate to next gate, in current gate yaw frame.
 
-    obs[16:19] = gate_yaw_rotate(next_gate_pos - cur_gate_pos, cur_gate_yaw).
+    obs[20:23] = gate_yaw_rotate(next_gate_pos - cur_gate_pos, cur_gate_yaw).
     """
 
     def test_next_gate_no_rotation(self) -> None:
@@ -421,8 +425,8 @@ class TestObsNextGatePosition:
         obs = env._compute_obs()
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
         np.testing.assert_allclose(
-            obs_flat[16:19], [10.0, 5.0, 1.0], atol=1e-5,
-            err_msg="obs[16:19] next gate relative, no rotation",
+            obs_flat[20:23], [10.0, 5.0, 1.0], atol=1e-5,
+            err_msg="obs[20:23] next gate relative, no rotation",
         )
 
     def test_next_gate_with_rotation(self) -> None:
@@ -431,7 +435,7 @@ class TestObsNextGatePosition:
         d = [10, 5, 1]. With yaw=pi/2 (cos=0, sin=1):
         rx =  0*10 + 1*5 = 5
         ry = -1*10 + 0*5 = -10
-        obs[16:19] = [5, -10, 1].
+        obs[20:23] = [5, -10, 1].
         """
         env = _make_env(
             gate_positions=[[0.0, 0.0, 2.0], [10.0, 5.0, 3.0]],
@@ -441,19 +445,19 @@ class TestObsNextGatePosition:
         obs = env._compute_obs()
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
         np.testing.assert_allclose(
-            obs_flat[16:19], [5.0, -10.0, 1.0], atol=1e-5,
-            err_msg="obs[16:19] next gate relative, 90-deg gate yaw",
+            obs_flat[20:23], [5.0, -10.0, 1.0], atol=1e-5,
+            err_msg="obs[20:23] next gate relative, 90-deg gate yaw",
         )
 
 
 class TestObsNextGateYaw:
     """Relative yaw between next gate and current gate.
 
-    obs[19] = wrap(next_gate_yaw - current_gate_yaw).
+    obs[23] = wrap(next_gate_yaw - current_gate_yaw).
     """
 
     def test_next_gate_yaw_simple(self) -> None:
-        """cur yaw=0, next yaw=pi/2 => obs[19] = pi/2."""
+        """cur yaw=0, next yaw=pi/2 => obs[23] = pi/2."""
         env = _make_env(
             gate_positions=[[0.0, 0.0, 2.0], [10.0, 0.0, 2.0]],
             gate_yaws=[0.0, np.pi / 2],
@@ -462,8 +466,8 @@ class TestObsNextGateYaw:
         obs = env._compute_obs()
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
         np.testing.assert_allclose(
-            obs_flat[19], np.pi / 2, atol=1e-4,
-            err_msg="obs[19] next gate relative yaw",
+            obs_flat[23], np.pi / 2, atol=1e-4,
+            err_msg="obs[23] next gate relative yaw",
         )
 
     def test_next_gate_yaw_wrapping(self) -> None:
@@ -477,13 +481,13 @@ class TestObsNextGateYaw:
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
         expected = _wrap_angle(3 * np.pi / 4 - (-3 * np.pi / 4))  # -pi/2
         np.testing.assert_allclose(
-            obs_flat[19], expected, atol=1e-4,
-            err_msg="obs[19] wrapped next-gate yaw difference",
+            obs_flat[23], expected, atol=1e-4,
+            err_msg="obs[23] wrapped next-gate yaw difference",
         )
 
 
 class TestObsActionHistoryInitial:
-    """After reset (no prior action), obs[20:24] should be zeros (no previous command).
+    """After reset (no prior action), obs[16:20] should be zeros (no previous command).
 
     The prev_action is stored directly as the normalized [-1, 1] action input.
     On reset, prev_actions are initialized to zeros.
@@ -496,7 +500,7 @@ class TestObsActionHistoryInitial:
         )
         obs, _ = env.reset(seed=0)
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
-        prev_action = obs_flat[20:24]
+        prev_action = obs_flat[16:20]
         # All four values should be zero after reset
         np.testing.assert_allclose(
             prev_action, [0.0, 0.0, 0.0, 0.0], atol=1e-5,
@@ -505,7 +509,7 @@ class TestObsActionHistoryInitial:
 
 
 class TestObsActionHistoryAfterStep:
-    """After one step with a known action, obs[20:24] should reflect it directly.
+    """After one step with a known action, obs[16:20] should reflect it directly.
 
     Action space is [-1, 1] (normalized ESC commands); prev_action in obs
     stores these values directly without further transformation.
@@ -523,7 +527,7 @@ class TestObsActionHistoryAfterStep:
         obs, _, _, _, _ = env.step(action)
 
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
-        prev_action = obs_flat[20:24]
+        prev_action = obs_flat[16:20]
 
         # prev_action in obs should directly reflect the normalized action
         np.testing.assert_allclose(
@@ -542,7 +546,7 @@ class TestObsActionHistoryAfterStep:
         obs, _, _, _, _ = env.step(action)
 
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
-        prev_action = obs_flat[20:24]
+        prev_action = obs_flat[16:20]
         np.testing.assert_allclose(
             prev_action, [1.0, 1.0, 1.0, 1.0], atol=0.05,
             err_msg="prev_action at u=+1 should be +1",
@@ -561,7 +565,7 @@ class TestObsActionHistoryAfterStep:
         term_val = terminated.item() if hasattr(terminated, "item") else terminated
         if not term_val:
             obs_flat = obs.flatten() if obs.ndim > 1 else obs
-            prev_action = obs_flat[20:24]
+            prev_action = obs_flat[16:20]
             np.testing.assert_allclose(
                 prev_action, [-1.0, -1.0, -1.0, -1.0], atol=0.05,
                 err_msg="prev_action at u=-1 should be -1",
@@ -606,8 +610,8 @@ class TestObsAllDimsNonzero:
 
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
 
-        # Check obs dimensions 0-23 all exist
-        assert obs_flat.shape == (24,), f"Expected 24 dims, got {obs_flat.shape}"
+        # Check obs dimensions all exist
+        assert obs_flat.shape == (env._obs_dim,), f"Expected {env._obs_dim} dims, got {obs_flat.shape}"
         assert np.all(np.isfinite(obs_flat)), f"Non-finite values: {obs_flat}"
 
         # Dims 0:2 (gate-rel pos XY) - should be nonzero because drone is offset
@@ -640,18 +644,18 @@ class TestObsAllDimsNonzero:
             assert obs_flat[d] != pytest.approx(0.0, abs=1e-2), \
                 f"obs[{d}] motor unexpectedly zero"
 
-        # Dims 16:19 (next gate relative pos)
-        assert obs_flat[16] != pytest.approx(0.0, abs=1e-3), \
-            f"obs[16] next_gate_x unexpectedly zero"
-
-        # Dim 19 (next gate yaw relative)
-        assert obs_flat[19] != pytest.approx(0.0, abs=1e-3), \
-            f"obs[19] next gate yaw diff unexpectedly zero"
-
-        # Dims 20:24 (prev action) - should be nonzero since we stepped
-        for d in range(20, 24):
+        # Dims 16:20 (prev action) - should be nonzero since we stepped
+        for d in range(16, 20):
             assert obs_flat[d] != pytest.approx(0.0, abs=1e-2), \
                 f"obs[{d}] prev action unexpectedly zero"
+
+        # Dims 20:23 (next gate relative pos)
+        assert obs_flat[20] != pytest.approx(0.0, abs=1e-3), \
+            f"obs[20] next_gate_x unexpectedly zero"
+
+        # Dim 23 (next gate yaw relative)
+        assert obs_flat[23] != pytest.approx(0.0, abs=1e-3), \
+            f"obs[23] next gate yaw diff unexpectedly zero"
 
 
 class TestObsGatePositionSignConvention:
@@ -790,7 +794,7 @@ class TestObsConsistencyAcrossEnvs:
             env._gate_indices[i] = 0
 
         obs = env._compute_obs()
-        assert obs.shape == (n, 24)
+        assert obs.shape == (n, env._obs_dim)
         np.testing.assert_allclose(
             obs[0], obs[1], atol=1e-10,
             err_msg="Parallel envs with same state should have same obs",
@@ -825,3 +829,117 @@ class TestObsFinite:
         obs, _, _, _, _ = env.step(action)
         obs_flat = obs.flatten() if obs.ndim > 1 else obs
         assert np.all(np.isfinite(obs_flat)), f"Non-finite obs after step: {obs_flat}"
+
+
+class TestObsLookaheadGates:
+    """Multi-gate lookahead observation tests."""
+
+    def test_obs_dim_default(self) -> None:
+        """Default n_lookahead_gates=1 gives 24 dims (20 base + 4*1)."""
+        env = _make_env()
+        obs, _ = env.reset(seed=0)
+        obs_flat = obs.flatten()
+        assert obs_flat.shape == (24,), f"Expected (24,), got {obs_flat.shape}"
+
+    def test_obs_dim_two_lookahead(self) -> None:
+        """n_lookahead_gates=2 gives 28 dims (20 base + 4*2)."""
+        env = _make_env(n_lookahead_gates=2)
+        obs, _ = env.reset(seed=0)
+        obs_flat = obs.flatten()
+        assert obs_flat.shape == (28,), f"Expected (28,), got {obs_flat.shape}"
+
+    def test_obs_dim_three_lookahead(self) -> None:
+        """n_lookahead_gates=3 gives 32 dims (20 base + 4*3)."""
+        env = _make_env(n_lookahead_gates=3)
+        obs, _ = env.reset(seed=0)
+        obs_flat = obs.flatten()
+        assert obs_flat.shape == (32,), f"Expected (32,), got {obs_flat.shape}"
+
+    def test_prev_action_at_16_20(self) -> None:
+        """After reorder, prev_action is at [16:20], zeros after reset."""
+        env = _make_env()
+        obs, _ = env.reset(seed=0)
+        obs_flat = obs.flatten()
+        np.testing.assert_allclose(
+            obs_flat[16:20], [0.0, 0.0, 0.0, 0.0], atol=1e-5,
+            err_msg="prev_action at [16:20] should be zero after reset",
+        )
+
+    def test_lookahead_gate_values_no_rotation(self) -> None:
+        """3 gates in a line along X, yaw=0. Verify lookahead[0] = gate-to-gate vec."""
+        env = _make_env(
+            gate_positions=[[0.0, 0.0, 2.0], [5.0, 0.0, 2.0], [10.0, 3.0, 2.0]],
+            gate_yaws=[0.0, 0.0, 0.0],
+            n_lookahead_gates=2,
+        )
+        env.reset(seed=0)
+        obs = env._compute_obs()
+        obs_flat = obs.flatten()
+        np.testing.assert_allclose(obs_flat[20:23], [5.0, 0.0, 0.0], atol=1e-5)
+        np.testing.assert_allclose(obs_flat[23], 0.0, atol=1e-5)
+        np.testing.assert_allclose(obs_flat[24:27], [10.0, 3.0, 0.0], atol=1e-5)
+        np.testing.assert_allclose(obs_flat[27], 0.0, atol=1e-5)
+
+    def test_lookahead_gate_with_rotation(self) -> None:
+        """Current gate yaw=pi/2. Lookahead position rotated into gate frame."""
+        env = _make_env(
+            gate_positions=[[0.0, 0.0, 2.0], [10.0, 5.0, 3.0]],
+            gate_yaws=[np.pi / 2, 0.0],
+        )
+        env.reset(seed=0)
+        obs = env._compute_obs()
+        obs_flat = obs.flatten()
+        np.testing.assert_allclose(obs_flat[20:23], [5.0, -10.0, 1.0], atol=1e-5)
+        np.testing.assert_allclose(obs_flat[23], -np.pi / 2, atol=1e-4)
+
+    def test_lookahead_wraps_around(self) -> None:
+        """With n_lookahead_gates=3 on a 3-gate track, gate indices wrap via modulo."""
+        env = _make_env(
+            gate_positions=[[0.0, 0.0, 2.0], [5.0, 0.0, 2.0], [10.0, 0.0, 2.0]],
+            gate_yaws=[0.0, 0.0, 0.0],
+            n_lookahead_gates=3,
+        )
+        env.reset(seed=0)
+        obs = env._compute_obs()
+        obs_flat = obs.flatten()
+        np.testing.assert_allclose(obs_flat[28:31], [0.0, 0.0, 0.0], atol=1e-5)
+
+    def test_lookahead_exceeds_track_length(self) -> None:
+        """n_lookahead_gates=5 on a 4-gate track wraps correctly via modulo."""
+        env = _make_env(
+            gate_positions=[
+                [0.0, 0.0, 2.0], [3.0, 0.0, 2.0],
+                [6.0, 0.0, 2.0], [9.0, 0.0, 2.0],
+            ],
+            gate_yaws=[0.0, 0.0, 0.0, 0.0],
+            n_lookahead_gates=5,
+        )
+        env.reset(seed=0)
+        obs = env._compute_obs()
+        obs_flat = obs.flatten()
+        # k=4: (0+4)%4=gate0, delta = [0,0,0]
+        np.testing.assert_allclose(obs_flat[32:35], [0.0, 0.0, 0.0], atol=1e-5)
+        # k=5: (0+5)%4=gate1, delta = [3,0,0]
+        np.testing.assert_allclose(obs_flat[36:39], [3.0, 0.0, 0.0], atol=1e-5)
+
+    def test_n_lookahead_gates_validation(self) -> None:
+        """n_lookahead_gates < 1 raises ValueError."""
+        with pytest.raises(ValueError, match="n_lookahead_gates must be >= 1"):
+            _make_env(n_lookahead_gates=0)
+
+    def test_multi_env_different_tracks_lookahead(self) -> None:
+        """Two envs with different tracks produce correct per-env lookahead."""
+        from sim.tracks import Track
+        track_a = Track([
+            GateState(np.array([0., 0., 2.]), _quat_for_yaw(0.0)),
+            GateState(np.array([5., 0., 2.]), _quat_for_yaw(0.0)),
+        ])
+        track_b = Track([
+            GateState(np.array([0., 0., 2.]), _quat_for_yaw(0.0)),
+            GateState(np.array([0., 8., 2.]), _quat_for_yaw(0.0)),
+        ])
+        env = GateRaceEnv(tracks=[track_a, track_b], n_envs=2, max_steps=10000, ceiling=50.0, n_lookahead_gates=2)
+        env.reset(seed=0)
+        obs = env._compute_obs_batched()
+        np.testing.assert_allclose(obs[0, 20:23], [5.0, 0.0, 0.0], atol=1e-5)
+        np.testing.assert_allclose(obs[1, 20:23], [0.0, 8.0, 0.0], atol=1e-5)

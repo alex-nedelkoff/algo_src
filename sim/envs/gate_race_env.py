@@ -43,11 +43,16 @@ from sim.domain_randomization import DomainRandomizer
 from sim.dynamics.params import VehicleParams
 
 
-# Observation dimension breakdown (MonoRace paper spec):
+# Default observation dimension (n_lookahead_gates=1):
 #   gate_rel_pos(3) + vel(3) + roll_pitch(2) + yaw_rel(1) +
-#   body_rates(3) + motor_speeds(4) + next_gate_rel_pos(3) +
-#   next_gate_yaw_rel(1) + prev_action(4) = 24
-OBS_DIM = 24
+#   body_rates(3) + motor_speeds(4) + prev_action(4) +
+#   lookahead_gates(4 * n_lookahead_gates) = 20 + 4*N
+OBS_DIM = 24  # Keep for backwards compat (N=1 default)
+
+
+def _compute_obs_dim(n_lookahead_gates: int) -> int:
+    """Compute observation dimension: 20 base + 4 per lookahead gate."""
+    return 20 + 4 * n_lookahead_gates
 
 # Default termination thresholds
 DEFAULT_CEILING = 10.0
@@ -207,16 +212,15 @@ def _rotate_xy(
 class GateRaceEnv(gym.Env):
     """Gymnasium environment for quadrotor gate racing.
 
-    Observation (24-dim, MonoRace paper spec):
-        [0:3]   position to current gate (gate-yaw-relative frame)
-        [3:6]   velocity (gate-yaw-relative frame)
-        [6:8]   roll, pitch (world frame Euler angles)
-        [8]     yaw relative to gate (drone_yaw - gate_yaw, wrapped [-pi, pi])
-        [9:12]  body angular rates p, q, r (body frame)
-        [12:16] motor speeds (normalized to [-1, 1]: (w / w_max) * 2 - 1)
-        [16:19] position from current gate to next gate (gate-yaw-relative frame)
-        [19]    relative yaw to next gate (next_yaw - cur_yaw, wrapped [-pi, pi])
-        [20:24] previous action / motor commands (normalized [-1, 1])
+    Observation (20 + 4*N dims, where N = n_lookahead_gates, default N=1 → 24 dims):
+        [0:3]       position to current gate (gate-yaw-relative frame)
+        [3:6]       velocity (gate-yaw-relative frame)
+        [6:8]       roll, pitch (world frame Euler angles)
+        [8]         yaw relative to gate (drone_yaw - gate_yaw, wrapped [-pi, pi])
+        [9:12]      body angular rates p, q, r (body frame)
+        [12:16]     motor speeds (normalized to [-1, 1]: (w / w_max) * 2 - 1)
+        [16:20]     previous action / motor commands (normalized [-1, 1])
+        [20:20+4*N] lookahead gates (4 dims each: rel_pos(3) + yaw_delta(1))
 
     Action (4-dim):
         Normalized motor commands in [-1, 1], mapped to motor speeds via a
@@ -279,8 +283,14 @@ class GateRaceEnv(gym.Env):
         arena_bounds: float = 20.0,
         track_generator: ProceduralTrackGenerator | None = None,
         tracks: list[Track] | None = None,
+        n_lookahead_gates: int = 1,
     ) -> None:
         super().__init__()
+
+        if n_lookahead_gates < 1:
+            raise ValueError(f"n_lookahead_gates must be >= 1, got {n_lookahead_gates}")
+        self._n_lookahead_gates = n_lookahead_gates
+        self._obs_dim = _compute_obs_dim(n_lookahead_gates)
 
         self.n_envs = n_envs
         self.dt = dt
@@ -321,7 +331,7 @@ class GateRaceEnv(gym.Env):
         self.dynamics = NumpyQuadDynamics(params=self.params, dt=dt)
 
         # Gymnasium spaces — normalized action space [-1, 1] per MonoRace paper
-        obs_high = np.full(OBS_DIM, np.inf, dtype=np.float32)
+        obs_high = np.full(self._obs_dim, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
         self.action_space = spaces.Box(
             low=-np.ones(4, dtype=np.float32),
@@ -811,32 +821,29 @@ class GateRaceEnv(gym.Env):
     def _compute_obs_batched(self) -> NDArray[np.float32]:
         """Compute observation vectors for all environments.
 
-        Always returns shape ``(n_envs, OBS_DIM)`` regardless of ``n_envs``.
-        Use ``_compute_obs`` when you need the single-env squeeze behaviour.
-
-        MonoRace paper observation layout (24-dim):
+        Observation layout (20 + 4*N dims, where N = n_lookahead_gates):
             [0:3]   position drone -> current gate  (gate-yaw-relative frame)
             [3:6]   velocity                        (gate-yaw-relative frame)
             [6:8]   roll, pitch                     (world-frame Euler angles)
             [8]     yaw relative to gate             (drone_yaw - gate_yaw, wrapped)
             [9:12]  body angular rates (p, q, r)     (body frame)
             [12:16] motor speeds                     (normalized [-1, 1])
-            [16:19] position current gate -> next gate (gate-yaw-relative frame)
-            [19]    relative yaw to next gate        (next_yaw - cur_yaw, wrapped)
-            [20:24] previous action                  (normalized [-1, 1])
+            [16:20] previous action                  (normalized [-1, 1])
+            [20:20+4*N] lookahead gates              (4 dims each: rel_pos(3) + yaw_delta(1))
 
         Gate-yaw-relative frame: XY rotated by negative gate yaw, Z unchanged.
 
         Returns:
-            Observations (n_envs, OBS_DIM).
+            Observations (n_envs, obs_dim).
         """
-        obs = np.zeros((self.n_envs, OBS_DIM), dtype=np.float32)
+        obs = np.zeros((self.n_envs, self._obs_dim), dtype=np.float32)
 
         for i in range(self.n_envs):
             state = self._states[i]
             gate_idx = int(self._gate_indices[i])
-            gate = self._tracks[i].gates[gate_idx % self._tracks[i].num_gates]
-            next_gate = self._tracks[i].gates[(gate_idx + 1) % self._tracks[i].num_gates]
+            track = self._tracks[i]
+            n_gates = track.num_gates
+            gate = track.gates[gate_idx % n_gates]
 
             # Gate yaw from its orientation quaternion
             gate_yaw = _quat_to_yaw(gate.orientation)
@@ -844,14 +851,14 @@ class GateRaceEnv(gym.Env):
             sin_yaw = np.sin(gate_yaw)
 
             # --- [0:3] Position drone -> current gate (gate-yaw frame) ---
-            dpos = state[POS] - gate.position  # world frame
+            dpos = state[POS] - gate.position
             obs[i, 0:2] = _rotate_xy(dpos[:2], cos_yaw, sin_yaw)
-            obs[i, 2] = dpos[2]  # Z plain offset
+            obs[i, 2] = dpos[2]
 
             # --- [3:6] Velocity (gate-yaw frame) ---
             vel_world = state[VEL]
             obs[i, 3:5] = _rotate_xy(vel_world[:2], cos_yaw, sin_yaw)
-            obs[i, 5] = vel_world[2]  # Z unchanged
+            obs[i, 5] = vel_world[2]
 
             # --- [6:8] Roll, Pitch (world frame Euler) ---
             drone_quat = state[QUAT]
@@ -872,18 +879,20 @@ class GateRaceEnv(gym.Env):
                 max_omega_i = self.params.max_omega
             obs[i, 12:16] = (state[MOTOR] / max(max_omega_i, 1e-10)) * 2.0 - 1.0
 
-            # --- [16:19] Position current gate -> next gate (gate-yaw frame) ---
-            dnext = next_gate.position - gate.position  # world frame
-            obs[i, 16:18] = _rotate_xy(dnext[:2], cos_yaw, sin_yaw)
-            obs[i, 18] = dnext[2]
+            # --- [16:20] Previous action (normalized [-1, 1]) ---
+            obs[i, 16:20] = self._prev_actions[i]
 
-            # --- [19] Relative yaw to next gate ---
-            next_gate_yaw = _quat_to_yaw(next_gate.orientation)
-            obs[i, 19] = _wrap_angle(next_gate_yaw - gate_yaw)
-
-            # --- [20:24] Previous action (normalized [-1, 1]) ---
-            # _prev_actions already stores normalized [-1, 1] values
-            obs[i, 20:24] = self._prev_actions[i]
+            # --- [20:20+4*N] Lookahead gates ---
+            for k in range(1, self._n_lookahead_gates + 1):
+                lookahead_gate = track.gates[(gate_idx + k) % n_gates]
+                # Relative position: lookahead gate - current gate, in current gate yaw frame
+                dg = lookahead_gate.position - gate.position
+                offset = 20 + 4 * (k - 1)
+                obs[i, offset:offset + 2] = _rotate_xy(dg[:2], cos_yaw, sin_yaw)
+                obs[i, offset + 2] = dg[2]
+                # Yaw delta: lookahead gate yaw - current gate yaw
+                lookahead_yaw = _quat_to_yaw(lookahead_gate.orientation)
+                obs[i, offset + 3] = _wrap_angle(lookahead_yaw - gate_yaw)
 
         return obs
 
@@ -891,7 +900,7 @@ class GateRaceEnv(gym.Env):
         """Compute observation vectors, squeezing for single env.
 
         Returns:
-            Observations (n_envs, OBS_DIM) or (OBS_DIM,) for single env.
+            Observations (n_envs, obs_dim) or (obs_dim,) for single env.
         """
         obs = self._compute_obs_batched()
         if self.n_envs == 1:
