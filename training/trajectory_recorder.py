@@ -210,6 +210,12 @@ class TrajectoryRecorderCallback(BaseCallback):
         else:
             obs = reset_result
 
+        # Capture gate geometry NOW, before the episode runs.
+        # After done, step() auto-resets and may generate a new track.
+        gate_positions, gate_orientations, gate_half_extents = (
+            self._extract_gate_geometry(env, env_idx=0)
+        )
+
         positions_list: list[np.ndarray] = []
         quaternions_list: list[np.ndarray] = []
         velocities_list: list[np.ndarray] = []
@@ -276,10 +282,6 @@ class TrajectoryRecorderCallback(BaseCallback):
                 break
 
         # Build arrays
-        gate_positions, gate_orientations, gate_half_extents = (
-            self._extract_gate_geometry(env, env_idx=0)
-        )
-
         gate_events = (
             np.array(gate_events_list, dtype=np.int64)
             if gate_events_list
