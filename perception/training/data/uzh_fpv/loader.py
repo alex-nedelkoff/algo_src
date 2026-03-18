@@ -30,12 +30,17 @@ log = logging.getLogger(__name__)
 class UZHFPVScene:
     """Lazy loader for a single UZH-FPV sequence (post-processing)."""
 
-    def __init__(self, data_dir: str | Path, scene_id: str) -> None:
+    def __init__(
+        self, data_dir: str | Path, scene_id: str,
+        calib_path: str | Path | None = None,
+    ) -> None:
         """Load a UZH-FPV scene.
 
         Args:
             data_dir: Root UZH-FPV data directory (e.g. ~/corvidx/data/uzh-fpv).
             scene_id: Sequence name (e.g. "indoor_forward_3_snapdragon").
+            calib_path: Path to Kalibr camchain YAML. If None, auto-detected
+                        from data_dir/calib/<env>_calib_snapdragon/.
         """
         self.data_dir = Path(data_dir)
         self.scene_id = scene_id
@@ -48,19 +53,9 @@ class UZHFPVScene:
         if not self._depth_dir.exists():
             raise FileNotFoundError(f"Depth directory not found: {self._depth_dir}")
 
-        # Discover frames
-        self._rgb_paths = sorted((self._rect_dir / "left").glob("*.png"))
-        self._depth_paths = sorted(self._depth_dir.glob("depth_*.npy"))
-        self._n_frames = min(len(self._rgb_paths), len(self._depth_paths))
-
-        if self._n_frames == 0:
-            raise ValueError(f"No frames found in {self._rect_dir}")
-
-        if len(self._rgb_paths) != len(self._depth_paths):
-            log.warning(
-                "Frame count mismatch: %d RGB vs %d depth — using %d",
-                len(self._rgb_paths), len(self._depth_paths), self._n_frames,
-            )
+        # Discover all frames
+        all_rgb = sorted((self._rect_dir / "left").glob("*.png"))
+        all_depth = sorted(self._depth_dir.glob("depth_*.npy"))
 
         # Load rectified intrinsics
         params_path = self._rect_dir / "rectification_params.json"
@@ -73,17 +68,61 @@ class UZHFPVScene:
             [0, 0, 1],
         ], dtype=np.float64)
 
-        # Load poses
-        self._poses = self._load_poses()
+        # Load T_cam_imu from calibration
+        self._T_cam_imu = self._load_T_cam_imu(calib_path)
 
-    def _load_poses(self) -> np.ndarray:
-        """Load GT poses and interpolate to frame timestamps.
+        # Load poses — this also filters frames to GT coverage
+        self._poses, self._valid_indices = self._load_poses(all_rgb, all_depth)
 
-        Returns (N, 4, 4) camera-to-world transforms.
+        # Filter RGB/depth paths to only valid frames
+        self._rgb_paths = [all_rgb[i] for i in self._valid_indices]
+        self._depth_paths = [all_depth[i] for i in self._valid_indices]
+        self._n_frames = len(self._valid_indices)
+
+        if self._n_frames == 0:
+            raise ValueError(f"No frames with GT coverage found in {self._rect_dir}")
+
+        log.info(
+            "Loaded %s: %d/%d frames with GT coverage",
+            scene_id, self._n_frames, len(all_rgb),
+        )
+
+    def _load_T_cam_imu(self, calib_path: Path | None) -> np.ndarray:
+        """Load T_cam_imu from Kalibr calibration YAML."""
+        if calib_path is None:
+            # Auto-detect: scene_id like "indoor_forward_3_snapdragon"
+            # env is "indoor_forward"
+            import re
+            match = re.match(r"(.+?)_\d+_snapdragon", self.scene_id)
+            if match:
+                env = match.group(1)
+                calib_dir = self.data_dir / "calib" / f"{env}_calib_snapdragon"
+                candidates = list(calib_dir.glob("camchain-imucam-*.yaml"))
+                if candidates:
+                    calib_path = candidates[0]
+
+        if calib_path is None or not Path(calib_path).exists():
+            log.warning("No calibration found, using identity T_cam_imu")
+            return np.eye(4, dtype=np.float64)
+
+        import yaml
+        with open(calib_path) as f:
+            calib = yaml.safe_load(f)
+
+        T = np.array(calib["cam0"]["T_cam_imu"], dtype=np.float64).reshape(4, 4)
+        return T
+
+    def _load_poses(
+        self, all_rgb: list, all_depth: list,
+    ) -> tuple[np.ndarray, list[int]]:
+        """Load GT poses, filter to GT coverage, apply T_cam_imu.
+
+        Returns:
+            poses: (M, 4, 4) camera-to-world transforms for valid frames.
+            valid_indices: List of original frame indices that have GT coverage.
         """
         gt_path = self._rect_dir / "groundtruth.txt"
         if not gt_path.exists():
-            # Try extracted dir
             gt_path = self.data_dir / "extracted" / self.scene_id / "groundtruth.txt"
 
         if not gt_path.exists():
@@ -103,38 +142,55 @@ class UZHFPVScene:
         if ts_path.exists():
             frame_timestamps = np.loadtxt(str(ts_path))
         else:
-            # Assume uniform spacing matching GT
             log.warning("No frame timestamps found, using GT timestamps directly")
-            frame_timestamps = gt_timestamps[:self._n_frames]
+            frame_timestamps = gt_timestamps[:len(all_rgb)]
 
-        # Interpolate GT poses to frame timestamps
-        poses = np.zeros((self._n_frames, 4, 4), dtype=np.float64)
+        n_total = min(len(all_rgb), len(all_depth), len(frame_timestamps))
+        gt_start, gt_end = gt_timestamps[0], gt_timestamps[-1]
 
-        for i in range(self._n_frames):
-            t = frame_timestamps[i] if i < len(frame_timestamps) else frame_timestamps[-1]
+        # Max allowable time gap to nearest GT pose (2ms at 500Hz GT rate)
+        max_gap_ns = 2_000_000
 
-            # Find nearest GT pose
-            idx = np.argmin(np.abs(gt_timestamps - t))
+        # Filter frames to GT coverage and find nearest GT pose
+        T_imu_cam = np.linalg.inv(self._T_cam_imu)
+        valid_indices = []
+        poses_list = []
+
+        for i in range(n_total):
+            t = frame_timestamps[i]
+
+            # Skip frames outside GT coverage
+            if t < gt_start - max_gap_ns or t > gt_end + max_gap_ns:
+                continue
+
+            idx = np.searchsorted(gt_timestamps, t)
+            idx = np.clip(idx, 0, len(gt_timestamps) - 1)
+
+            # Check both neighbors for closest
+            if idx > 0 and abs(gt_timestamps[idx - 1] - t) < abs(gt_timestamps[idx] - t):
+                idx = idx - 1
+
+            gap = abs(gt_timestamps[idx] - t)
+            if gap > max_gap_ns:
+                continue
+
             pos = gt_positions[idx]
             quat = gt_quats[idx]
-
-            # Convert quaternion to rotation matrix
-            # scipy uses [x, y, z, w] format, same as UZH-FPV
             R = Rotation.from_quat(quat).as_matrix()
 
-            poses[i, :3, :3] = R
-            poses[i, :3, 3] = pos
-            poses[i, 3, 3] = 1.0
+            # T_world_body (body/IMU in world frame)
+            T_w_body = np.eye(4, dtype=np.float64)
+            T_w_body[:3, :3] = R
+            T_w_body[:3, 3] = pos
 
-        # Note: GT poses are in body (IMU) frame in world.
-        # For covisibility, we need camera-frame poses. Since we're using
-        # the rectified camera, the relative transforms between frames
-        # are what matter, and the body-frame poses preserve these relationships.
-        # A proper implementation would apply T_cam_imu, but for covisibility
-        # overlap scoring the body-frame approximation works well because
-        # T_cam_imu is a fixed rigid transform.
+            # T_world_cam = T_world_body @ inv(T_cam_imu)
+            T_w_cam = T_w_body @ T_imu_cam
 
-        return poses
+            valid_indices.append(i)
+            poses_list.append(T_w_cam)
+
+        poses = np.array(poses_list, dtype=np.float64)
+        return poses, valid_indices
 
     @property
     def n_frames(self) -> int:
