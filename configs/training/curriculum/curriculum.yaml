@@ -8,11 +8,11 @@ stages:
       body_rate: 0.001
       action_smoothness: 0.0
       crash_penalty: 10.0
+      spline_proximity: 0.5
+      heading_alignment: 0.05
     v_max: 10.0
-    action_smoothness_threshold: 0.0
-    dr_scale: 0.0
-    gate_distance: 0.5
-  - timestep: 1_000_000
+    trigger: null
+  - timestep: 3_000_000
     reward_weights:
       gate_passage: 10.0
       gate_progress: 0.5
@@ -20,11 +20,14 @@ stages:
       body_rate: 0.001
       action_smoothness: 0.05
       crash_penalty: 10.0
+      spline_proximity: 0.3
+      heading_alignment: 0.05
     v_max: 20.0
-    action_smoothness_threshold: 0.5
-    dr_scale: 0.5
-    gate_distance: 0.75
-  - timestep: 5_000_000
+    trigger:
+      metric: racing/gate_passage_rate
+      threshold: 0.8
+      window: 200
+  - timestep: 10_000_000
     reward_weights:
       gate_passage: 30.0
       gate_progress: 0.0
@@ -32,7 +35,10 @@ stages:
       body_rate: 0.001
       action_smoothness: 0.1
       crash_penalty: 10.0
+      spline_proximity: 0.0
+      heading_alignment: 0.0
     v_max: 30.0
-    action_smoothness_threshold: 0.5
-    dr_scale: 1.0
-    gate_distance: 1.0
+    trigger:
+      metric: racing/lap_completion_rate
+      threshold: 0.3
+      window: 200

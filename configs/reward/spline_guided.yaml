@@ -1,0 +1,14 @@
+# Reward config with spline proximity and heading alignment enabled.
+# Based on monorace M23 with TraD-RL and CRL reward additions.
+weights:
+  gate_passage: 1.5
+  gate_progress: 1.0
+  gate_offset: 1.5
+  body_rate: 0.001
+  action_smoothness: 0.0
+  crash_penalty: 10.0
+  spline_proximity: 0.5
+  heading_alignment: 0.05
+
+v_max: 10.0
+action_smoothness_threshold: 0.5

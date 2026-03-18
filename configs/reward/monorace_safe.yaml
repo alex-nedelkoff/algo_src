@@ -7,6 +7,8 @@ weights:
   body_rate: 0.001
   action_smoothness: 0.001
   crash_penalty: 10.0
+  spline_proximity: 0.0
+  heading_alignment: 0.0
 
 v_max: 10.0
 action_smoothness_threshold: 0.3

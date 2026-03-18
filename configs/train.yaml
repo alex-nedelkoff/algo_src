@@ -16,5 +16,6 @@ n_eval_episodes: 10
 checkpoint_freq: 100_000
 output_dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 resume_checkpoint: null  # path to .zip checkpoint to resume from
+curriculum: null  # set to training/curriculum/curriculum to enable
 viz_freq: 1_000_000        # total timesteps between trajectory recording
 n_viz_episodes: 5           # episodes to record per viz checkpoint

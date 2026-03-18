@@ -71,6 +71,7 @@ def setup_callbacks(
     eval_env=None,
     uploader: ArtifactUploader | None = None,
     env_factory: Any = None,
+    train_env=None,
 ) -> list:
     """Create SB3 training callbacks from config.
 
@@ -127,6 +128,20 @@ def setup_callbacks(
             uploader=uploader,
         )
     )
+
+    # Curriculum learning (if configured)
+    curriculum_cfg = cfg.get("curriculum")
+    if curriculum_cfg is not None and train_env is not None:
+        from omegaconf import OmegaConf
+        from training.curriculum_callback import CurriculumCallback, CurriculumSB3Callback
+
+        curr_dict = OmegaConf.to_container(curriculum_cfg, resolve=True)
+        curriculum = CurriculumCallback(curr_dict)
+        if curriculum.enabled:
+            unwrapped_env = train_env
+            while hasattr(unwrapped_env, "env"):
+                unwrapped_env = unwrapped_env.env
+            callbacks.append(CurriculumSB3Callback(curriculum, unwrapped_env))
 
     return callbacks
 
@@ -193,7 +208,8 @@ class RLTrainingLoop:
 
         # 6. Setup callbacks
         callbacks = setup_callbacks(
-            cfg, eval_env=eval_env, uploader=uploader, env_factory=env_factory
+            cfg, eval_env=eval_env, uploader=uploader, env_factory=env_factory,
+            train_env=train_env,
         )
 
         # 7. Train

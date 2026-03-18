@@ -5,3 +5,5 @@ weights:
   body_rate: 0.001
   action_smoothness: 0.01
   crash_penalty: 10.0
+  spline_proximity: 0.0
+  heading_alignment: 0.0
