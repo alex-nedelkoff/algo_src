@@ -467,6 +467,19 @@ class TestTRPYMode:
             obs, reward, terminated, truncated, info = env.step(action)
             assert np.all(np.isfinite(obs)), f"NaN/inf in obs after step"
 
+    def test_trpy_obs_dim_matches_rpm_mode(self):
+        """TRPY mode obs dim should match motor_rpm mode."""
+        from sim.tracks import build_figure8_track
+        trpy_env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=100,
+            action_mode="trpy",
+        )
+        rpm_env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=100,
+            action_mode="motor_rpm",
+        )
+        assert trpy_env._obs_dim == rpm_env._obs_dim
+
 
 class TestRuntimeRewardUpdates:
     def test_set_reward_weights(self):
