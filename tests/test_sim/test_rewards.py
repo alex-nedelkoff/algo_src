@@ -17,7 +17,9 @@ from sim.rewards import (
     body_rate_penalty,
     gate_offset_penalty,
     gate_progress_reward,
+    heading_alignment_reward,
     monorace_reward,
+    spline_proximity_reward,
 )
 from sim.types import Action, GateState, QuadState
 
@@ -445,3 +447,31 @@ class TestMonoraceReward:
             prev_gate_dist=4.0, v_max=30.0, dt=0.01,
         )
         assert result.total == pytest.approx(0.297)
+
+
+class TestSplineProximityReward:
+    def test_on_spline_gives_max_reward(self):
+        assert spline_proximity_reward(0.0) == pytest.approx(1.0)
+
+    def test_far_from_spline_gives_low_reward(self):
+        r = spline_proximity_reward(10.0)
+        assert r < 0.02
+
+    def test_moderate_distance(self):
+        assert spline_proximity_reward(1.0) == pytest.approx(0.5)
+
+    def test_negative_distance_handled(self):
+        assert spline_proximity_reward(-1.0) == pytest.approx(0.5)
+
+
+class TestHeadingAlignmentReward:
+    def test_aligned_gives_max(self):
+        assert heading_alignment_reward(0.0) == pytest.approx(1.0)
+
+    def test_perpendicular_gives_low(self):
+        r = heading_alignment_reward(np.pi / 2)
+        assert 0.2 < r < 0.4
+
+    def test_opposite_gives_lowest(self):
+        r = heading_alignment_reward(np.pi)
+        assert r < 0.15

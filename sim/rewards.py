@@ -180,3 +180,32 @@ def monorace_reward(
 
     total = progress_val + body_rate_val + action_smooth_val
     return RewardResult(total=total, components=components)
+
+
+def spline_proximity_reward(distance: float) -> float:
+    """Reward for proximity to the racing spline.
+
+    TraD-RL Eq. 14 adapted: r = 1 / (1 + d^2)
+
+    Args:
+        distance: Euclidean distance to nearest spline point (meters).
+
+    Returns:
+        Reward in (0, 1].
+    """
+    d = abs(distance)
+    return 1.0 / (1.0 + d * d)
+
+
+def heading_alignment_reward(yaw_error: float) -> float:
+    """Reward for aligning heading with the spline tangent direction.
+
+    CRL paper adapted: r = 1 / (1 + theta^2)
+
+    Args:
+        yaw_error: Angle between drone heading and spline tangent (radians).
+
+    Returns:
+        Reward in (0, 1].
+    """
+    return 1.0 / (1.0 + yaw_error * yaw_error)
