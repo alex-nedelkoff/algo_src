@@ -155,7 +155,7 @@ def setup_callbacks(
             unwrapped_env, n_scenes=ms_cfg.get("n_scenes", 10)
         ))
 
-    # α-RPO alpha schedule callback (sync trick)
+    # aRPO alpha schedule callback (sync trick)
     arpo_cfg = cfg.get("arpo")
     if arpo_cfg is not None and arpo_cfg.get("enabled", False) and train_env is not None:
         from training.arpo import ARPOAlphaCallback, AlphaSchedule
@@ -220,7 +220,7 @@ class RLTrainingLoop:
             eval_ekf_kwargs = OmegaConf.to_container(cfg.ekf, resolve=True)
             eval_env = EKFVecEnvWrapper(eval_env, **eval_ekf_kwargs)
 
-        # 3b. α-RPO base policy wrapper (must wrap env BEFORE PPO sees it)
+        # 3b. aRPO base policy wrapper (must wrap env BEFORE PPO sees it)
         arpo_cfg = cfg.get("arpo")
         if arpo_cfg is not None and arpo_cfg.get("enabled", False):
             import numpy as np_
@@ -238,7 +238,7 @@ class RLTrainingLoop:
                 total_steps=cfg.total_timesteps,
             )
             train_env = ARPOActionWrapper(train_env, base_policy, alpha_sched)
-            log.info("α-RPO wrapper applied: k_end_fraction=%.2f", arpo_cfg.get("k_end_fraction", 0.25))
+            log.info("aRPO wrapper applied: k_end_fraction=%.2f", arpo_cfg.get("k_end_fraction", 0.25))
 
         # 4. Build PPO trainer
         log.info("Building PPO trainer...")

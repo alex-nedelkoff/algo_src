@@ -1,3 +1,4 @@
+# @package _global_
 # Full TRPY + spline reward + α-RPO + curriculum experiment.
 defaults:
   - override /sim: numpy_quad
