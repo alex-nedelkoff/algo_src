@@ -10,7 +10,7 @@ TII dataset layout::
         camera_flight-{name}/   ← JPEG images
           000001.jpg
           ...
-        labels_flight-{name}/   ← YOLO-style .txt labels (one line per gate)
+        label_flight-{name}/   ← YOLO-style .txt labels (one line per gate)
           000001.txt
           ...
 
@@ -112,7 +112,7 @@ def convert_tii_flight(
     Args:
         flight_dir: Path to a flight directory, e.g.
             ``autonomous/flight-{name}``.  Must contain
-            ``camera_flight-{name}/`` and ``labels_flight-{name}/``.
+            ``camera_flight-{name}/`` and ``label_flight-{name}/``.
         output_dir: Where to write converted samples.
         max_samples: Stop after writing this many samples (``None`` = no limit).
 
@@ -124,13 +124,13 @@ def convert_tii_flight(
 
     # Discover the image and label sub-directories.
     img_dirs = sorted(flight_dir.glob("camera_flight-*"))
-    lbl_dirs = sorted(flight_dir.glob("labels_flight-*"))
+    lbl_dirs = sorted(flight_dir.glob("label_flight-*"))
 
     if not img_dirs:
         log.warning("No camera_flight-* directory found in %s", flight_dir)
         return 0
     if not lbl_dirs:
-        log.warning("No labels_flight-* directory found in %s", flight_dir)
+        log.warning("No label_flight-* directory found in %s", flight_dir)
         return 0
 
     img_dir = img_dirs[0]
