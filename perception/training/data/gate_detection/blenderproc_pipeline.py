@@ -106,7 +106,7 @@ def configure_renderer(enable_outputs: bool = True) -> None:
     # Fix overexposure: set exposure and view transform
     bpy.context.scene.view_settings.exposure = -1.0  # darken by 1 stop
     bpy.context.scene.view_settings.view_transform = "Standard"
-    bproc.renderer.set_max_amount_of_samples(64)
+    bproc.renderer.set_max_amount_of_samples(16)
     bproc.renderer.set_noise_threshold(0.05)
     bproc.renderer.set_output_format("PNG")
 
