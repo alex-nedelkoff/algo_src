@@ -102,6 +102,10 @@ def configure_renderer(enable_outputs: bool = True) -> None:
     """
     # Use bpy directly — bproc.renderer has no set_renderer_type()
     bpy.context.scene.render.engine = "CYCLES"
+
+    # Fix overexposure: set exposure and view transform
+    bpy.context.scene.view_settings.exposure = -1.0  # darken by 1 stop
+    bpy.context.scene.view_settings.view_transform = "Standard"
     bproc.renderer.set_max_amount_of_samples(64)
     bproc.renderer.set_noise_threshold(0.05)
     bproc.renderer.set_output_format("PNG")
@@ -130,7 +134,6 @@ def set_background_color(r: float, g: float, b: float) -> None:
     world = bpy.context.scene.world
     world.use_nodes = True
     nodes = world.node_tree.nodes
-    # Find or create Background node
     bg_node = None
     for node in nodes:
         if node.type == "BACKGROUND":
@@ -140,6 +143,138 @@ def set_background_color(r: float, g: float, b: float) -> None:
         bg_node = nodes.new(type="ShaderNodeBackground")
     bg_node.inputs["Color"].default_value = (r, g, b, 1.0)
     bg_node.inputs["Strength"].default_value = 1.0
+
+
+# ---------------------------------------------------------------------------
+# Helper: procedural domain-randomized room
+# ---------------------------------------------------------------------------
+
+def _random_procedural_material(name: str) -> bpy.types.Material:
+    """Create a random procedural material using Blender shader nodes.
+
+    Randomly selects noise, voronoi, or checker texture with random scale,
+    colors, and mapping rotation.  No external textures needed.
+    """
+    mat = bpy.data.materials.new(name=name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+
+    # Clear default nodes except output
+    for n in list(nodes):
+        if n.type != "OUTPUT_MATERIAL":
+            nodes.remove(n)
+
+    output = nodes.get("Material Output")
+    principled = nodes.new(type="ShaderNodeBsdfPrincipled")
+    links.new(principled.outputs["BSDF"], output.inputs["Surface"])
+
+    # Texture coordinate + mapping with random rotation
+    tex_coord = nodes.new(type="ShaderNodeTexCoord")
+    mapping = nodes.new(type="ShaderNodeMapping")
+    mapping.inputs["Rotation"].default_value = (
+        random.uniform(0, 6.28),
+        random.uniform(0, 6.28),
+        random.uniform(0, 6.28),
+    )
+    mapping.inputs["Scale"].default_value = (
+        random.uniform(0.5, 3.0),
+        random.uniform(0.5, 3.0),
+        random.uniform(0.5, 3.0),
+    )
+    links.new(tex_coord.outputs["Generated"], mapping.inputs["Vector"])
+
+    # Pick a random texture type
+    tex_type = random.choice(["noise", "voronoi", "checker", "wave"])
+
+    if tex_type == "noise":
+        tex = nodes.new(type="ShaderNodeTexNoise")
+        tex.inputs["Scale"].default_value = random.uniform(1.0, 50.0)
+        tex.inputs["Detail"].default_value = random.uniform(0.0, 16.0)
+        tex.inputs["Roughness"].default_value = random.uniform(0.0, 1.0)
+        fac_output = tex.outputs["Fac"]
+    elif tex_type == "voronoi":
+        tex = nodes.new(type="ShaderNodeTexVoronoi")
+        tex.inputs["Scale"].default_value = random.uniform(1.0, 30.0)
+        tex.inputs["Randomness"].default_value = random.uniform(0.5, 1.0)
+        fac_output = tex.outputs["Distance"]
+    elif tex_type == "checker":
+        tex = nodes.new(type="ShaderNodeTexChecker")
+        tex.inputs["Scale"].default_value = random.uniform(2.0, 40.0)
+        tex.inputs["Color1"].default_value = (
+            random.uniform(0.05, 0.7), random.uniform(0.05, 0.7), random.uniform(0.05, 0.7), 1.0
+        )
+        tex.inputs["Color2"].default_value = (
+            random.uniform(0.05, 0.7), random.uniform(0.05, 0.7), random.uniform(0.05, 0.7), 1.0
+        )
+        fac_output = tex.outputs["Color"]
+    else:  # wave
+        tex = nodes.new(type="ShaderNodeTexWave")
+        tex.inputs["Scale"].default_value = random.uniform(1.0, 20.0)
+        tex.inputs["Distortion"].default_value = random.uniform(0.0, 10.0)
+        fac_output = tex.outputs["Fac"]
+
+    links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
+
+    # Color ramp with two random colors (clamped to avoid blown-out whites)
+    ramp = nodes.new(type="ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].color = (
+        random.uniform(0.05, 0.8), random.uniform(0.05, 0.8), random.uniform(0.05, 0.8), 1.0
+    )
+    ramp.color_ramp.elements[1].color = (
+        random.uniform(0.05, 0.8), random.uniform(0.05, 0.8), random.uniform(0.05, 0.8), 1.0
+    )
+
+    if tex_type == "checker":
+        # Checker already outputs color — connect directly
+        links.new(fac_output, principled.inputs["Base Color"])
+    else:
+        links.new(fac_output, ramp.inputs["Fac"])
+        links.new(ramp.outputs["Color"], principled.inputs["Base Color"])
+
+    # Random roughness / metallic
+    principled.inputs["Roughness"].default_value = random.uniform(0.3, 1.0)
+    principled.inputs["Metallic"].default_value = random.uniform(0.0, 0.3)
+
+    return mat
+
+
+def create_randomized_room() -> list:
+    """Create a simple box room (floor + 4 walls + ceiling) with random procedural materials.
+
+    Room is ~20m x 20m x 6m, centered at origin, extending along -Y (where gates are placed).
+    Each surface gets an independent random material.
+    """
+    room_objects = []
+    half_w = 10.0  # half width (X)
+    half_d = 15.0  # half depth (Y) — gates at -2 to -12
+    room_h = 6.0   # height (Z)
+
+    surfaces = [
+        # (name, location, scale, rotation)
+        ("floor",   [0, -half_d/2, -3],      [half_w, half_d, 0.01],  [0, 0, 0]),
+        ("ceiling", [0, -half_d/2, room_h-3], [half_w, half_d, 0.01],  [0, 0, 0]),
+        ("wall_back",  [0, -half_d, room_h/2-3],  [half_w, 0.01, room_h/2], [0, 0, 0]),
+        ("wall_left",  [-half_w, -half_d/2, room_h/2-3], [0.01, half_d, room_h/2], [0, 0, 0]),
+        ("wall_right", [half_w, -half_d/2, room_h/2-3],  [0.01, half_d, room_h/2], [0, 0, 0]),
+    ]
+
+    for name, loc, scale, rot in surfaces:
+        plane = bproc.object.create_primitive("CUBE")
+        plane.set_name(f"room_{name}")
+        plane.set_location(loc)
+        plane.set_scale(scale)
+        plane.set_rotation_euler(rot)
+        plane.set_cp("category_id", 0)  # background class
+
+        # Apply random procedural material
+        mat = _random_procedural_material(f"mat_{name}")
+        plane.blender_obj.data.materials.clear()
+        plane.blender_obj.data.materials.append(mat)
+
+        room_objects.append(plane)
+
+    return room_objects
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +319,9 @@ for idx in range(args.n_samples):
         # registered once per Blender session (already done before the loop).
         configure_renderer(enable_outputs=False)
 
-    # ---- Background --------------------------------------------------------
-    r, g, b = np.random.uniform(0.02, 0.3, 3).tolist()
-    set_background_color(r, g, b)
+    # ---- Room with randomized procedural textures --------------------------
+    set_background_color(0.01, 0.01, 0.01)  # dark world background (barely visible)
+    room_objects = create_randomized_room()
 
     # ---- Load gates --------------------------------------------------------
     n_gates = random.randint(1, 3)
@@ -244,15 +379,21 @@ for idx in range(args.n_samples):
                     random.uniform(-np.pi, np.pi),
                 ])
 
-    # ---- Point light -------------------------------------------------------
-    light = bproc.types.Light()
-    light.set_type("POINT")
-    light.set_location([
-        random.uniform(-3.0, 3.0),
-        random.uniform(-3.0, 3.0),
-        random.uniform(1.0, 5.0),
-    ])
-    light.set_energy(random.uniform(200.0, 1000.0))
+    # ---- Randomized lighting (most important DR factor per UZH) ------------
+    # 1-3 point/area lights with random position, energy, and color temperature
+    n_lights = random.randint(1, 3)
+    for _ in range(n_lights):
+        light = bproc.types.Light()
+        light.set_type(random.choice(["POINT", "AREA"]))
+        light.set_location([
+            random.uniform(-8.0, 8.0),
+            random.uniform(-12.0, 0.0),
+            random.uniform(1.0, 5.0),
+        ])
+        light.set_energy(random.uniform(20.0, 200.0))
+        # Random warm/cool color temperature
+        temp = random.uniform(0.7, 1.0)
+        light.set_color([temp, temp * random.uniform(0.8, 1.0), temp * random.uniform(0.6, 1.0)])
 
     # ---- Camera at origin, looking toward the gates -------------------------
     # Use rotation_from_forward_vec to point camera at the average gate position.
@@ -268,12 +409,9 @@ for idx in range(args.n_samples):
     render_data = bproc.renderer.render()
 
     # ---- Extract RGB -------------------------------------------------------
-    # render_data["colors"] is a list of (H, W, 4) RGBA float32 arrays
-    rgba = render_data["colors"][0]  # float32 in [0, 1]
-    rgb_float = rgba[:, :, :3]
-    rgb_uint8 = (np.clip(rgb_float, 0.0, 1.0) * 255).astype(np.uint8)
-    # Convert RGB → BGR for OpenCV
-    bgr = cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR)
+    # BlenderProc render() returns colors as (H, W, 3) uint8 RGB, already tonemapped.
+    rgb = render_data["colors"][0]  # uint8, shape (H, W, 3), RGB order
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
     # ---- Extract segmentation masks ----------------------------------------
     # enable_segmentation_output(map_by=["category_id","instance"]) produces:
