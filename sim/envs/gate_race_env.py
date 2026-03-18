@@ -13,21 +13,25 @@ import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
 
-from sim.rewards import gate_offset_penalty, monorace_reward
+from sim.rewards import gate_offset_penalty, monorace_reward, spline_proximity_reward, heading_alignment_reward
+from sim.spline import GateSpline
 from sim.dynamics.trpy_mixer import TRPYMixer
 from sim.types import ActionMode
 
-# Reward component column indices for the (n_envs, 6) array
+# Reward component column indices for the (n_envs, 8) array
 RC_PROGRESS = 0
 RC_BODY_RATE = 1
 RC_ACTION_SMOOTH = 2
 RC_GATE_PASSAGE = 3
 RC_GATE_OFFSET = 4
 RC_CRASH_PENALTY = 5
-NUM_REWARD_COMPONENTS = 6
+RC_SPLINE_PROXIMITY = 6
+RC_HEADING_ALIGNMENT = 7
+NUM_REWARD_COMPONENTS = 8
 REWARD_COMPONENT_NAMES = [
     "progress", "body_rate", "action_smooth",
     "gate_passage", "gate_offset", "crash_penalty",
+    "spline_proximity", "heading_alignment",
 ]
 from sim.tracks import Track
 from sim.procedural_tracks import ProceduralTrackGenerator
@@ -333,6 +337,12 @@ class GateRaceEnv(gym.Env):
             self._tracks = [build_figure8_track()] * n_envs
         self.track_generator: ProceduralTrackGenerator | None = track_generator
 
+        # Build splines for reward shaping (one per env track)
+        self._splines: list[GateSpline | None] = []
+        for t in self._tracks:
+            positions = np.array([g.position for g in t.gates])
+            self._splines.append(GateSpline(positions) if len(positions) >= 2 else None)
+
         # Dynamics
         self.params = params or VehicleParams()
         self.dynamics = NumpyQuadDynamics(params=self.params, dt=dt)
@@ -583,6 +593,34 @@ class GateRaceEnv(gym.Env):
         self._episode_speed_sum += speed
         self._episode_speed_count += 1
 
+        # Pre-compute spline rewards
+        spline_weight = (self.reward_weights or {}).get("spline_proximity", 0.0)
+        heading_weight = (self.reward_weights or {}).get("heading_alignment", 0.0)
+        _spline_rewards = np.zeros(self.n_envs, dtype=np.float64)
+        _heading_rewards = np.zeros(self.n_envs, dtype=np.float64)
+
+        if (spline_weight != 0.0 or heading_weight != 0.0) and any(s is not None for s in self._splines):
+            for i in range(self.n_envs):
+                if self._splines[i] is None:
+                    continue
+                if spline_weight != 0.0:
+                    d = self._splines[i].distance_to_nearest(self._states[i, POS])
+                    _spline_rewards[i] = spline_weight * spline_proximity_reward(d)
+                if heading_weight != 0.0:
+                    _, tangent = self._splines[i].nearest_point_and_tangent(self._states[i, POS])
+                    drone_yaw = _quat_to_euler(self._states[i, QUAT])[2]
+                    tangent_xy = tangent[:2]
+                    tangent_xy_norm = np.linalg.norm(tangent_xy)
+                    if tangent_xy_norm > 1e-6:
+                        cos_a = np.clip(
+                            (np.cos(drone_yaw) * tangent_xy[0] + np.sin(drone_yaw) * tangent_xy[1])
+                            / tangent_xy_norm, -1.0, 1.0
+                        )
+                        yaw_error = np.arccos(cos_a)
+                    else:
+                        yaw_error = 0.0
+                    _heading_rewards[i] = heading_weight * heading_alignment_reward(yaw_error)
+
         for i in range(self.n_envs):
             # Check termination conditions
             z = self._states[i, 2]
@@ -682,6 +720,16 @@ class GateRaceEnv(gym.Env):
             self._step_reward_components[i, RC_PROGRESS] = reward_result.components["progress"]
             self._step_reward_components[i, RC_BODY_RATE] = reward_result.components["body_rate"]
             self._step_reward_components[i, RC_ACTION_SMOOTH] = reward_result.components["action_smooth"]
+
+            # Spline proximity reward (pre-computed)
+            if spline_weight != 0.0:
+                rewards[i] += _spline_rewards[i]
+                self._step_reward_components[i, RC_SPLINE_PROXIMITY] = _spline_rewards[i]
+
+            # Heading alignment reward (pre-computed)
+            if heading_weight != 0.0:
+                rewards[i] += _heading_rewards[i]
+                self._step_reward_components[i, RC_HEADING_ALIGNMENT] = _heading_rewards[i]
 
             # --- Plane-crossing gate passage detection ---
             normal = _gate_normal(gate)
@@ -824,6 +872,9 @@ class GateRaceEnv(gym.Env):
             if self.track_generator is not None:
                 for idx in done_indices:
                     self._tracks[idx] = self.track_generator.generate(self.np_random)
+                    # Rebuild spline for regenerated track
+                    positions = np.array([g.position for g in self._tracks[idx].gates])
+                    self._splines[idx] = GateSpline(positions) if len(positions) >= 2 else None
 
             if self.random_gate_start:
                 self._randomize_start(done_indices)

@@ -500,3 +500,37 @@ class TestRuntimeRewardUpdates:
         )
         env.set_v_max(20.0)
         assert env.v_max == 20.0
+
+
+class TestSplineRewards:
+    def test_spline_reward_logged_when_enabled(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"spline_proximity": 1.0, "heading_alignment": 0.05,
+                            "gate_progress": 1.0, "gate_passage": 1.5,
+                            "crash_penalty": 10.0},
+        )
+        env.reset()
+        action = np.zeros((1, 4), dtype=np.float32)
+        env.step(action)
+        names, components = env.get_step_reward_components(0)
+        assert "spline_proximity" in names
+        assert "heading_alignment" in names
+
+    def test_spline_reward_zero_when_disabled(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"spline_proximity": 0.0, "heading_alignment": 0.0,
+                            "gate_progress": 1.0, "gate_passage": 1.5,
+                            "crash_penalty": 10.0},
+        )
+        env.reset()
+        action = np.zeros((1, 4), dtype=np.float32)
+        env.step(action)
+        names, components = env.get_step_reward_components(0)
+        spline_idx = names.index("spline_proximity")
+        heading_idx = names.index("heading_alignment")
+        assert components[spline_idx] == 0.0
+        assert components[heading_idx] == 0.0

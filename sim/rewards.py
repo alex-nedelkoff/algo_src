@@ -35,6 +35,8 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "body_rate": 0.001,        # Both M16/M23: lambda_rate=0.001
     "action_smoothness": 0.0,  # M23: disabled
     "crash_penalty": 10.0,     # Both M16/M23: lambda_crash=10
+    "spline_proximity": 0.0,   # disabled by default (backwards compat)
+    "heading_alignment": 0.0,  # disabled by default
 }
 
 
