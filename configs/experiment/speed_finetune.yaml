@@ -1,0 +1,64 @@
+# @package _global_
+# Speed fine-tune: resume from reliable toasty-resonance-40 checkpoint,
+# push for maximum speed while maintaining gate completion.
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: none
+  - override /domain_rand: uniform_30pct
+  - override /logging: wandb
+  - _self_
+
+sim:
+  action_mode: trpy
+  n_lookahead_gates: 2
+
+total_timesteps: 20_000_000
+
+# Resume from the 20M checkpoint
+resume_checkpoint: outputs/2026-03-18/14-12-23/final_model.zip
+
+track_gen:
+  n_gates_min: 4
+  n_gates_max: 8
+  gate_spacing_min: 1.5
+  gate_spacing_max: 4.0
+  turn_angle_min: -120
+  turn_angle_max: 120
+  elevation_min: 1.0
+  elevation_max: 3.5
+  elevation_delta_max: 0.6
+  closure_max_angle: 90
+  closure_max_retries: 10
+
+# Speed-optimized reward: high gate passage, re-enable progress, lower crash penalty
+reward:
+  weights:
+    gate_passage: 50.0
+    gate_progress: 0.5
+    gate_offset: 2.0
+    body_rate: 0.001
+    action_smoothness: 0.0
+    crash_penalty: 5.0
+    spline_proximity: 0.0
+    heading_alignment: 0.0
+  v_max: 30.0
+  action_smoothness_threshold: 0.5
+
+# No aRPO — policy is already standalone
+arpo:
+  enabled: false
+
+# No curriculum — single-stage speed push
+curriculum: null
+
+# Multi-scene still on for generalization
+multi_scene:
+  enabled: true
+  n_scenes: 10
+
+logging:
+  tags: ["trpy", "speed-finetune", "resume", "20M"]
+  group: speed_finetune
+  notes: "Speed finetune from toasty-resonance-40 (20M). gate_passage=50, crash_penalty=5, v_max=30."
