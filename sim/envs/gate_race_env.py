@@ -14,6 +14,8 @@ from gymnasium import spaces
 from numpy.typing import NDArray
 
 from sim.rewards import gate_offset_penalty, monorace_reward
+from sim.dynamics.trpy_mixer import TRPYMixer
+from sim.types import ActionMode
 
 # Reward component column indices for the (n_envs, 6) array
 RC_PROGRESS = 0
@@ -284,8 +286,13 @@ class GateRaceEnv(gym.Env):
         track_generator: ProceduralTrackGenerator | None = None,
         tracks: list[Track] | None = None,
         n_lookahead_gates: int = 1,
+        action_mode: ActionMode | str = ActionMode.MOTOR_RPM,
     ) -> None:
         super().__init__()
+
+        if isinstance(action_mode, str):
+            action_mode = ActionMode(action_mode)
+        self.action_mode = action_mode
 
         if n_lookahead_gates < 1:
             raise ValueError(f"n_lookahead_gates must be >= 1, got {n_lookahead_gates}")
@@ -329,6 +336,8 @@ class GateRaceEnv(gym.Env):
         # Dynamics
         self.params = params or VehicleParams()
         self.dynamics = NumpyQuadDynamics(params=self.params, dt=dt)
+        if action_mode == ActionMode.TRPY:
+            self._trpy_mixer = TRPYMixer(self.params)
 
         # Gymnasium spaces — normalized action space [-1, 1] per MonoRace paper
         obs_high = np.full(self._obs_dim, np.inf, dtype=np.float32)
@@ -521,6 +530,17 @@ class GateRaceEnv(gym.Env):
         U = np.clip((u + 1.0) / 2.0, 0.0, 1.0)  # [-1,1] -> [0,1]
         return (w_max - w_min) * np.sqrt(k * U**2 + (1.0 - k) * U) + w_min
 
+    def _trpy_to_omega(self, u: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Map normalized TRPY action [-1, 1] to motor speed [rad/s].
+        u[0] in [-1,1] → thrust in [0, 2*m*g]
+        u[1:4] in [-1,1] → body rates in [-max_body_rate, max_body_rate]
+        """
+        physical = np.empty_like(u)
+        max_thrust = self.params.mass * GRAVITY * 2.0
+        physical[:, 0] = (u[:, 0] + 1.0) / 2.0 * max_thrust
+        physical[:, 1:4] = u[:, 1:4] * self.max_body_rate
+        return self._trpy_mixer.mix_batch(physical)
+
     def step(
         self, action: NDArray[np.float32]
     ) -> tuple[NDArray[np.float32], NDArray[np.float64], NDArray[np.bool_], NDArray[np.bool_], dict[str, Any]]:
@@ -536,8 +556,11 @@ class GateRaceEnv(gym.Env):
         if action.ndim == 1:
             action = action[None, :]  # (1, 4)
 
-        # Map normalized [-1, 1] action through nonlinear ESC curve to rad/s
-        action_rads = self._esc_to_omega(action)
+        # Map normalized [-1, 1] action to motor speeds in rad/s
+        if self.action_mode == ActionMode.TRPY:
+            action_rads = self._trpy_to_omega(action)
+        else:
+            action_rads = self._esc_to_omega(action)
 
         # Step dynamics
         self._states = self.dynamics.step(self._states, action_rads)
@@ -942,3 +965,14 @@ class GateRaceEnv(gym.Env):
     def get_step_reward_components(self, env_idx: int) -> tuple[list[str], np.ndarray]:
         """Return per-step reward component breakdown."""
         return REWARD_COMPONENT_NAMES, self._step_reward_components[env_idx].copy()
+
+    def set_reward_weights(self, updates: dict[str, float]) -> None:
+        """Update reward weights at runtime (for curriculum learning)."""
+        if self.reward_weights is None:
+            from sim.rewards import DEFAULT_WEIGHTS
+            self.reward_weights = dict(DEFAULT_WEIGHTS)
+        self.reward_weights.update(updates)
+
+    def set_v_max(self, v_max: float) -> None:
+        """Update v_max at runtime (for curriculum learning)."""
+        self.v_max = v_max

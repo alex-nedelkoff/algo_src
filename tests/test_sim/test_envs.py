@@ -433,3 +433,57 @@ class TestGateLapTracking:
 
         # Gate wrapped to 0 = lap complete
         assert env._laps_completed[0] >= 1, "Lap should complete when gate wraps"
+
+
+class TestTRPYMode:
+    """Tests for TRPY action mode in GateRaceEnv."""
+
+    def test_trpy_env_creates(self) -> None:
+        """Create env with action_mode='trpy', verify action_space shape is (4,)."""
+        env = GateRaceEnv(n_envs=1, action_mode="trpy")
+        assert env.action_space.shape == (4,)
+
+    def test_trpy_env_step_hover(self) -> None:
+        """Step with zero action (hover), verify obs shape and no termination."""
+        env = GateRaceEnv(n_envs=1, action_mode="trpy")
+        env.reset(seed=42)
+
+        action = np.zeros(4, dtype=np.float32)
+        obs, reward, terminated, truncated, info = env.step(action)
+
+        assert obs.shape == (OBS_DIM,)
+        term_val = terminated.item() if hasattr(terminated, "item") else terminated
+        trunc_val = truncated.item() if hasattr(truncated, "item") else truncated
+        assert not term_val, "Zero TRPY action should not terminate immediately"
+        assert not trunc_val
+
+    def test_trpy_env_runs_100_steps(self) -> None:
+        """Run 100 steps with zero action, verify no NaN in obs."""
+        env = GateRaceEnv(n_envs=1, action_mode="trpy")
+        env.reset(seed=42)
+
+        action = np.zeros(4, dtype=np.float32)
+        for _ in range(100):
+            obs, reward, terminated, truncated, info = env.step(action)
+            assert np.all(np.isfinite(obs)), f"NaN/inf in obs after step"
+
+
+class TestRuntimeRewardUpdates:
+    def test_set_reward_weights(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"gate_passage": 1.5, "gate_progress": 1.0, "crash_penalty": 10.0},
+        )
+        env.set_reward_weights({"gate_passage": 30.0, "gate_progress": 0.0})
+        assert env.reward_weights["gate_passage"] == 30.0
+        assert env.reward_weights["gate_progress"] == 0.0
+        assert env.reward_weights["crash_penalty"] == 10.0
+
+    def test_set_v_max(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+        )
+        env.set_v_max(20.0)
+        assert env.v_max == 20.0
