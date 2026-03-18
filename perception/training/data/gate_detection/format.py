@@ -31,6 +31,9 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+# Corner order convention: TL=0, TR=1, BR=2, BL=3
+CORNER_NAMES = ["TL", "TR", "BR", "BL"]
+
 
 def generate_corner_heatmaps(
     corner_coords: list[dict],
