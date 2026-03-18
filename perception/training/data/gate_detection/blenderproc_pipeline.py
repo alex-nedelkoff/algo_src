@@ -185,7 +185,7 @@ for idx in range(args.n_samples):
         configure_renderer(enable_outputs=False)
 
     # ---- Background --------------------------------------------------------
-    r, g, b = np.random.uniform(0.0, 1.0, 3).tolist()
+    r, g, b = np.random.uniform(0.02, 0.3, 3).tolist()
     set_background_color(r, g, b)
 
     # ---- Load gates --------------------------------------------------------
@@ -196,10 +196,12 @@ for idx in range(args.n_samples):
         loaded = bproc.loader.load_obj(args.gate_obj)
         for obj in loaded:
             obj.set_cp("category_id", 1)
+            # BlenderProc segmentation requires pass_index to be set explicitly
+            obj.blender_obj.pass_index = g_idx + 1
 
-            # Random position: forward 2–12 m (X), lateral ±3 m (Y), vertical ±2 m (Z)
-            x = random.uniform(2.0, 12.0)
-            y = random.uniform(-3.0, 3.0)
+            # Random position: lateral ±3 m (X), forward 2-12 m (-Y), vertical ±2 m (Z)
+            x = random.uniform(-3.0, 3.0)
+            y = random.uniform(-12.0, -2.0)  # negative Y = forward from camera
             z = random.uniform(-2.0, 2.0)
             obj.set_location([x, y, z])
 
@@ -226,12 +228,14 @@ for idx in range(args.n_samples):
     # ---- Load drones (optional) -------------------------------------------
     if args.drone_obj is not None:
         n_drones = random.randint(0, 2)
-        for _ in range(n_drones):
+        for d_idx in range(n_drones):
             loaded = bproc.loader.load_obj(args.drone_obj)
             for obj in loaded:
                 obj.set_cp("category_id", 2)
-                x = random.uniform(1.5, 10.0)
-                y = random.uniform(-4.0, 4.0)
+                # BlenderProc segmentation requires pass_index
+                obj.blender_obj.pass_index = 100 + d_idx  # offset to avoid gate IDs
+                x = random.uniform(-4.0, 4.0)
+                y = random.uniform(-10.0, -1.5)  # forward
                 z = random.uniform(-2.5, 2.5)
                 obj.set_location([x, y, z])
                 obj.set_rotation_euler([
@@ -250,14 +254,14 @@ for idx in range(args.n_samples):
     ])
     light.set_energy(random.uniform(200.0, 1000.0))
 
-    # ---- Camera at origin, looking forward (+X) ----------------------------
-    # BlenderProc's camera looks down -Z in camera space.
-    # To point along +X world axis we apply Euler XYZ = (pi/2, 0, pi/2).
-    # build_transformation_mat accepts a (3,) array for Euler angles.
-    cam_pose = bproc.math.build_transformation_mat(
-        translation=[0.0, 0.0, 0.0],
-        rotation=np.array([np.pi / 2, 0.0, np.pi / 2]),
-    )
+    # ---- Camera at origin, looking toward the gates -------------------------
+    # Use rotation_from_forward_vec to point camera at the average gate position.
+    # Camera placed at origin (or slight random jitter).
+    cam_loc = np.array([0.0, 0.0, random.uniform(-0.5, 0.5)])
+    # Look toward -Y (where gates are placed)
+    forward = np.array([0.0, -1.0, 0.0])
+    rotation_matrix = bproc.camera.rotation_from_forward_vec(forward)
+    cam_pose = bproc.math.build_transformation_mat(cam_loc, rotation_matrix)
     bproc.camera.add_camera_pose(cam_pose)
 
     # ---- Render ------------------------------------------------------------
@@ -335,12 +339,13 @@ for idx in range(args.n_samples):
 
     metadata = {
         "source": "blenderproc",
-        "sample_id": sample_id,
-        "seed": args.seed,
-        "sample_index": idx,
-        "n_gates_placed": n_gates,
-        "n_gates_in_frame": gates_in_frame,
+        "resolution": [HEIGHT, WIDTH],
         "intrinsics": intrinsics,
+        "distortion_model": "pinhole",
+        "distortion_coeffs": None,
+        "gate_dims_m": [1.5, 1.5],
+        "n_gates": n_gates,
+        "n_drones": n_drones if args.drone_obj else 0,
     }
 
     # ---- Save --------------------------------------------------------------
