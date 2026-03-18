@@ -48,10 +48,11 @@ _TII_GATE_DIMS_M = [1.52, 1.52]
 
 
 def parse_tii_label(line: str, img_width: int, img_height: int) -> list[dict]:
-    """Parse a single TII label line into gate dicts.
+    """Parse a single TII label line into a gate dict.
 
-    A line encodes exactly one gate.  The gate is *included* only when
-    all four corners have visibility == 2 (inside image).
+    A line encodes exactly one gate.  Gates with at least one visible
+    corner are included.  Invisible corners (vis != 2) are stored as
+    ``None`` so downstream can distinguish full from partial gates.
 
     Args:
         line: Space-separated label string (17 tokens).
@@ -61,7 +62,12 @@ def parse_tii_label(line: str, img_width: int, img_height: int) -> list[dict]:
     Returns:
         A list containing zero or one gate dict::
 
-            {"gate_id": int, "corners": [[x, y] x 4], "confidence": 1.0}
+            {
+                "gate_id": int,
+                "corners": [<[x, y] | None> x 4],  # None for invisible
+                "confidence": float,  # n_visible / 4
+                "n_visible": int,
+            }
     """
     tokens = line.strip().split()
     if len(tokens) != 17:
@@ -69,30 +75,33 @@ def parse_tii_label(line: str, img_width: int, img_height: int) -> list[dict]:
         return []
 
     class_id = int(tokens[0])
-    # tokens[1:5] are bbox (cx, cy, w, h) — not needed for corner coords.
 
     # Parse the four corners (TL, TR, BR, BL) starting at token index 5.
-    corners: list[list[float]] = []
+    corners: list[list[float] | None] = []
+    n_visible = 0
     for i in range(4):
         base = 5 + i * 3
         nx = float(tokens[base])
         ny = float(tokens[base + 1])
         vis = int(float(tokens[base + 2]))
 
-        if vis != 2:
-            # At least one corner is not visible — drop the whole gate.
-            return []
+        if vis == 2:
+            px = nx * img_width
+            py = ny * img_height
+            corners.append([px, py])
+            n_visible += 1
+        else:
+            corners.append(None)
 
-        # Denormalise to pixel space.
-        px = nx * img_width
-        py = ny * img_height
-        corners.append([px, py])
+    if n_visible == 0:
+        return []
 
     return [
         {
             "gate_id": class_id,
             "corners": corners,
-            "confidence": 1.0,
+            "confidence": n_visible / 4.0,
+            "n_visible": n_visible,
         }
     ]
 
@@ -174,8 +183,21 @@ def convert_tii_flight(
             log.debug("No visible gates for %s — skipping.", stem)
             continue
 
-        # Generate derived data.
-        gate_mask = render_gate_mask(all_gates, h, w)
+        # Separate full gates (all 4 corners) from partial gates.
+        full_gates = [g for g in all_gates if g["n_visible"] == 4]
+        # partial_gates have at least 1 visible corner but < 4.
+
+        # Segmentation mask: only from full gates (need all 4 corners for quad).
+        gate_mask = render_gate_mask(full_gates, h, w)
+
+        # Corner heatmaps: from ALL gates, but only for visible corners.
+        # Build a filtered list with None corners removed for heatmap generation.
+        heatmap_gates = []
+        for g in all_gates:
+            visible_corners = {i: c for i, c in enumerate(g["corners"]) if c is not None}
+            if visible_corners:
+                heatmap_gates.append({"gate_id": g["gate_id"], "corners": g["corners"], "visible": visible_corners})
+
         corner_heatmaps = generate_corner_heatmaps(all_gates, h, w)
         obstacle_mask = np.zeros((h, w), dtype=np.uint8)
 

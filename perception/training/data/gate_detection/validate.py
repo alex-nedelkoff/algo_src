@@ -50,25 +50,32 @@ def overlay_annotations(
     gate_overlay[:, :, 1] = 255  # green channel
     mask_bool = gate_mask > 0
     alpha = 0.35
-    vis[mask_bool] = cv2.addWeighted(
-        vis[mask_bool], 1.0 - alpha, gate_overlay[mask_bool], alpha, 0
-    )
+    if mask_bool.any():
+        vis[mask_bool] = cv2.addWeighted(
+            vis[mask_bool], 1.0 - alpha, gate_overlay[mask_bool], alpha, 0
+        )
 
     # Draw corners and gate ID labels
     for gate in corner_coords:
         gate_id = gate["gate_id"]
         corners = gate["corners"]  # [[x, y], ...] TL, TR, BR, BL
 
-        for idx, (cx, cy) in enumerate(corners):
+        for idx, corner in enumerate(corners):
+            if corner is None:
+                continue  # invisible corner
+            cx, cy = corner
             name = CORNER_NAMES[idx]
             color = CORNER_COLORS_BGR[name]
             center = (int(round(cx)), int(round(cy)))
             cv2.circle(vis, center, 5, color, -1)
             cv2.circle(vis, center, 5, (0, 0, 0), 1)  # black outline
 
-        # Label at the centroid of the four corners
-        centroid_x = int(round(np.mean([c[0] for c in corners])))
-        centroid_y = int(round(np.mean([c[1] for c in corners])))
+        # Label at the centroid of visible corners
+        visible = [c for c in corners if c is not None]
+        if not visible:
+            continue
+        centroid_x = int(round(np.mean([c[0] for c in visible])))
+        centroid_y = int(round(np.mean([c[1] for c in visible])))
         label = f"G{gate_id}"
         cv2.putText(
             vis,
@@ -105,7 +112,10 @@ def _check_corners_on_mask(
     fail_count = 0
 
     for gate in corner_coords:
-        for cx, cy in gate["corners"]:
+        for corner in gate["corners"]:
+            if corner is None:
+                continue  # invisible corner — skip
+            cx, cy = corner
             ix = int(round(cx))
             iy = int(round(cy))
 
@@ -204,7 +214,7 @@ def validate_dataset(
 
             # ── 3. Cross-check corners vs mask ───────────────────────
             fails = _check_corners_on_mask(gate_mask, corner_coords)
-            n_corners = sum(len(g["corners"]) for g in corner_coords)
+            n_corners = sum(1 for g in corner_coords for c in g["corners"] if c is not None)
             total_fail += fails
             total_checked += n_corners
 

@@ -73,8 +73,11 @@ def generate_corner_heatmaps(
     two_sigma_sq = 2.0 * sigma * sigma
 
     for gate in corner_coords:
-        corners = gate["corners"]  # [[x, y], ...] length 4
-        for ch, (cx, cy) in enumerate(corners):
+        corners = gate["corners"]  # [[x, y] | None, ...] length 4
+        for ch, corner in enumerate(corners):
+            if corner is None:
+                continue  # invisible corner — no heatmap peak
+            cx, cy = corner
             # Map pixel coords to heatmap grid coords, snap to nearest cell
             # (standard CenterNet convention — peak is always exactly 1.0)
             gx = int(round(cx / stride))
@@ -115,7 +118,11 @@ def render_gate_mask(
     mask = np.zeros((height, width), dtype=np.uint8)
 
     for instance_id, gate in enumerate(corner_coords, start=1):
-        pts = np.array(gate["corners"], dtype=np.int32).reshape((-1, 1, 2))
+        corners = gate["corners"]
+        # Skip gates with any None corners (partial visibility)
+        if any(c is None for c in corners):
+            continue
+        pts = np.array(corners, dtype=np.int32).reshape((-1, 1, 2))
         cv2.fillPoly(mask, [pts], color=int(instance_id))
 
     return mask

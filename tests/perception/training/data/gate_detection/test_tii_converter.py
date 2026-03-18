@@ -111,7 +111,7 @@ def _make_fake_tii_sample(
     """
     flight_dir = tmpdir / "autonomous" / flight_name
     img_dir = flight_dir / f"camera_{flight_name}"
-    lbl_dir = flight_dir / f"labels_{flight_name}"
+    lbl_dir = flight_dir / f"label_{flight_name}"
     img_dir.mkdir(parents=True, exist_ok=True)
     lbl_dir.mkdir(parents=True, exist_ok=True)
 
@@ -152,6 +152,7 @@ class TestParseTiiLabel:
         assert "confidence" in gate
         assert isinstance(gate["gate_id"], int)
         assert gate["confidence"] == 1.0
+        assert gate["n_visible"] == 4
         assert len(gate["corners"]) == 4
 
     def test_corners_denormalized_to_pixel_space(self) -> None:
@@ -172,11 +173,19 @@ class TestParseTiiLabel:
         assert corners[2][0] == pytest.approx(expected_br_x, abs=0.1)
         assert corners[2][1] == pytest.approx(expected_br_y, abs=0.1)
 
-    def test_invisible_corner_drops_gate(self) -> None:
-        """If any corner has visibility != 2, the gate should be dropped."""
+    def test_partial_visibility_keeps_gate_with_none_corners(self) -> None:
+        """A gate with 3/4 visible corners is kept; invisible corner is None."""
         line = _make_partially_visible_label_line()
         gates = parse_tii_label(line, IMG_W, IMG_H)
-        assert len(gates) == 0
+        assert len(gates) == 1
+        gate = gates[0]
+        assert gate["n_visible"] == 3
+        assert gate["confidence"] == 0.75
+        # TR (index 1) is invisible → None
+        assert gate["corners"][0] is not None  # TL visible
+        assert gate["corners"][1] is None       # TR invisible
+        assert gate["corners"][2] is not None  # BR visible
+        assert gate["corners"][3] is not None  # BL visible
 
     def test_corner_order_is_tl_tr_br_bl(self) -> None:
         """Corners should follow TL, TR, BR, BL convention."""
@@ -247,8 +256,8 @@ class TestConvertTiiFlight:
         assert meta["source"] == "tii"
         assert meta["gate_dims_m"] == [1.52, 1.52]
 
-    def test_invisible_gate_frame_skipped(self, tmp_path: Path) -> None:
-        """A frame where the only gate has an invisible corner should be skipped."""
+    def test_partial_gate_frame_included(self, tmp_path: Path) -> None:
+        """A frame with a partial gate (3/4 visible) should still be included."""
         flight_dir = _make_fake_tii_sample(
             tmp_path,
             label_lines=[_make_partially_visible_label_line()],
@@ -256,13 +265,24 @@ class TestConvertTiiFlight:
         output_dir = tmp_path / "output"
 
         count = convert_tii_flight(flight_dir, output_dir)
-        assert count == 0
+        assert count == 1
+
+        import json
+
+        sample_dirs = sorted(output_dir.iterdir())
+        with open(sample_dirs[0] / "corner_coords.json") as f:
+            coords = json.load(f)
+        assert len(coords) == 1
+        assert coords[0]["n_visible"] == 3
+        # Gate mask should be empty (partial gate, no mask)
+        mask = cv2.imread(str(sample_dirs[0] / "gate_mask.png"), cv2.IMREAD_GRAYSCALE)
+        assert np.all(mask == 0)
 
     def test_max_samples_respected(self, tmp_path: Path) -> None:
         """convert_tii_flight should stop after max_samples."""
         flight_dir = tmp_path / "autonomous" / "flight-multi"
         img_dir = flight_dir / "camera_flight-multi"
-        lbl_dir = flight_dir / "labels_flight-multi"
+        lbl_dir = flight_dir / "label_flight-multi"
         img_dir.mkdir(parents=True)
         lbl_dir.mkdir(parents=True)
 
