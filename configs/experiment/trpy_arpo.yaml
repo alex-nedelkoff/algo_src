@@ -1,0 +1,70 @@
+# Full TRPY + spline reward + α-RPO + curriculum experiment.
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: none
+  - override /reward: spline_guided
+  - override /domain_rand: uniform_30pct
+  - override /logging: wandb
+  - _self_
+
+sim:
+  action_mode: trpy
+  n_lookahead_gates: 2
+
+total_timesteps: 20_000_000
+
+arpo:
+  enabled: true
+  k_end_fraction: 0.25
+
+curriculum:
+  enabled: true
+  stages:
+    - timestep: 0
+      reward_weights:
+        gate_passage: 1.5
+        gate_progress: 1.0
+        gate_offset: 1.0
+        body_rate: 0.001
+        crash_penalty: 10.0
+        spline_proximity: 0.5
+        heading_alignment: 0.05
+      v_max: 10.0
+      trigger: null
+    - timestep: 5_000_000
+      reward_weights:
+        gate_passage: 10.0
+        gate_progress: 0.5
+        gate_offset: 1.5
+        body_rate: 0.001
+        crash_penalty: 10.0
+        spline_proximity: 0.2
+        heading_alignment: 0.03
+      v_max: 20.0
+      trigger:
+        metric: racing/gate_passage_rate
+        threshold: 0.8
+        window: 200
+    - timestep: 12_000_000
+      reward_weights:
+        gate_passage: 30.0
+        gate_progress: 0.0
+        gate_offset: 2.0
+        body_rate: 0.001
+        crash_penalty: 10.0
+        spline_proximity: 0.0
+        heading_alignment: 0.0
+      v_max: 30.0
+      trigger:
+        metric: racing/lap_completion_rate
+        threshold: 0.3
+        window: 200
+
+multi_scene:
+  enabled: true
+  n_scenes: 10
+
+logging:
+  tags: ["trpy", "arpo", "spline", "curriculum", "multi-scene"]
+  group: trpy_arpo_experiment

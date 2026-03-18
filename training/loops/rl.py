@@ -143,6 +143,30 @@ def setup_callbacks(
                 unwrapped_env = unwrapped_env.env
             callbacks.append(CurriculumSB3Callback(curriculum, unwrapped_env))
 
+    # Multi-scene track regeneration
+    ms_cfg = cfg.get("multi_scene")
+    if ms_cfg is not None and ms_cfg.get("enabled", False) and train_env is not None:
+        from training.multi_scene_callback import MultiSceneCallback
+
+        unwrapped_env = train_env
+        while hasattr(unwrapped_env, "env"):
+            unwrapped_env = unwrapped_env.env
+        callbacks.append(MultiSceneCallback(
+            unwrapped_env, n_scenes=ms_cfg.get("n_scenes", 10)
+        ))
+
+    # α-RPO alpha schedule callback (sync trick)
+    arpo_cfg = cfg.get("arpo")
+    if arpo_cfg is not None and arpo_cfg.get("enabled", False) and train_env is not None:
+        from training.arpo import ARPOAlphaCallback, AlphaSchedule
+
+        alpha_sched = AlphaSchedule(
+            k_end_fraction=arpo_cfg.get("k_end_fraction", 0.25),
+            total_steps=cfg.total_timesteps,
+        )
+        # train_env should be the ARPOActionWrapper at this point
+        callbacks.append(ARPOAlphaCallback(train_env, alpha_sched))
+
     return callbacks
 
 
@@ -195,6 +219,26 @@ class RLTrainingLoop:
 
             eval_ekf_kwargs = OmegaConf.to_container(cfg.ekf, resolve=True)
             eval_env = EKFVecEnvWrapper(eval_env, **eval_ekf_kwargs)
+
+        # 3b. α-RPO base policy wrapper (must wrap env BEFORE PPO sees it)
+        arpo_cfg = cfg.get("arpo")
+        if arpo_cfg is not None and arpo_cfg.get("enabled", False):
+            import numpy as np_
+            from control.base_policies.pd_waypoint_tracker import PDWaypointTracker
+            from training.arpo import ARPOActionWrapper, AlphaSchedule
+
+            unwrapped = train_env
+            while hasattr(unwrapped, "env"):
+                unwrapped = unwrapped.env
+            gate_positions = np_.array([g.position for g in unwrapped._tracks[0].gates])
+            base_policy = PDWaypointTracker(gate_positions, mass=unwrapped.params.mass)
+
+            alpha_sched = AlphaSchedule(
+                k_end_fraction=arpo_cfg.get("k_end_fraction", 0.25),
+                total_steps=cfg.total_timesteps,
+            )
+            train_env = ARPOActionWrapper(train_env, base_policy, alpha_sched)
+            log.info("α-RPO wrapper applied: k_end_fraction=%.2f", arpo_cfg.get("k_end_fraction", 0.25))
 
         # 4. Build PPO trainer
         log.info("Building PPO trainer...")
