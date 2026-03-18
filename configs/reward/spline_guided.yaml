@@ -9,6 +9,7 @@ weights:
   crash_penalty: 10.0
   spline_proximity: 0.5
   heading_alignment: 0.05
+  speed_bonus: 0.0
 
 v_max: 10.0
 action_smoothness_threshold: 0.5

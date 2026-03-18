@@ -7,3 +7,4 @@ weights:
   crash_penalty: 10.0
   spline_proximity: 0.0
   heading_alignment: 0.0
+  speed_bonus: 0.0
