@@ -475,3 +475,29 @@ class TestHeadingAlignmentReward:
     def test_opposite_gives_lowest(self):
         r = heading_alignment_reward(np.pi)
         assert r < 0.15
+
+
+class TestSpeedBonusReward:
+    def test_zero_speed_gives_zero(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(0.0, v_target=5.0) == pytest.approx(0.0)
+
+    def test_at_target_gives_one(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(5.0, v_target=5.0) == pytest.approx(1.0)
+
+    def test_above_target_capped(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(10.0, v_target=5.0) == pytest.approx(1.0)
+
+    def test_half_speed_gives_half(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(2.5, v_target=5.0) == pytest.approx(0.5)
+
+    def test_negative_speed_gives_zero(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(-1.0, v_target=5.0) == pytest.approx(0.0)
+
+    def test_zero_target_gives_zero(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(5.0, v_target=0.0) == pytest.approx(0.0)

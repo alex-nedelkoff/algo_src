@@ -37,6 +37,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "crash_penalty": 10.0,     # Both M16/M23: lambda_crash=10
     "spline_proximity": 0.0,   # disabled by default (backwards compat)
     "heading_alignment": 0.0,  # disabled by default
+    "speed_bonus": 0.0,        # disabled by default
 }
 
 
@@ -211,3 +212,23 @@ def heading_alignment_reward(yaw_error: float) -> float:
         Reward in (0, 1].
     """
     return 1.0 / (1.0 + yaw_error * yaw_error)
+
+
+def speed_bonus_reward(speed: float, v_target: float) -> float:
+    """Reward for flying fast, linearly scaled up to target speed.
+
+    r = min(max(speed, 0), v_target) / v_target
+
+    Gives continuous gradient for acceleration up to v_target,
+    then caps at 1.0 (no penalty for exceeding target).
+
+    Args:
+        speed: Current speed in m/s (scalar, magnitude of velocity).
+        v_target: Target speed in m/s. Reward = 1.0 at this speed.
+
+    Returns:
+        Reward in [0, 1].
+    """
+    if v_target <= 0.0:
+        return 0.0
+    return min(max(speed, 0.0), v_target) / v_target

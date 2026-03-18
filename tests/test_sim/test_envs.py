@@ -534,3 +534,37 @@ class TestSplineRewards:
         heading_idx = names.index("heading_alignment")
         assert components[spline_idx] == 0.0
         assert components[heading_idx] == 0.0
+
+
+class TestSpeedReward:
+    def test_speed_reward_nonzero_when_moving(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={
+                "speed_bonus": 1.0, "gate_progress": 1.0,
+                "gate_passage": 1.5, "crash_penalty": 10.0,
+            },
+        )
+        env.reset()
+        action = np.array([[0.3, 0.0, 0.1, 0.0]], dtype=np.float32)
+        for _ in range(5):
+            env.step(action)
+        names, components = env.get_step_reward_components(0)
+        assert "speed_bonus" in names
+        speed_idx = names.index("speed_bonus")
+        assert components[speed_idx] > 0.0
+
+    def test_speed_reward_zero_when_disabled(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"speed_bonus": 0.0, "gate_progress": 1.0,
+                            "gate_passage": 1.5, "crash_penalty": 10.0},
+        )
+        env.reset()
+        action = np.array([[0.3, 0.0, 0.1, 0.0]], dtype=np.float32)
+        env.step(action)
+        names, components = env.get_step_reward_components(0)
+        speed_idx = names.index("speed_bonus")
+        assert components[speed_idx] == 0.0

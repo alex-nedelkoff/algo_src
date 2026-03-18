@@ -13,7 +13,7 @@ import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
 
-from sim.rewards import gate_offset_penalty, monorace_reward, spline_proximity_reward, heading_alignment_reward
+from sim.rewards import gate_offset_penalty, monorace_reward, spline_proximity_reward, heading_alignment_reward, speed_bonus_reward
 from sim.spline import GateSpline
 from sim.dynamics.trpy_mixer import TRPYMixer
 from sim.types import ActionMode
@@ -27,11 +27,12 @@ RC_GATE_OFFSET = 4
 RC_CRASH_PENALTY = 5
 RC_SPLINE_PROXIMITY = 6
 RC_HEADING_ALIGNMENT = 7
-NUM_REWARD_COMPONENTS = 8
+RC_SPEED_BONUS = 8
+NUM_REWARD_COMPONENTS = 9
 REWARD_COMPONENT_NAMES = [
     "progress", "body_rate", "action_smooth",
     "gate_passage", "gate_offset", "crash_penalty",
-    "spline_proximity", "heading_alignment",
+    "spline_proximity", "heading_alignment", "speed_bonus",
 ]
 from sim.tracks import Track
 from sim.procedural_tracks import ProceduralTrackGenerator
@@ -593,6 +594,14 @@ class GateRaceEnv(gym.Env):
         self._episode_speed_sum += speed
         self._episode_speed_count += 1
 
+        # Pre-compute speed bonus (vectorized — speed already computed above)
+        speed_bonus_weight = (self.reward_weights or {}).get("speed_bonus", 0.0)
+        if speed_bonus_weight != 0.0:
+            v_target = max(self.v_max, 1e-6)
+            _speed_bonuses = speed_bonus_weight * np.clip(speed, 0.0, v_target) / v_target
+        else:
+            _speed_bonuses = np.zeros(self.n_envs, dtype=np.float64)
+
         # Pre-compute spline rewards
         spline_weight = (self.reward_weights or {}).get("spline_proximity", 0.0)
         heading_weight = (self.reward_weights or {}).get("heading_alignment", 0.0)
@@ -730,6 +739,11 @@ class GateRaceEnv(gym.Env):
             if heading_weight != 0.0:
                 rewards[i] += _heading_rewards[i]
                 self._step_reward_components[i, RC_HEADING_ALIGNMENT] = _heading_rewards[i]
+
+            # Speed bonus (pre-computed)
+            if speed_bonus_weight != 0.0:
+                rewards[i] += _speed_bonuses[i]
+                self._step_reward_components[i, RC_SPEED_BONUS] = _speed_bonuses[i]
 
             # --- Plane-crossing gate passage detection ---
             normal = _gate_normal(gate)
