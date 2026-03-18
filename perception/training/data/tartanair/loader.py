@@ -44,14 +44,35 @@ class TartanAirScene:
         self.env_id = env_id
         self.frame_skip = frame_skip
 
-        # TartanAir v1 unzips to: <env>/Easy/<env>/Easy/P00X/
-        env_dir = self.data_dir / env_id / "Easy" / env_id / "Easy"
-        if not env_dir.exists():
-            # Try without double nesting
-            env_dir = self.data_dir / env_id / "Easy"
+        # Detect v1 vs v2 layout:
+        #   v1: <env>/Easy/<env>/Easy/P00X/image_left/
+        #   v2: <env>/Data_easy/<env>/Data_easy/P00X/image_lcam_front/
+        self._version = None
+        env_dir = None
 
-        if not env_dir.exists():
-            raise FileNotFoundError(f"Environment not found: {env_dir}")
+        for difficulty, img_sub, dep_sub, pose_name, version in [
+            ("Data_easy", "image_lcam_front", "depth_lcam_front", "pose_lcam_front.txt", "v2"),
+            ("Easy", "image_left", "depth_left", "pose_left.txt", "v1"),
+        ]:
+            # Check with double nesting (zip extracts create this)
+            candidate = self.data_dir / env_id / difficulty / env_id / difficulty
+            if not candidate.exists():
+                candidate = self.data_dir / env_id / difficulty
+            if candidate.exists() and any(
+                d.is_dir() and d.name.startswith("P") for d in candidate.iterdir()
+            ):
+                env_dir = candidate
+                self._version = version
+                self._img_subdir = img_sub
+                self._dep_subdir = dep_sub
+                self._pose_name = pose_name
+                break
+
+        if env_dir is None:
+            raise FileNotFoundError(
+                f"Environment not found. Tried v1 (Easy) and v2 (Data_easy) "
+                f"under {self.data_dir / env_id}"
+            )
 
         # Discover trajectories
         self._rgb_paths = []
@@ -68,9 +89,9 @@ class TartanAirScene:
             raise ValueError(f"No trajectories found in {env_dir}")
 
         for traj_dir in trajs:
-            img_dir = traj_dir / "image_left"
-            dep_dir = traj_dir / "depth_left"
-            pose_file = traj_dir / "pose_left.txt"
+            img_dir = traj_dir / self._img_subdir
+            dep_dir = traj_dir / self._dep_subdir
+            pose_file = traj_dir / self._pose_name
 
             if not all(p.exists() for p in [img_dir, dep_dir, pose_file]):
                 log.warning("Skipping %s (missing data)", traj_dir.name)
@@ -138,13 +159,17 @@ class TartanAirScene:
         data_dir = Path(data_dir)
         scenes = []
         for d in sorted(data_dir.iterdir()):
-            if d.is_dir():
-                # Check for Easy difficulty with at least one trajectory
-                easy = d / "Easy" / d.name / "Easy"
-                if not easy.exists():
-                    easy = d / "Easy"
-                if easy.exists() and any(
-                    p.is_dir() and p.name.startswith("P") for p in easy.iterdir()
+            if not d.is_dir():
+                continue
+            # Check v1 (Easy) and v2 (Data_easy)
+            for difficulty in ["Data_easy", "Easy"]:
+                env_dir = d / difficulty / d.name / difficulty
+                if not env_dir.exists():
+                    env_dir = d / difficulty
+                if env_dir.exists() and any(
+                    p.is_dir() and p.name.startswith("P")
+                    for p in env_dir.iterdir()
                 ):
                     scenes.append(d.name)
+                    break
         return scenes
