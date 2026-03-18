@@ -1,26 +1,39 @@
-"""BlenderProc synthetic data pipeline for gate detection.
+# BlenderProc synthetic data pipeline for gate detection.
+#
+# IMPORTANT: `import blenderproc as bproc` MUST be the first import.
+# BlenderProc's CLI enforces this so that Blender's bundled Python can
+# redirect third-party package imports correctly.
+#
+# Run with:
+#   blenderproc run perception/training/data/gate_detection/blenderproc_pipeline.py \
+#       --gate-obj perception/training/data/gate_detection/assets/gate.obj \
+#       --output-dir ~/corvidx/data/gate_detection/blenderproc \
+#       --n-samples 30
 
-Run with:
-    blenderproc run perception/training/data/gate_detection/blenderproc_pipeline.py \\
-        --gate-obj perception/training/data/gate_detection/assets/gate.obj \\
-        --output-dir ~/corvidx/data/gate_detection/blenderproc \\
-        --n-samples 30
-
-This script runs inside Blender's bundled Python, where ``bpy`` is available.
-``bproc.init()`` is called ONCE before the render loop; subsequent iterations
-use ``bproc.clean_up()`` to reset the scene without re-initialising Blender.
-"""
+import blenderproc as bproc  # noqa: E402 — must be first import
 
 import argparse
+import os
 import random
 import sys
 from pathlib import Path
 
-import blenderproc as bproc
+# Add the algo_src repo root to sys.path so we can import `perception.*`.
+# The script lives at <repo>/perception/training/data/gate_detection/, so
+# the repo root is four levels up.
+_REPO_ROOT = str(Path(__file__).resolve().parents[4])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import bpy
 import cv2
 import numpy as np
 import mathutils  # bundled with Blender
+
+from perception.training.data.gate_detection.format import (
+    generate_corner_heatmaps,
+    save_sample,
+)
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -78,9 +91,17 @@ LED_COLORS = [
 # Helper: configure renderer settings
 # ---------------------------------------------------------------------------
 
-def configure_renderer() -> None:
-    """Set Cycles renderer options and output resolution."""
-    bproc.renderer.set_renderer_type("CYCLES")
+def configure_renderer(enable_outputs: bool = True) -> None:
+    """Set Cycles renderer options and output resolution.
+
+    Args:
+        enable_outputs: If True, also register depth + segmentation outputs.
+            Set to False when calling after bproc.clean_up(), because
+            enable_depth_output / enable_segmentation_output can each only
+            be called once per Blender session.
+    """
+    # Use bpy directly — bproc.renderer has no set_renderer_type()
+    bpy.context.scene.render.engine = "CYCLES"
     bproc.renderer.set_max_amount_of_samples(64)
     bproc.renderer.set_noise_threshold(0.05)
     bproc.renderer.set_output_format("PNG")
@@ -90,11 +111,15 @@ def configure_renderer() -> None:
     scene.render.resolution_y = HEIGHT
     scene.render.resolution_percentage = 100
 
-    # Enable depth and segmentation passes
-    bproc.renderer.enable_depth_output(activate_antialiasing=False)
-    bproc.renderer.enable_segmentation_output(
-        map_by=["category_id", "instance"]
-    )
+    if enable_outputs:
+        # Enable depth and segmentation passes.
+        # enable_segmentation_output with map_by=["category_id", "instance"]
+        # produces render_data keys: "category_id_segmaps" and "instance_segmaps"
+        bproc.renderer.enable_depth_output(activate_antialiasing=False)
+        bproc.renderer.enable_segmentation_output(
+            map_by=["category_id", "instance"],
+            default_values={"category_id": 0},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +162,7 @@ bproc.init()
 
 # Set camera intrinsics (persists across clean_up calls)
 bproc.camera.set_intrinsics_from_K_matrix(
-    K_matrix=K_MATRIX,
+    np.array(K_MATRIX, dtype=np.float64),
     image_width=WIDTH,
     image_height=HEIGHT,
 )
@@ -154,8 +179,10 @@ for idx in range(args.n_samples):
     # ---- Reset scene (keep Blender alive, keep camera intrinsics) ----------
     if idx > 0:
         bproc.clean_up(clean_up_camera=False)
-        # Re-apply renderer settings lost after clean_up
-        configure_renderer()
+        # Re-apply renderer settings lost after clean_up.
+        # enable_outputs=False because depth/segmentation can only be
+        # registered once per Blender session (already done before the loop).
+        configure_renderer(enable_outputs=False)
 
     # ---- Background --------------------------------------------------------
     r, g, b = np.random.uniform(0.0, 1.0, 3).tolist()
@@ -224,11 +251,12 @@ for idx in range(args.n_samples):
     light.set_energy(random.uniform(200.0, 1000.0))
 
     # ---- Camera at origin, looking forward (+X) ----------------------------
-    # BlenderProc camera looks down -Z in camera space. To look along +X in
-    # world space we need to rotate: first 90° around Y, then -90° around X.
+    # BlenderProc's camera looks down -Z in camera space.
+    # To point along +X world axis we apply Euler XYZ = (pi/2, 0, pi/2).
+    # build_transformation_mat accepts a (3,) array for Euler angles.
     cam_pose = bproc.math.build_transformation_mat(
-        location=[0.0, 0.0, 0.0],
-        rotation=mathutils.Euler((np.pi / 2, 0.0, np.pi / 2), "XYZ"),
+        translation=[0.0, 0.0, 0.0],
+        rotation=np.array([np.pi / 2, 0.0, np.pi / 2]),
     )
     bproc.camera.add_camera_pose(cam_pose)
 
@@ -244,9 +272,11 @@ for idx in range(args.n_samples):
     bgr = cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR)
 
     # ---- Extract segmentation masks ----------------------------------------
-    # "instance_segmaps" → per-pixel instance ID; "class_segmaps" → category_id
-    instance_seg = render_data["instance_segmaps"][0]   # (H, W) int
-    category_seg = render_data["class_segmaps"][0]      # (H, W) int
+    # enable_segmentation_output(map_by=["category_id","instance"]) produces:
+    #   "instance_segmaps"    → per-pixel Blender pass_index (instance ID)
+    #   "category_id_segmaps" → per-pixel category_id custom property value
+    instance_seg = render_data["instance_segmaps"][0]      # (H, W) int
+    category_seg = render_data["category_id_segmaps"][0]   # (H, W) int
 
     # Gate mask: pixels where category_id == 1, value = instance ID
     gate_mask = np.where(category_seg == 1, instance_seg, 0).astype(np.uint8)
@@ -290,11 +320,6 @@ for idx in range(args.n_samples):
         gates_in_frame += 1
 
     # ---- Heatmaps ----------------------------------------------------------
-    from perception.training.data.gate_detection.format import (
-        generate_corner_heatmaps,
-        save_sample,
-    )
-
     heatmaps = generate_corner_heatmaps(corner_coords, HEIGHT, WIDTH)
 
     # ---- Intrinsics for metadata -------------------------------------------
