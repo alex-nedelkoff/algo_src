@@ -51,6 +51,7 @@ class NumpyQuadEnvFactory:
         track_gen: Procedural track generation config (DictConfig or None).
         seed: Random seed for reproducible eval track generation.
         n_lookahead_gates: Number of future gates in observation (1 = current behavior).
+        action_mode: Action space mode — ``"motor_rpm"`` or ``"trpy"``.
     """
 
     def __init__(
@@ -73,6 +74,7 @@ class NumpyQuadEnvFactory:
         track_gen: DictConfig | None = None,
         seed: int = 42,
         n_lookahead_gates: int = 1,
+        action_mode: str = "motor_rpm",
     ) -> None:
         self.n_envs = n_envs
         self.dt = dt
@@ -91,6 +93,7 @@ class NumpyQuadEnvFactory:
         self._track_gen_cfg = track_gen
         self._seed = seed
         self._n_lookahead_gates = n_lookahead_gates
+        self.action_mode = action_mode
 
         # Resolve params: accept VehicleParams directly (Hydra recursive
         # instantiation) or DictConfig (manual construction).
@@ -211,6 +214,7 @@ class NumpyQuadEnvFactory:
             track_generator=track_generator,
             tracks=tracks,
             n_lookahead_gates=self._n_lookahead_gates,
+            action_mode=self.action_mode,
         )
 
         log.info(

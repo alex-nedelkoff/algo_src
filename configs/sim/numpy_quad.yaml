@@ -17,6 +17,8 @@ esc_nonlinearity: 0.95
 # Multi-gate lookahead: number of future gates in observation (1 = current behavior)
 n_lookahead_gates: 1
 
+action_mode: trpy
+
 # Racing quad vehicle parameters (5" racing quad, sysid)
 params:
   _target_: sim.dynamics.params.VehicleParams
