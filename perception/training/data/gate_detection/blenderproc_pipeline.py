@@ -340,10 +340,14 @@ for idx in range(args.n_samples):
             z = random.uniform(-2.0, 2.0)
             obj.set_location([x, y, z])
 
-            # Random rotation (Euler XYZ)
-            rx = random.uniform(-0.3, 0.3)
-            ry = random.uniform(-0.3, 0.3)
-            rz = random.uniform(-np.pi, np.pi)
+            # Gate mesh is in XY plane (opening faces +Z).
+            # Base: 90° around X to stand gate upright (opening faces -Y toward camera).
+            # Then add wide random perturbation for diverse viewing angles —
+            # the drone can approach gates from any direction in a real race.
+            base_rx = np.pi / 2
+            rx = base_rx + random.uniform(-1.0, 1.0)  # ±57° tilt up/down
+            ry = random.uniform(-1.0, 1.0)              # ±57° tilt left/right
+            rz = random.uniform(-np.pi, np.pi)          # full yaw rotation
             obj.set_rotation_euler([rx, ry, rz])
 
             # Random LED-style emissive material
