@@ -99,7 +99,10 @@ class TartanAirScene:
 
             poses_raw = np.loadtxt(str(pose_file))
             imgs = sorted(img_dir.glob("*.png"))
+            # v1 uses .npy depth, v2 uses .png (RGBA-encoded float32)
             deps = sorted(dep_dir.glob("*.npy"))
+            if not deps:
+                deps = sorted(dep_dir.glob("*.png"))
             n = min(len(poses_raw), len(imgs), len(deps))
 
             for i in range(0, n, frame_skip):
@@ -117,7 +120,16 @@ class TartanAirScene:
 
         self._n_frames = len(self._rgb_paths)
         self._poses = np.array(self._poses_list, dtype=np.float64)
-        self._K = K.copy()
+        # v2 uses 640x640, intrinsics: fx=fy=320, cx=cy=320
+        # v1 uses 640x480, intrinsics: fx=fy=320, cx=320, cy=240
+        # Detect from first image
+        test_img = cv2.imread(str(self._rgb_paths[0]))
+        h, w = test_img.shape[:2]
+        self._K = np.array([
+            [320.0, 0.0, w / 2.0],
+            [0.0, 320.0, h / 2.0],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float64)
 
         n_trajs = len(set(self._traj_ids))
         log.info(
@@ -146,7 +158,13 @@ class TartanAirScene:
         return img
 
     def depth(self, idx: int) -> np.ndarray:
-        d = np.load(str(self._depth_paths[idx]))
+        path = self._depth_paths[idx]
+        if path.suffix == ".npy":
+            d = np.load(str(path))
+        else:
+            # v2: RGBA PNG encodes float32 depth
+            raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            d = raw.view(np.float32)[:, :, 0]
         return np.clip(d, 0, MAX_DEPTH).astype(np.float32)
 
     def depths(self, indices: list[int] | None = None) -> list[np.ndarray]:
