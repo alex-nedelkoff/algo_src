@@ -137,6 +137,7 @@ class TrajectoryRecorderCallback(BaseCallback):
                 max_velocity=train_env.max_velocity,
                 arena_bounds=train_env.arena_bounds,
                 domain_randomizer=None,
+                action_mode=getattr(train_env, "action_mode", "motor_rpm"),
             )
 
         # Validate TrajectoryProvider protocol

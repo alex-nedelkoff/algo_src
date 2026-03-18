@@ -14,6 +14,19 @@ sim:
 
 total_timesteps: 20_000_000
 
+track_gen:
+  n_gates_min: 4
+  n_gates_max: 8
+  gate_spacing_min: 1.5
+  gate_spacing_max: 4.0
+  turn_angle_min: -120
+  turn_angle_max: 120
+  elevation_min: 1.0
+  elevation_max: 3.5
+  elevation_delta_max: 0.6
+  closure_max_angle: 90
+  closure_max_retries: 10
+
 arpo:
   enabled: true
   k_end_fraction: 0.25
