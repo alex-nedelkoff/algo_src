@@ -105,17 +105,33 @@ class TartanAirScene:
                 deps = sorted(dep_dir.glob("*.png"))
             n = min(len(poses_raw), len(imgs), len(deps))
 
+            # TartanAir poses are in NED frame (x=forward, y=right, z=down).
+            # Pinhole camera convention is (x=right, y=down, z=forward).
+            # Convert: cam = R_ned2cam @ ned
+            R_ned2cam = np.array([
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 0],
+            ], dtype=np.float64)
+
             for i in range(0, n, frame_skip):
-                pos = poses_raw[i, :3]
+                pos_ned = poses_raw[i, :3]
                 quat = poses_raw[i, 3:7]  # qx qy qz qw
-                R = Rotation.from_quat(quat).as_matrix()
-                T = np.eye(4, dtype=np.float64)
-                T[:3, :3] = R
-                T[:3, 3] = pos
+                R_ned = Rotation.from_quat(quat).as_matrix()
+
+                # T_world_ned: pose in NED frame
+                T_ned = np.eye(4, dtype=np.float64)
+                T_ned[:3, :3] = R_ned
+                T_ned[:3, 3] = pos_ned
+
+                # Convert to camera frame: T_world_cam
+                T_ned2cam = np.eye(4, dtype=np.float64)
+                T_ned2cam[:3, :3] = R_ned2cam
+                T_cam = T_ned @ np.linalg.inv(T_ned2cam)
 
                 self._rgb_paths.append(imgs[i])
                 self._depth_paths.append(deps[i])
-                self._poses_list.append(T)
+                self._poses_list.append(T_cam)
                 self._traj_ids.append(traj_dir.name)
 
         self._n_frames = len(self._rgb_paths)
