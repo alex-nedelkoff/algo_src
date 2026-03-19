@@ -501,3 +501,57 @@ class TestSpeedBonusReward:
     def test_zero_target_gives_zero(self):
         from sim.rewards import speed_bonus_reward
         assert speed_bonus_reward(5.0, v_target=0.0) == pytest.approx(0.0)
+
+
+class TestBoundaryPenalty:
+    def test_center_of_arena_zero_penalty(self):
+        from sim.rewards import boundary_penalty
+        assert boundary_penalty(np.array([0.0, 0.0]), arena_bounds=10.0, margin=3.0) == pytest.approx(0.0)
+
+    def test_at_margin_starts_penalty(self):
+        from sim.rewards import boundary_penalty
+        # 8m from center, 2m from wall, within 3m margin → penalty
+        p = boundary_penalty(np.array([8.0, 0.0]), arena_bounds=10.0, margin=3.0)
+        assert p < 0.0
+
+    def test_at_wall_max_penalty(self):
+        from sim.rewards import boundary_penalty
+        p = boundary_penalty(np.array([10.0, 0.0]), arena_bounds=10.0, margin=3.0)
+        assert p == pytest.approx(-1.0)
+
+    def test_outside_wall_capped(self):
+        from sim.rewards import boundary_penalty
+        p = boundary_penalty(np.array([12.0, 0.0]), arena_bounds=10.0, margin=3.0)
+        assert p == pytest.approx(-1.0)
+
+    def test_y_axis_also_penalized(self):
+        from sim.rewards import boundary_penalty
+        p = boundary_penalty(np.array([0.0, 9.0]), arena_bounds=10.0, margin=3.0)
+        assert p < 0.0
+
+
+class TestGateApproachReward:
+    def test_aligned_velocity_max_reward(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert r == pytest.approx(1.0, abs=0.01)
+
+    def test_perpendicular_velocity_zero(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([0.0, 1.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert r == pytest.approx(0.0, abs=0.01)
+
+    def test_opposite_velocity_zero(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([-1.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert r == pytest.approx(0.0)
+
+    def test_zero_velocity_zero_reward(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert r == pytest.approx(0.0)
+
+    def test_diagonal_approach(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([1.0, 1.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert 0.6 < r < 0.8

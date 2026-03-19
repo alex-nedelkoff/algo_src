@@ -38,6 +38,8 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "spline_proximity": 0.0,   # disabled by default (backwards compat)
     "heading_alignment": 0.0,  # disabled by default
     "speed_bonus": 0.0,        # disabled by default
+    "boundary_penalty": 0.0,   # disabled by default
+    "gate_approach": 0.0,      # disabled by default
 }
 
 
@@ -232,3 +234,55 @@ def speed_bonus_reward(speed: float, v_target: float) -> float:
     if v_target <= 0.0:
         return 0.0
     return min(max(speed, 0.0), v_target) / v_target
+
+
+def boundary_penalty(
+    pos_xy: NDArray[np.float64],
+    arena_bounds: float,
+    margin: float = 3.0,
+) -> float:
+    """Penalty for proximity to arena boundaries.
+
+    Quadratic penalty that activates within `margin` meters of the arena edge.
+    Returns 0 when safely inside, -1.0 at the wall.
+
+    r = -max(0, 1 - d_wall / margin)^2
+
+    Args:
+        pos_xy: [x, y] position (world frame).
+        arena_bounds: Half-width of the square arena in meters.
+        margin: Distance from wall where penalty starts.
+
+    Returns:
+        Penalty in [-1, 0].
+    """
+    d_wall = arena_bounds - max(abs(float(pos_xy[0])), abs(float(pos_xy[1])))
+    if d_wall > margin:
+        return 0.0
+    penetration = min(1.0, max(0.0, 1.0 - d_wall / margin))
+    return -(penetration * penetration)
+
+
+def gate_approach_reward(
+    velocity: NDArray[np.float64],
+    gate_normal: NDArray[np.float64],
+) -> float:
+    """Reward for approaching a gate with velocity aligned to its normal.
+
+    r = max(0, cos(angle between velocity and gate_normal))
+
+    Positive when flying through the gate (aligned), zero when perpendicular
+    or flying away.
+
+    Args:
+        velocity: [vx, vy, vz] drone velocity in world frame.
+        gate_normal: [nx, ny, nz] gate forward-facing normal vector.
+
+    Returns:
+        Reward in [0, 1].
+    """
+    speed = np.linalg.norm(velocity)
+    if speed < 1e-6:
+        return 0.0
+    cos_angle = np.dot(velocity, gate_normal) / (speed * max(np.linalg.norm(gate_normal), 1e-6))
+    return max(0.0, float(cos_angle))
