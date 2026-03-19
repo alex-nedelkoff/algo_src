@@ -41,6 +41,12 @@ def _get_loader(dataset: str, data_dir: Path, scene_id: str):
     elif dataset == "uzh-fpv":
         from perception.training.data.uzh_fpv.loader import UZHFPVScene
         return UZHFPVScene(data_dir, scene_id)
+    elif dataset == "tartanair":
+        from perception.training.data.tartanair.loader import TartanAirScene
+        return TartanAirScene(data_dir, scene_id, frame_skip=5)
+    elif dataset == "euroc":
+        from perception.training.data.euroc.loader import EuRoCScene
+        return EuRoCScene(data_dir, scene_id)
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -57,6 +63,12 @@ def _get_scene_list(dataset: str, scenes: list[str] | None, data_dir: Path) -> l
     elif dataset == "uzh-fpv":
         from perception.training.data.uzh_fpv.loader import UZHFPVScene
         return UZHFPVScene.available_scenes(data_dir)
+    elif dataset == "tartanair":
+        from perception.training.data.tartanair.loader import TartanAirScene
+        return TartanAirScene.available_scenes(data_dir)
+    elif dataset == "euroc":
+        from perception.training.data.euroc.loader import EuRoCScene
+        return EuRoCScene.available_scenes(data_dir)
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -156,7 +168,7 @@ def process_scene(
 def main() -> None:
     parser = argparse.ArgumentParser(description="VPR covisibility data pipeline")
     parser.add_argument(
-        "--dataset", required=True, choices=["replica", "uzh-fpv"],
+        "--dataset", required=True, choices=["replica", "uzh-fpv", "tartanair", "euroc"],
         help="Dataset to process",
     )
     parser.add_argument("--data-dir", required=True, type=Path, help="Path to raw dataset")
