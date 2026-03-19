@@ -192,20 +192,38 @@ Added **perception noise** (simulated sensor errors in gate position estimates) 
 
 The drone became robust to imperfect sensor readings — a critical property for real hardware where the camera and EKF estimates are never perfect.
 
+### Run 4: `quick_wins` (20 million steps, 2026-03-19)
+
+Added **boundary penalty** (quadratic penalty near arena walls), **gate approach reward** (reward for velocity aligned with gate normal), **entropy annealing** (0.005 → 0.001), and **cosine LR decay** (3e-4 → 5e-5).
+
+| Metric | Value |
+|--------|-------|
+| Eval gate passage rate | 99% |
+| Avg speed | 5.2 m/s |
+| Avg laps per episode | 7.38 |
+| Best lap time | 1.78 s |
+| Max laps in one episode | 16 |
+| Max gates in one episode | 77 |
+| Eval reward | +3193 |
+
+Speed edged up and new best-ever records were set (77 gates, 16 laps in one episode). However, gate collisions remain the dominant failure mode at 73.5% of training terminations.
+
 ---
 
 ## 8. Before vs. After Summary
 
-| Metric | Old baseline (12M steps, crashed run) | Final (60M total steps) |
+| Metric | Old baseline (12M steps, crashed run) | Final (80M total steps) |
 |--------|:---:|:---:|
-| Avg speed | 3.4 m/s | 5.0 m/s |
-| Best lap time | 2.38 s | 1.80 s |
-| Gate passage (train / eval) | 80.5% / 55.5% | 97.5% / 99.5% |
-| Laps per episode (train / eval) | 0.38 / 0.015 | 2.68 / 7.64 |
-| OOB crashes | 59% | ~19% (acceptable at high speed) |
-| Success rate (train / eval) | 7% / 0% | 3.5% / 87.5% |
+| Avg speed | 3.4 m/s | 5.2 m/s |
+| Best lap time | 2.38 s | 1.78 s |
+| Gate passage (train / eval) | 80.5% / 55.5% | 97.5% / 99% |
+| Laps per episode (train / eval) | 0.38 / 0.015 | 3.11 / 7.38 |
+| Best laps in one episode | 4 | 16 |
+| OOB crashes | 59% | 17% |
+| Gate collisions | unknown | 73.5% (current main problem) |
+| Success rate (train / eval) | 7% / 0% | 5.5% / 80% |
 
-The 19% OOB at the end is higher than mid-session because the drone is flying much faster — it's acceptable because the success rate and gate passage rate are high, and the occasional OOB is the cost of pushing speed limits.
+The drone is now doing 16-lap runs at 5.2 m/s with noisy perception — a massive improvement from a drone that couldn't complete a single lap. The main remaining challenge is gate collisions (see Section 10 below).
 
 ---
 
@@ -221,6 +239,44 @@ These are the subtle choices that shaped the implementation:
 | Batch spline queries with NumPy | Per-step, per-env queries in a Python loop would be too slow; vectorized operations are ~100x faster |
 | `ActionMode` enum instead of strings | Prevents silent bugs from typos like `"TRPY"` vs `"trpy"`; makes switch statements exhaustive |
 | Alpha updates between rollout and optimize | Ensures a full batch of data is collected at one alpha before changing it — cleaner training signal |
+
+---
+
+## 10. The Gate Collision Problem — What the Literature Says
+
+Our biggest remaining issue: **73.5% of training terminations are gate collisions**. The drone crosses the gate plane but *outside* the gate opening radius. It's reaching gates but clipping the edges instead of flying cleanly through the center.
+
+We queried our research notebook (43 papers on autonomous drone racing) for insights. Here's what the literature says:
+
+### Why It Happens
+
+1. **Conflicting reward gradients:** The crash penalty pushes the drone *away* from the gate frame, while the gate passage reward pulls it *toward* the center. At high speed, these opposing forces can cancel out or create "dead zones" where the policy gets no useful learning signal. The **DiffRacing** paper specifically studied this problem.
+
+2. **No continuous centering feedback:** Our current system only penalizes off-center passage *at the moment of crossing*. There's no reward signal guiding the drone toward center as it approaches. By the time it knows it's off-center, it's too late to correct.
+
+3. **Memoryless policy:** Our 3×64 MLP sees one snapshot at a time. It can't plan a smooth approach trajectory over multiple timesteps. **Swift** (the world champion system) looks 2-3 gates ahead. The **CRL paper** showed adding a GRU (recurrent memory) improved success rate from 77% to 100%.
+
+4. **Actuator saturation:** At 5+ m/s, the drone may not have enough control authority to correct lateral error in time. If it commits to a slightly off-center approach, the physics prevents last-moment correction.
+
+### What the Papers Recommend
+
+**Most promising for our setup (roughly ordered by expected impact):**
+
+| Technique | Source Paper | Core Idea |
+|-----------|-------------|-----------|
+| **Gate proximity centering reward** | Song et al. (2021) | Continuous penalty for lateral offset when near gate plane — creates "pressure" toward center before crossing |
+| **Hourglass safety region (Gate-SDF)** | DiffRacing | Traversable space narrows as drone approaches gate — a "funnel" effect |
+| **GRU temporal context** | CRL (Sun et al.) | Add recurrent memory so policy can plan multi-step approach trajectories |
+| **Attractive Vector Fields** | DiffRacing | Replace distance-based rewards with field-based guidance that naturally spirals into gate center |
+| **Spherical coordinate observations** | Multiple | Represent gate position as (distance, azimuth, elevation) instead of (x, y, z) — better separates "how far" from "which direction" |
+
+### Recommended Next Steps
+
+1. **Gate proximity centering reward (easiest, highest impact):** When the drone is within ~2 meters of a gate, add a continuous reward proportional to how centered it is on the gate plane. Formula: `r = -lambda * lateral_offset * (1 / distance_to_gate_plane)`. This gives the policy gradient information *before* the binary pass/fail event.
+
+2. **GRU integration (medium effort, large potential):** Replace the memoryless MLP with MLP + GRU (128 hidden). The CRL paper's ablation showed this is the difference between 77% and 100% success. Requires handling hidden state resets across episode boundaries in SB3.
+
+3. **Lower entropy / tighter exploration:** The policy's action standard deviation is 3.1 — very high. The drone is exploring aggressively, which causes crashes. Reducing entropy more aggressively (start at 0.003, anneal to 0.0005) would tighten the policy around its learned behavior.
 
 ---
 
@@ -255,4 +311,4 @@ These are the subtle choices that shaped the implementation:
 
 ---
 
-*Generated 2026-03-18 — Corvidx drone racing team*
+*Generated 2026-03-18, updated 2026-03-19 — Corvidx drone racing team*
