@@ -8,6 +8,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from sim.viz.pinhole import PinholeCamera, quat_to_rotation_matrix, render_wireframe, render_horizon
+from perception.training.data.gate_detection.gate_mesh import (
+    generate_gate_mesh,
+    generate_drone_mesh,
+)
 
 try:
     import rerun as rr
@@ -121,6 +125,26 @@ def _gate_wireframe_edges(
     return all_gate_edges
 
 
+def _transform_gate_mesh_verts(
+    mesh_verts: NDArray[np.float64],
+    position: NDArray[np.float64],
+    orientation: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """Transform gate mesh vertices from mesh-local to world frame.
+
+    gate_mesh.py produces meshes in XY plane with normal along Z.
+    The sim uses gate normal along local X-axis. We apply Ry(+90deg)
+    to align Z->X, then the per-gate world rotation and translation.
+    """
+    R_mesh_to_sim = np.array([
+        [0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+    ], dtype=np.float64)
+    R_gate = quat_to_rotation_matrix(orientation)
+    return (mesh_verts @ R_mesh_to_sim.T) @ R_gate.T + position[np.newaxis, :]
+
+
 def generate_rrd(
     npz_path: str | Path,
     output_path: str | Path | None = None,
@@ -217,16 +241,27 @@ def generate_rrd(
     rr.save(str(output_path))
 
     # --- 3a. Static scene: gates ---
+    _base_gate_mesh = generate_gate_mesh()
+    _base_gate_verts = np.array(_base_gate_mesh.vertices, dtype=np.float64)
+    _base_gate_faces = np.array(_base_gate_mesh.faces, dtype=np.int32)
+
     for g in range(gate_positions.shape[0]):
-        corners = _gate_corners(
-            gate_positions[g], gate_orientations[g], gate_half_extents[g]
-        )
-        # Close the loop: append first corner to end
-        loop = np.vstack([corners, corners[0:1]])  # (5, 3)
         color = _GATE_COLORS[g % len(_GATE_COLORS)]
+
+        # Solid mesh
+        world_verts = _transform_gate_mesh_verts(
+            _base_gate_verts, gate_positions[g], gate_orientations[g],
+        )
+        vert_colors = np.tile(
+            np.array(color, dtype=np.uint8), (len(world_verts), 1),
+        )
         rr.log(
             f"world/gates/gate_{g}",
-            rr.LineStrips3D([loop], colors=[color]),
+            rr.Mesh3D(
+                vertex_positions=world_verts.astype(np.float32),
+                triangle_indices=_base_gate_faces,
+                vertex_colors=vert_colors,
+            ),
             static=True,
         )
 
@@ -280,6 +315,31 @@ def generate_rrd(
             static=True,
         )
 
+    # --- 3a-ter. Static scene: floor plane ---
+    _floor_half = 20.0
+    floor_verts = np.array([
+        [-_floor_half, -_floor_half, 0.0],
+        [+_floor_half, -_floor_half, 0.0],
+        [+_floor_half, +_floor_half, 0.0],
+        [-_floor_half, +_floor_half, 0.0],
+    ], dtype=np.float32)
+    floor_faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
+    floor_colors = np.full((4, 3), 80, dtype=np.uint8)
+    rr.log(
+        "world/floor",
+        rr.Mesh3D(
+            vertex_positions=floor_verts,
+            triangle_indices=floor_faces,
+            vertex_colors=floor_colors,
+        ),
+        static=True,
+    )
+
+    _drone_mesh = generate_drone_mesh()
+    _drone_verts = np.array(_drone_mesh.vertices, dtype=np.float32)
+    _drone_faces = np.array(_drone_mesh.faces, dtype=np.int32)
+    _drone_colors = np.full((len(_drone_verts), 3), 200, dtype=np.uint8)
+
     # --- 3b. Per-timestep logging ---
     for t in range(T):
         rr.set_time("step", sequence=t)
@@ -296,10 +356,14 @@ def generate_rrd(
             ),
         )
 
-        # Drone bounding box
+        # Drone mesh (body frame, inherits world/drone transform)
         rr.log(
-            "world/drone/box",
-            rr.Boxes3D(half_sizes=[[0.1, 0.1, 0.03]]),
+            "world/drone/mesh",
+            rr.Mesh3D(
+                vertex_positions=_drone_verts,
+                triangle_indices=_drone_faces,
+                vertex_colors=_drone_colors,
+            ),
         )
 
         # Flight trail segment colored by speed (log only latest segment to avoid O(T^2))
