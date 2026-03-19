@@ -149,6 +149,7 @@ def generate_rrd(
     npz_path: str | Path,
     output_path: str | Path | None = None,
     camera_decimation: int = 10,
+    renderer: str = "wireframe",
 ) -> Path:
     """Convert a single .npz trajectory file to a .rrd rerun archive.
 
@@ -157,6 +158,9 @@ def generate_rrd(
         output_path: Path for the output .rrd file. If None, places it in a
                      sibling ``rerun/`` directory mirroring the trajectory structure.
         camera_decimation: Render pinhole camera view every N steps.
+        renderer: Camera renderer backend. "wireframe" (default) uses
+                  Bresenham line rasterization. "pytorch3d" uses PyTorch3D
+                  Phong-shaded mesh rendering.
 
     Returns:
         Path to the generated .rrd file.
@@ -239,6 +243,34 @@ def generate_rrd(
     # --- Initialize rerun recording ---
     rr.init("drone_racing_viz", spawn=False)
     rr.save(str(output_path))
+
+    # --- Optional PyTorch3D renderer ---
+    scene_renderer = None
+    if renderer == "pytorch3d":
+        try:
+            from sim.viz.rasterizer import SceneRenderer
+        except ImportError:
+            raise ImportError(
+                "PyTorch3D is required for --renderer pytorch3d but is not installed.\n"
+                "Install it with: pip install pytorch3d\n"
+                "Or use --renderer wireframe (default)."
+            )
+        scene_renderer = SceneRenderer(
+            image_size=(cam.height, cam.width),
+            hfov_deg=90.0,
+        )
+        scene_renderer.set_scene(
+            gate_positions=gate_positions,
+            gate_orientations=gate_orientations,
+            gate_half_extents=gate_half_extents,
+        )
+
+        # Log pinhole intrinsics for camera frustum visualization
+        rr.log("world/drone/camera", rr.Pinhole(
+            focal_length=[cam.fx, cam.fy],
+            principal_point=[cam.cx, cam.cy],
+            resolution=[cam.width, cam.height],
+        ), static=True)
 
     # --- 3a. Static scene: gates ---
     _base_gate_mesh = generate_gate_mesh()
@@ -412,18 +444,19 @@ def generate_rrd(
             cam_pos = positions[t]
             cam_quat = quaternions[t]  # (w, x, y, z)
 
-            # Collect all gate edges into a flat list
-            all_edges: list[tuple[NDArray[np.float64], NDArray[np.float64], tuple[int, int, int]]] = []
-            for gate_edges in all_gate_edges:
-                all_edges.extend(gate_edges)
-
-            # Add horizon edges
-            horizon_edges = render_horizon(cam, cam_pos, cam_quat)
-            all_edges.extend(horizon_edges)
-
-            # Render wireframe image
-            frame = render_wireframe(cam, all_edges, cam_pos, cam_quat)
-            rr.log("drone/camera", rr.Image(frame))
+            if scene_renderer is not None:
+                # PyTorch3D rasterized render
+                frame = scene_renderer.render(cam_pos, cam_quat)
+                rr.log("world/drone/camera", rr.Image(frame))
+            else:
+                # Wireframe render (original path)
+                all_edges: list[tuple[NDArray[np.float64], NDArray[np.float64], tuple[int, int, int]]] = []
+                for gate_edges in all_gate_edges:
+                    all_edges.extend(gate_edges)
+                horizon_edges = render_horizon(cam, cam_pos, cam_quat)
+                all_edges.extend(horizon_edges)
+                frame = render_wireframe(cam, all_edges, cam_pos, cam_quat)
+                rr.log("drone/camera", rr.Image(frame))
 
     # Flush all pending data and close the file sink before returning.
     # Without this, the ArtifactUploader may upload a partially-written
@@ -437,6 +470,7 @@ def batch_generate(
     trajectory_dir: str | Path,
     output_dir: str | Path | None = None,
     camera_decimation: int = 10,
+    renderer: str = "wireframe",
 ) -> list[Path]:
     """Process all .npz trajectory files in a directory.
 
@@ -474,6 +508,7 @@ def batch_generate(
             npz_file,
             output_path=out_path,
             camera_decimation=camera_decimation,
+            renderer=renderer,
         )
         results.append(rrd_path)
         print(f"  -> {rrd_path}")
