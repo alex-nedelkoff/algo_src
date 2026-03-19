@@ -59,3 +59,16 @@ class TestCurriculumCallback:
         cb.advance()
         assert cb.current_stage == 2
         assert cb.should_advance(timestep=999_999_999, metrics={}) is False
+
+    def test_ent_coef_in_stage_config(self):
+        config = {
+            "enabled": True,
+            "stages": [
+                {"timestep": 0, "ent_coef": 0.005, "reward_weights": {}, "v_max": 10.0, "trigger": None},
+                {"timestep": 1000, "ent_coef": 0.001, "reward_weights": {}, "v_max": 10.0, "trigger": None},
+            ],
+        }
+        cb = CurriculumCallback(config)
+        assert cb.get_current_stage_config()["ent_coef"] == 0.005
+        cb.advance()
+        assert cb.get_current_stage_config()["ent_coef"] == 0.001

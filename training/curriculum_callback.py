@@ -107,10 +107,18 @@ if _SB3_AVAILABLE:
             if v_max is not None:
                 self.env.set_v_max(v_max)
 
+            # Entropy coefficient annealing
+            ent_coef = stage.get("ent_coef")
+            model = self.model if hasattr(self, "model") and self.model is not None else None
+            if ent_coef is not None and model is not None:
+                model.ent_coef = ent_coef
+                log.info("Curriculum: set ent_coef=%.4f", ent_coef)
+
             if self.verbose:
                 log.info(
-                    "Curriculum stage %d applied: v_max=%.1f, weights=%s",
+                    "Curriculum stage %d applied: v_max=%.1f, ent_coef=%s, weights=%s",
                     self.curriculum.current_stage,
                     stage.get("v_max", "?"),
+                    stage.get("ent_coef", "unchanged"),
                     stage.get("reward_weights", {}),
                 )
