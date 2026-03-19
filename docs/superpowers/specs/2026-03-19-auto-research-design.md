@@ -158,6 +158,7 @@ These files/directories are off-limits in all modes and scopes:
 |------|--------|
 | `sim/dynamics/` | Physics simulation — changing dynamics to make the drone faster is gaming |
 | `sim/rewards.py` | Reward function — modifying rewards to inflate scores is gaming |
+| `sim/rewards_mavlab.py` | Alternative reward function (MAVLab M16) — same gaming concern |
 | `metrics/` | Metrics contract — changing how success is measured is gaming |
 | `training/callbacks.py` | Logging/eval callbacks — altering what gets logged corrupts data |
 | `training/trajectory_recorder.py` | Trajectory recording — corrupting training data |
@@ -166,7 +167,7 @@ These files/directories are off-limits in all modes and scopes:
 | `.claude/` | Plugin infrastructure |
 | `artifacts/` | Artifact pipeline — altering upload/logging corrupts provenance |
 | `docker/` | Docker infrastructure |
-| `tests/` | Test suite (should only be extended, not weakened) |
+| `tests/` | Test suite — modifications must be additive only (new test files, new test cases). Deletions of existing tests or reduction in assertion stringency are rejected by `diff_policy.py`. This is enforced by checking that test file diffs contain only additions, not deletions of existing assertions. |
 
 ### Allowlist by scope
 
@@ -211,7 +212,7 @@ This separates concerns cleanly: constraints gate entry, fitness determines rank
 
 **Axis 1 — Actuator Utilization (Aggressiveness)**
 - Computation: `mean(||motor_RPMs(t)|| / ||max_RPMs||)` over the trajectory
-- `max_RPM` source: `VehicleParams.max_rpm` (defined in `sim/dynamics/params.py`, currently 31470). Loaded from the Hydra sim config and stored in trajectory `.npz` metadata. The descriptor module reads it from either the trajectory metadata or the sim config as fallback.
+- `max_RPM` source: `VehicleParams.max_rpm` as configured by Hydra. The Python default in `sim/dynamics/params.py` is 21702 (CrazyFlie), but the racing quad config at `configs/sim/numpy_quad.yaml` overrides this to 31470. The descriptor module reads `max_rpm` from the experiment's resolved Hydra config (stored in W&B run metadata) to ensure it matches the actual vehicle used in training.
 - Range: ~0.25 (hover) to ~1.0 (full saturation)
 - Physics: measures controllability margin. Near saturation, thrust curve flattens, motor model errors are amplified, and no control authority remains for disturbance rejection. Strongest predictor of sim-to-real transfer failure (Kaufmann et al., Nature 2023).
 
@@ -233,7 +234,7 @@ This separates concerns cleanly: constraints gate entry, fitness determines rank
 Each axis discretized into 5 bins → 125 total cells. Fixed grid (no adaptive subdivision until Phase 3).
 - Actuator utilization: 5 bins across [0.25, 1.0]
 - Control smoothness: 5 bins across [0, 1]
-- Aero regime index: 5 bins across [0, v_max] where v_max is the physics-derived upper bound = `sqrt(4 * k_thrust * max_omega^2 / max(drag_coeff))` (theoretical terminal velocity from quadratic thrust model). This is a fixed constant for a given vehicle configuration (~25-30 m/s for our quad), ensuring bin boundaries never shift as new experiments are added.
+- Aero regime index: 5 bins across [0, v_max]. The upper bound v_max is derived from vehicle physics: `v_max = sqrt(4 * k_thrust * max_omega^2 / max(drag_coeff))` where `k_thrust`, `max_omega` (= max_rpm × 2π/60), and `drag_coeff` come from the racing quad Hydra config (`configs/sim/numpy_quad.yaml`: k_thrust=2.245e-8, max_rpm=31470, drag_coeff=[0.01, 0.01, 0.005]). Note: the Python defaults in `params.py` have drag_coeff=[0,0,0] which would cause division by zero — always use the Hydra-resolved values which include nonzero drag. For our racing quad config, this gives v_max ≈ 24 m/s. This is a fixed constant per vehicle configuration, ensuring bin boundaries never shift.
 
 ### Cell Contents
 
