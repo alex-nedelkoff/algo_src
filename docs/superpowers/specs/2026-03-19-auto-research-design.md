@@ -671,6 +671,56 @@ Cleanup is performed by `/auto-research` at session start (Phase 1 — Situation
 
 ---
 
+## Baseline Promotion
+
+Promoting an experiment to become the new baseline is **always human-gated** — no mode (including YOLO) can self-approve a merge to main.
+
+### Promotion Workflow (`/ar-promote`)
+
+1. **Select** — human picks a winning experiment from the archive via `/ar-review` or by W&B run ID / hypothesis ID
+2. **Verify** — system re-runs constraint validation, confirms the branch is clean and mergeable against current main, displays:
+   - Fitness comparison (old baseline vs winner)
+   - Behavioral descriptor profile
+   - Constraint validation results
+   - Full diff summary
+   - W&B run link + Rerun trajectory URL
+3. **PR creation** — system creates a pull request from the experiment branch to main with:
+   - Hypothesis description and rationale
+   - Before/after metrics comparison
+   - Archive cell location and descriptor values
+   - Link to W&B run and Rerun recordings
+4. **Human review & merge** — team reviews the PR through normal code review. Merge is a manual action.
+5. **Post-merge updates**:
+   - Tag the new baseline config: save as `configs/experiment/baseline_v<N>.yaml` with the winning experiment's resolved Hydra config
+   - Tag the model checkpoint in W&B: alias `baseline-v<N>` on the winning run's model artifact
+   - Update the research tree: create a new root node for `baseline_v<N>`, link it to the previous root as `previous_baseline`
+   - Archive evolution: the existing archive is preserved as historical context under a versioned key (`archive_v<N-1>`). A fresh archive is initialized with the new baseline as the sole entry in its measured cell. Previous archive entries remain queryable via `/ar-status --history` but do not influence branch selection for the new generation.
+
+### Baseline History
+
+The system maintains a chain of baselines in `state/tree.json`:
+
+```
+baseline_v1 (monorace_baseline, initial)
+  └── baseline_v2 (experiment ar/exp-a1b2c3 promoted 2026-03-25)
+        └── baseline_v3 (experiment ar/exp-d4e5f6 promoted 2026-04-02)
+```
+
+Each baseline node stores:
+- Git commit hash (the merge commit on main)
+- W&B run ID of the winning experiment
+- Resolved Hydra config
+- Model checkpoint artifact reference
+- The archived MAP-Elites grid at the time of promotion
+- Timestamp and who approved the promotion
+
+This enables:
+- **Rollback**: if a promoted baseline regresses on hardware, revert to the previous baseline's commit and config
+- **Progress tracking**: compare fitness across baseline generations to measure overall research velocity
+- **Retrospective analysis**: examine what the archive looked like when each promotion decision was made
+
+---
+
 ## Plugin Architecture
 
 ### Skills
@@ -678,9 +728,10 @@ Cleanup is performed by `/auto-research` at session start (Phase 1 — Situation
 | Skill | Description |
 |-------|-------------|
 | `/auto-research` | Main entry point. Args: mode (`interactive`/`autonomous`/`yolo`), optional focus area |
-| `/ar-status` | Archive state, active experiments, research tree summary |
+| `/ar-status` | Archive state, active experiments, research tree summary. Args: `--history` for past baselines, `--cleanup` for worktree cleanup |
 | `/ar-review` | Review results from recent experiments with trajectory analysis and W&B links |
 | `/ar-branch` | Manually create a new Level 1 branch with human-defined research direction |
+| `/ar-promote` | Promote a winning experiment to new baseline (always human-gated) |
 
 ### Hooks
 
@@ -738,7 +789,7 @@ autoresearch:
 | **Autonomous** | Hyperparameter + algorithm run freely; architecture+ escalates | Day-to-day research with safety net | Phase 2 |
 | **YOLO** | No approval gates, everything runs | Maximum exploration throughput | Phase 2 |
 
-All modes enforce hard constraints (anti-gaming, git isolation, behavioral validation, diff policy). YOLO removes only the human approval gate.
+All modes enforce hard constraints (anti-gaming, git isolation, behavioral validation, diff policy). YOLO removes only the hypothesis approval gate. **Baseline promotion (merge to main) is always human-gated regardless of mode.**
 
 ---
 
