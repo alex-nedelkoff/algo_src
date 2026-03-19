@@ -29,6 +29,12 @@ def main() -> None:
         default=10,
         help="Render pinhole camera every N steps (default: 10)",
     )
+    parser.add_argument(
+        "--renderer",
+        choices=["wireframe", "pytorch3d"],
+        default="wireframe",
+        help="Camera renderer backend (default: wireframe)",
+    )
 
     args = parser.parse_args()
     path: Path = args.path
@@ -58,6 +64,7 @@ def main() -> None:
             if args.output_dir
             else None,
             camera_decimation=args.camera_decimation,
+            renderer=args.renderer,
         )
         print(f"Generated: {rrd_path}")
     elif path.is_dir():
@@ -65,6 +72,7 @@ def main() -> None:
             path,
             output_dir=args.output_dir,
             camera_decimation=args.camera_decimation,
+            renderer=args.renderer,
         )
     else:
         print(
