@@ -9,7 +9,7 @@ Hydra target: ``control.algorithms.ppo.PPO``
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import gymnasium as gym
 import numpy as np
@@ -100,6 +100,26 @@ class PPO(Algorithm):
         }
 
         self._model: SB3_PPO | None = None
+
+    @staticmethod
+    def cosine_lr_schedule(initial_lr: float, final_lr: float) -> Callable[[float], float]:
+        """Create a cosine annealing LR schedule for SB3.
+
+        Args:
+            initial_lr: Starting learning rate.
+            final_lr: Minimum learning rate at end of training.
+
+        Returns:
+            Callable that maps progress_remaining (1.0 -> 0.0) to LR.
+        """
+        import math
+
+        def schedule(progress_remaining: float) -> float:
+            return final_lr + 0.5 * (initial_lr - final_lr) * (
+                1 + math.cos(math.pi * (1 - progress_remaining))
+            )
+
+        return schedule
 
     def _build_policy_kwargs(self) -> dict[str, Any]:
         """Build SB3 policy_kwargs.

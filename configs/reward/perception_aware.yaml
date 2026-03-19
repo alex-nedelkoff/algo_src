@@ -8,3 +8,5 @@ weights:
   spline_proximity: 0.0
   heading_alignment: 0.0
   speed_bonus: 0.0
+  boundary_penalty: 0.0
+  gate_approach: 0.0

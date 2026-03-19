@@ -256,6 +256,21 @@ class RLTrainingLoop:
             train_env=train_env,
         )
 
+        # 6b. Apply LR schedule if configured
+        lr_schedule_cfg = cfg.get("lr_schedule")
+        if lr_schedule_cfg is not None and ppo._model is not None:
+            from control.algorithms.ppo import PPO as PPOWrapper
+            schedule = PPOWrapper.cosine_lr_schedule(
+                initial_lr=lr_schedule_cfg.get("initial_lr", 3e-4),
+                final_lr=lr_schedule_cfg.get("final_lr", 5e-5),
+            )
+            ppo._model.learning_rate = schedule
+            log.info(
+                "LR cosine schedule: %.1e -> %.1e",
+                lr_schedule_cfg.get("initial_lr", 3e-4),
+                lr_schedule_cfg.get("final_lr", 5e-5),
+            )
+
         # 7. Train
         log.info("Starting training for %d timesteps...", cfg.total_timesteps)
         ppo.train(train_env, total_timesteps=cfg.total_timesteps, callbacks=callbacks)
