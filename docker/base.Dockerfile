@@ -1,13 +1,17 @@
 # Base image for algo_src containers
 # Provides: CUDA 12.4, Python 3.11, uv, common system deps
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.3.2-cudnn9-devel-ubuntu22.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV UV_LINK_MODE=copy
 
 # System dependencies shared across all containers
+# deadsnakes PPA required for Python 3.11 on Ubuntu 22.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
         python3.11 \
         python3.11-dev \
         python3.11-venv \

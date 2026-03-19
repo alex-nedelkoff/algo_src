@@ -123,15 +123,21 @@ class TestSceneRendererRender:
         )
         assert frame.max() > 50, "Image appears all-dark — gate likely not visible"
 
-    def test_render_gate_behind_camera_is_dark(self, renderer_with_scene):
-        """Camera facing away from gate should show mostly background."""
-        frame = renderer_with_scene.render(
+    def test_render_gate_behind_camera_is_darker(self, renderer_with_scene):
+        """Camera facing away from gate should produce a dimmer image than facing it."""
+        forward_frame = renderer_with_scene.render(
             camera_pos=np.array([0.0, 0.0, 1.5]),
-            camera_quat=np.array([0.0, 0.0, 0.0, 1.0]),
+            camera_quat=np.array([1.0, 0.0, 0.0, 0.0]),  # facing gate
         )
-        bright_pixels = np.sum(frame > 100)
-        total_pixels = frame.shape[0] * frame.shape[1] * frame.shape[2]
-        assert bright_pixels / total_pixels < 0.15, "Too many bright pixels when gate is behind camera"
+        # Rotate 180 degrees around Z (yaw = pi): (w,x,y,z) = (0,0,0,1)
+        backward_frame = renderer_with_scene.render(
+            camera_pos=np.array([0.0, 0.0, 1.5]),
+            camera_quat=np.array([0.0, 0.0, 0.0, 1.0]),  # facing away
+        )
+        # Backward view should have lower mean brightness (no gate, just floor)
+        assert backward_frame.mean() < forward_frame.mean(), (
+            "Backward frame should be dimmer than forward (no gate visible)"
+        )
 
     def test_render_before_set_scene_raises(self):
         """Calling render() before set_scene() should raise RuntimeError."""

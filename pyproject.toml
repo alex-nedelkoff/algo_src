@@ -40,6 +40,10 @@ perception = [
 viz = [
     "rerun-sdk",
 ]
+rendering = [
+    # pytorch3d installed separately in Dockerfile (needs CUDA build from source)
+    "trimesh",
+]
 tb = [
     "tbparse",
     "pandas",
