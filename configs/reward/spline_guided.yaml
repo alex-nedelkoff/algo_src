@@ -12,6 +12,7 @@ weights:
   speed_bonus: 0.0
   boundary_penalty: 0.0
   gate_approach: 0.0
+  gate_centering: 0.0
 
 v_max: 10.0
 action_smoothness_threshold: 0.5
