@@ -583,3 +583,20 @@ class TestBoundaryAndApproachRewards:
         names, _ = env.get_step_reward_components(0)
         assert "boundary_penalty" in names
         assert "gate_approach" in names
+
+
+class TestGateCenteringRewardEnv:
+    def test_centering_component_present(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"gate_centering": 3.0, "gate_progress": 1.0,
+                            "gate_passage": 1.5, "crash_penalty": 10.0},
+        )
+        env.reset()
+        env.step(np.zeros((1, 4), dtype=np.float32))
+        names, components = env.get_step_reward_components(0)
+        assert "gate_centering" in names
+        centering_idx = names.index("gate_centering")
+        # Drone starts offset from gate center, so should have nonzero penalty
+        assert components[centering_idx] != 0.0

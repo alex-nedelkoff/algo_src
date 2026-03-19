@@ -555,3 +555,36 @@ class TestGateApproachReward:
         from sim.rewards import gate_approach_reward
         r = gate_approach_reward(np.array([1.0, 1.0, 0.0]), np.array([1.0, 0.0, 0.0]))
         assert 0.6 < r < 0.8
+
+
+class TestGateCenteringReward:
+    def test_centered_at_gate_zero_penalty(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=0.0, dist_to_plane=0.0, gate_radius=1.5)
+        assert r == pytest.approx(0.0)
+
+    def test_off_center_at_gate_max_penalty(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=1.5, dist_to_plane=0.0, gate_radius=1.5)
+        assert r == pytest.approx(-1.0)
+
+    def test_off_center_far_from_gate_small_penalty(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=1.5, dist_to_plane=5.0, gate_radius=1.5)
+        assert abs(r) < 0.1
+
+    def test_half_offset_at_gate(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=0.75, dist_to_plane=0.0, gate_radius=1.5)
+        assert r == pytest.approx(-0.5)
+
+    def test_penalty_increases_as_approaching(self):
+        from sim.rewards import gate_centering_reward
+        far = gate_centering_reward(lateral_offset=1.0, dist_to_plane=3.0, gate_radius=1.5)
+        near = gate_centering_reward(lateral_offset=1.0, dist_to_plane=0.5, gate_radius=1.5)
+        assert near < far
+
+    def test_zero_radius_returns_zero(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=1.0, dist_to_plane=0.0, gate_radius=0.0)
+        assert r == pytest.approx(0.0)

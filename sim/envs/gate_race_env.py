@@ -13,7 +13,7 @@ import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
 
-from sim.rewards import gate_offset_penalty, monorace_reward, spline_proximity_reward, heading_alignment_reward, speed_bonus_reward, boundary_penalty, gate_approach_reward
+from sim.rewards import gate_offset_penalty, monorace_reward, spline_proximity_reward, heading_alignment_reward, speed_bonus_reward, boundary_penalty, gate_approach_reward, gate_centering_reward
 from sim.spline import GateSpline
 from sim.dynamics.trpy_mixer import TRPYMixer
 from sim.types import ActionMode
@@ -30,12 +30,13 @@ RC_HEADING_ALIGNMENT = 7
 RC_SPEED_BONUS = 8
 RC_BOUNDARY_PENALTY = 9
 RC_GATE_APPROACH = 10
-NUM_REWARD_COMPONENTS = 11
+RC_GATE_CENTERING = 11
+NUM_REWARD_COMPONENTS = 12
 REWARD_COMPONENT_NAMES = [
     "progress", "body_rate", "action_smooth",
     "gate_passage", "gate_offset", "crash_penalty",
     "spline_proximity", "heading_alignment", "speed_bonus",
-    "boundary_penalty", "gate_approach",
+    "boundary_penalty", "gate_approach", "gate_centering",
 ]
 from sim.tracks import Track
 from sim.procedural_tracks import ProceduralTrackGenerator
@@ -772,6 +773,20 @@ class GateRaceEnv(gym.Env):
                 approach_val = approach_weight * gate_approach_reward(self._states[i, VEL], approach_normal)
                 rewards[i] += approach_val
                 self._step_reward_components[i, RC_GATE_APPROACH] = approach_val
+
+            # Gate centering reward (continuous, distance-attenuated)
+            centering_weight = (self.reward_weights or {}).get("gate_centering", 0.0)
+            if centering_weight != 0.0:
+                centering_normal = _gate_normal(gate)
+                centering_rel = self._states[i, POS] - gate.position
+                dist_to_plane = float(np.dot(centering_rel, centering_normal))
+                lateral_vec = centering_rel - dist_to_plane * centering_normal
+                lateral_offset = float(np.linalg.norm(lateral_vec))
+                centering_val = centering_weight * gate_centering_reward(
+                    lateral_offset, dist_to_plane, self.gate_passage_radius
+                )
+                rewards[i] += centering_val
+                self._step_reward_components[i, RC_GATE_CENTERING] = centering_val
 
             # --- Plane-crossing gate passage detection ---
             normal = _gate_normal(gate)

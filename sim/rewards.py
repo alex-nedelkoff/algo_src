@@ -40,6 +40,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "speed_bonus": 0.0,        # disabled by default
     "boundary_penalty": 0.0,   # disabled by default
     "gate_approach": 0.0,      # disabled by default
+    "gate_centering": 0.0,     # disabled by default
 }
 
 
@@ -286,3 +287,29 @@ def gate_approach_reward(
         return 0.0
     cos_angle = np.dot(velocity, gate_normal) / (speed * max(np.linalg.norm(gate_normal), 1e-6))
     return max(0.0, float(cos_angle))
+
+
+def gate_centering_reward(
+    lateral_offset: float,
+    dist_to_plane: float,
+    gate_radius: float,
+) -> float:
+    """Continuous centering reward that activates near gate plane.
+
+    Penalizes lateral offset from gate center, with strength increasing
+    as the drone approaches the gate plane. Inspired by Song et al. (2021).
+
+    r = -(lateral_offset / gate_radius) * (1 / (1 + dist_to_plane^2))
+
+    Args:
+        lateral_offset: Distance from gate center perpendicular to normal (m).
+        dist_to_plane: Distance to gate plane along normal (m).
+        gate_radius: Gate passage radius (m). Normalizes penalty.
+
+    Returns:
+        Penalty in [-1, 0]. Zero when centered or far from gate.
+    """
+    if gate_radius <= 0.0:
+        return 0.0
+    proximity = 1.0 / (1.0 + dist_to_plane * dist_to_plane)
+    return -(abs(lateral_offset) / gate_radius) * proximity
