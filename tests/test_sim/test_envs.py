@@ -568,3 +568,18 @@ class TestSpeedReward:
         names, components = env.get_step_reward_components(0)
         speed_idx = names.index("speed_bonus")
         assert components[speed_idx] == 0.0
+
+
+class TestBoundaryAndApproachRewards:
+    def test_components_present(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"boundary_penalty": 5.0, "gate_approach": 0.1,
+                            "gate_progress": 1.0, "gate_passage": 1.5, "crash_penalty": 10.0},
+        )
+        env.reset()
+        env.step(np.zeros((1, 4), dtype=np.float32))
+        names, _ = env.get_step_reward_components(0)
+        assert "boundary_penalty" in names
+        assert "gate_approach" in names

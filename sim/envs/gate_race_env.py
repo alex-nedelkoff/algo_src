@@ -13,7 +13,7 @@ import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
 
-from sim.rewards import gate_offset_penalty, monorace_reward, spline_proximity_reward, heading_alignment_reward, speed_bonus_reward
+from sim.rewards import gate_offset_penalty, monorace_reward, spline_proximity_reward, heading_alignment_reward, speed_bonus_reward, boundary_penalty, gate_approach_reward
 from sim.spline import GateSpline
 from sim.dynamics.trpy_mixer import TRPYMixer
 from sim.types import ActionMode
@@ -28,11 +28,14 @@ RC_CRASH_PENALTY = 5
 RC_SPLINE_PROXIMITY = 6
 RC_HEADING_ALIGNMENT = 7
 RC_SPEED_BONUS = 8
-NUM_REWARD_COMPONENTS = 9
+RC_BOUNDARY_PENALTY = 9
+RC_GATE_APPROACH = 10
+NUM_REWARD_COMPONENTS = 11
 REWARD_COMPONENT_NAMES = [
     "progress", "body_rate", "action_smooth",
     "gate_passage", "gate_offset", "crash_penalty",
     "spline_proximity", "heading_alignment", "speed_bonus",
+    "boundary_penalty", "gate_approach",
 ]
 from sim.tracks import Track
 from sim.procedural_tracks import ProceduralTrackGenerator
@@ -602,6 +605,17 @@ class GateRaceEnv(gym.Env):
         else:
             _speed_bonuses = np.zeros(self.n_envs, dtype=np.float64)
 
+        # Pre-compute boundary penalty (vectorized)
+        boundary_weight = (self.reward_weights or {}).get("boundary_penalty", 0.0)
+        if boundary_weight != 0.0:
+            _boundary_penalties = np.array([
+                boundary_weight * boundary_penalty(
+                    self._states[i, :2], self.arena_bounds, margin=3.0
+                ) for i in range(self.n_envs)
+            ], dtype=np.float64)
+        else:
+            _boundary_penalties = np.zeros(self.n_envs, dtype=np.float64)
+
         # Pre-compute spline rewards
         spline_weight = (self.reward_weights or {}).get("spline_proximity", 0.0)
         heading_weight = (self.reward_weights or {}).get("heading_alignment", 0.0)
@@ -744,6 +758,20 @@ class GateRaceEnv(gym.Env):
             if speed_bonus_weight != 0.0:
                 rewards[i] += _speed_bonuses[i]
                 self._step_reward_components[i, RC_SPEED_BONUS] = _speed_bonuses[i]
+
+            # Boundary penalty (pre-computed)
+            if boundary_weight != 0.0:
+                rewards[i] += _boundary_penalties[i]
+                self._step_reward_components[i, RC_BOUNDARY_PENALTY] = _boundary_penalties[i]
+
+            # Gate approach reward (needs per-env gate normal + velocity)
+            approach_weight = (self.reward_weights or {}).get("gate_approach", 0.0)
+            if approach_weight != 0.0:
+                gate_for_approach = self._tracks[i].gates[int(self._gate_indices[i]) % self._tracks[i].num_gates]
+                approach_normal = _gate_normal(gate_for_approach)
+                approach_val = approach_weight * gate_approach_reward(self._states[i, VEL], approach_normal)
+                rewards[i] += approach_val
+                self._step_reward_components[i, RC_GATE_APPROACH] = approach_val
 
             # --- Plane-crossing gate passage detection ---
             normal = _gate_normal(gate)
