@@ -38,7 +38,23 @@ The system uses constrained MAP-Elites to maintain a diverse archive of high-per
 - `analysis/` — W&B data pulling, learning curve analysis, early stopping, Rerun/trajectory analysis
 - `tree/` — Research tree structure, branch selection with exploration guarantees
 
-**2. `autoresearch-plugin/` Claude Code plugin** — skills, hooks, and configuration that orchestrate the research loop.
+**2. `autoresearch-plugin/` Claude Code plugin** — installed into the project's `.claude/` directory following Claude Code plugin conventions:
+
+```
+.claude/
+├── plugins/
+│   └── autoresearch/
+│       ├── plugin.json         # Plugin manifest (name, version, description)
+│       ├── skills/
+│       │   ├── auto-research.md    # Main research loop skill
+│       │   ├── ar-status.md        # Archive status display
+│       │   ├── ar-review.md        # Experiment review skill
+│       │   └── ar-branch.md        # Manual branch creation
+│       ├── hooks/
+│       │   ├── post-training.sh    # Descriptor computation + archive update
+│       │   └── session-start.sh    # Pull latest archive state
+│       └── settings.yaml           # Default plugin configuration
+```
 
 ### Package Structure
 
@@ -95,11 +111,12 @@ This separates concerns cleanly: constraints gate entry, fitness determines rank
 
 **Axis 1 — Actuator Utilization (Aggressiveness)**
 - Computation: `mean(||motor_RPMs(t)|| / ||max_RPMs||)` over the trajectory
+- `max_RPM` source: `VehicleParams.max_rpm` (defined in `sim/dynamics/params.py`, currently 31470). Loaded from the Hydra sim config and stored in trajectory `.npz` metadata. The descriptor module reads it from either the trajectory metadata or the sim config as fallback.
 - Range: ~0.25 (hover) to ~1.0 (full saturation)
 - Physics: measures controllability margin. Near saturation, thrust curve flattens, motor model errors are amplified, and no control authority remains for disturbance rejection. Strongest predictor of sim-to-real transfer failure (Kaufmann et al., Nature 2023).
 
 **Axis 2 — Control Smoothness (Command Rate of Change)**
-- Computation: `mean(||d(motor_RPMs)/dt(t)||)` normalized by max_RPM × control_frequency
+- Computation: `mean(||d(motor_RPMs)/dt(t)||)` normalized by max_RPM × control_frequency (max_RPM sourced identically to Axis 1)
 - Range: [0, 1] dimensionless
 - Physics: motors are low-pass filters. Smooth commands track well despite model error; high-frequency commands expose inaccuracies in motor transient response (time constants, voltage sag, temperature). The Swift paper's successful sim-to-real policy was notably smoother than the sim-only optimum.
 - Independence: genuinely orthogonal to Axis 1 — fast-but-smooth (well-planned) vs slow-but-jerky (reactive) represent meaningfully different transfer characteristics.
@@ -114,9 +131,9 @@ This separates concerns cleanly: constraints gate entry, fitness determines rank
 Each axis discretized into 5 bins → 125 total cells.
 - Actuator utilization: 5 bins across [0.25, 1.0]
 - Control smoothness: 5 bins across [0, 1]
-- Aero regime index: 5 bins across [0, max_observed]
+- Aero regime index: 5 bins across [0, v_max] where v_max is the physics-derived upper bound = `sqrt(4 * k_thrust * max_omega^2 / max(drag_coeff))` (theoretical terminal velocity from quadratic thrust model). This is a fixed constant for a given vehicle configuration (~25-30 m/s for our quad), ensuring bin boundaries never shift as new experiments are added.
 
-Sparse initially; adaptive refinement can subdivide promising cells later.
+Sparse initially. **Adaptive refinement**: when a cell accumulates 3+ archive insertions (indicating an active region), it can be subdivided into 2×2×2 sub-cells along each axis. Subdivision is recorded in the archive metadata so all instances use consistent binning.
 
 ### Cell Contents
 
@@ -126,10 +143,20 @@ Each occupied cell stores:
 - Git commit hash (exact code that produced it)
 - Behavioral descriptor values
 - Constraint validation results (pass/fail + details)
+- Total compute budget spent (timesteps trained) — helps UCB-style selection distinguish "well-explored" from "barely tried" cells
 
 ### Storage & Sync
 
-Stored as a versioned W&B artifact (`autoresearch-archive`). Full history preserved. Conflict resolution via read-latest-before-write — if two writers race, the second re-evaluates against the newer archive state.
+Stored as a versioned W&B artifact (`autoresearch-archive`). Full history preserved.
+
+**Conflict resolution protocol** (optimistic concurrency):
+1. Read latest archive version, note its version number
+2. Compute new cell insertion (fitness comparison against current incumbent)
+3. Before writing, re-read the archive — if version has changed since step 1:
+   a. Re-check if the insertion is still valid against the updated archive
+   b. If the target cell now has a better incumbent (another writer beat us), skip insertion but still log the result in the research tree
+   c. If still valid, write the update
+4. W&B artifact versioning provides the version tracking — no external locking needed
 
 ---
 
@@ -141,6 +168,7 @@ Tree nodes = experiments. Stored as W&B metadata.
 
 Each node contains:
 - Parent node (what it refined/branched from)
+- `inspired_by` (optional, for cross-pollinated ideas — references source branch without creating a structural edge)
 - Scope level: `hyperparameter | algorithm | architecture | system`
 - Hypothesis description (what was tried and why)
 - Result summary (fitness, archive cell, pass/fail)
@@ -162,7 +190,7 @@ The system must actively avoid getting stuck in local optima. Strategies:
 4. **Random restarts** — allocate a percentage of experiments (default 20%) to completely novel hypotheses unrelated to any existing branch
 5. **Stale branch revival** — when the dominant branch plateaus, revisit deprioritized branches with fresh ideas
 6. **Diversity bonus** — branches behaviorally dissimilar to the current best get a selection bonus
-7. **Cross-pollination** — successful refinements on one branch are proposed on other branches (tree becomes a DAG)
+7. **Cross-pollination** — successful refinements on one branch are proposed on other branches. This creates a new node with a single parent (the target branch) and an `inspired_by` reference to the source branch — the tree remains a tree in its parent-child structure, with cross-references as metadata rather than structural edges.
 
 ### Pruning
 
@@ -196,18 +224,31 @@ Branches where the best descendant is significantly worse than the archive incum
 ### Phase 3 — Implementation
 
 1. Create a git worktree for the experiment
-2. Implement changes (code edits, config modifications)
+2. Implement changes — two strategies depending on scope:
+   - **Config-only changes** (hyperparameters, reward weights, DR ranges): generate Hydra override strings passed directly on the command line (e.g., `python -m training control.learning_rate=1e-4 reward.gate_passage=2.0`)
+   - **Code changes** (algorithm, architecture, system): edit source files in the worktree, generate a new experiment YAML in `configs/experiment/`, commit to the worktree branch
 3. Claim the experiment in W&B coordination registry
-4. Launch training: `python -m training +experiment=<generated_config>`
+4. Launch training: `python -m training [+experiment=<name>] [hydra overrides...]`
+
+**Failure handling:**
+- **Training crash (OOM, NaN, sim instability)**: mark experiment as `failed` in the research tree with crash reason, release coordination claim, log the failure to W&B. Do not retry automatically — Claude Code analyzes the failure to inform the next hypothesis (e.g., "NaN at step 50k suggests learning rate too high").
+- **Git worktree creation failure**: fall back to a fresh branch from main. If that also fails (dirty state), abort and report to user.
+- **W&B artifact upload failure**: retry once after 30s. If still failing, save archive update locally as JSON and log a warning — the next successful sync will apply pending updates.
+- **Coordination claim expiry during long training**: the monitoring loop (Phase 4) refreshes the claim timestamp every `claim_timeout / 2` hours. If the session dies without cleanup, the claim expires naturally and other instances can pick up the work.
 
 ### Phase 4 — Monitoring & Early Stopping
 
-1. Periodically check W&B metrics
-2. Compute provisional behavioral descriptors from available trajectory data
-3. Early stop if:
+Claude Code monitors training via a polling loop within the active session. The `/auto-research` skill runs a check cycle:
+1. Query W&B API for latest metrics of the active run
+2. Compute provisional behavioral descriptors from available trajectory `.npz` files
+3. Refresh the coordination claim timestamp
+4. Early stop if:
    - Learning curve significantly below baseline after budget/3 steps
    - Converging to a well-populated archive cell with a better incumbent
-4. Adaptive budget extension if learning curve is still improving at budget limit
+5. Adaptive budget extension if learning curve is still improving at budget limit
+6. Sleep for a configurable poll interval (default 60s) and repeat
+
+In autonomous/YOLO modes, this loop is self-sustaining within the Claude Code session. The session must remain active for the loop to run — if the session ends, the experiment continues training but monitoring stops. The next `/auto-research` invocation picks up where it left off by checking W&B for completed/in-progress runs.
 
 ### Phase 5 — Evaluation & Archive Update
 
@@ -241,6 +282,8 @@ Early stop triggers:
 - Below 70% of baseline performance after 1/3 of budget
 - Converging to an archive cell already occupied by a better solution
 
+**Baseline definition**: the baseline is the best fitness (lap time) in the archive at the time the experiment starts. For the very first experiment (empty archive), no early stopping on baseline threshold is applied — the first run always completes its full budget to establish the baseline. Subsequent experiments compare against the archive's best incumbent in their target cell (or global best if targeting an empty cell).
+
 ---
 
 ## Constraint Validation & Anti-Gaming
@@ -253,7 +296,7 @@ Early stop triggers:
    - Motor commands within physical actuator limits
    - No impossible accelerations (exceeding max thrust-to-weight)
    - Quaternion stability (no attitude divergence)
-3. **Gate passage quality** — must fly through gates in sequence, not clip edges or skip. Verified via existing gate offset tracking in `GateMetricsCallback`.
+3. **Gate passage quality** — must fly through gates in sequence, not clip edges or skip. Gate offset distances are computed from drone position and gate geometry at gate passage timesteps (using `gate_events`, `positions`, `gate_positions`, `gate_orientations` from the `.npz` trajectory data). The existing `GateMetricsCallback` tracks passage counts; the constraint validator additionally computes per-gate clearance distances.
 4. **Behavioral sanity**:
    - Forward progress required (no circling/oscillating near gates)
    - Average speed above minimum threshold (no hovering exploits)
