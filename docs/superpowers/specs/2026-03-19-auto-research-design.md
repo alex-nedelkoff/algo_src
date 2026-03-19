@@ -45,12 +45,13 @@ Scope: hyperparameter and reward weight exploration only. No autonomous code edi
 
 Adds: algorithm and architecture scope changes with code edits.
 
-- Git worktrees for experiment isolation
+- Git worktrees for experiment isolation (with cleanup policy — see Worktree Lifecycle)
 - Diff allowlist/denylist enforcement (see Edit Surface Constraints)
 - Autonomous and YOLO modes enabled
 - Full constraint validation suite
 - Research tree with branch selection
 - Early stopping
+- Durable monitoring via `autoresearch/runner.py` — a lightweight Python process that monitors training runs independently of the Claude Code session (see Phase 4)
 
 ### Phase 3 — Full Autonomy
 
@@ -124,6 +125,7 @@ autoresearch/
 ├── hypothesis/
 │   ├── schema.py          # Hypothesis data contract
 │   └── prompt.py          # Prompt construction for hypothesis generation
+├── runner.py              # Durable monitoring process (Phase 2+)
 └── config.py              # Plugin configuration schema
 ```
 
@@ -142,7 +144,14 @@ autoresearch/
 │   └── config.json         # Shared config overrides
 ```
 
-These files live in the repo and are synced via git pull/push. Each auto-research session pulls before starting and pushes state updates after experiments complete. Merge conflicts in JSON state files are resolved by taking the entry with better fitness (archive) or newer timestamp (claims/tree).
+These files live in the repo and are synced via git pull/push. Each auto-research session pulls before starting and pushes state updates after experiments complete.
+
+**Merge conflict resolution** (per file):
+- `archive.json`: each cell is independent. On conflict, for each conflicting cell take the entry with better (lower) fitness. Cells modified by only one side are accepted as-is.
+- `claims.json`: append-only during normal operation. On conflict, union all claims and deduplicate by `hypothesis_id`. For duplicate IDs, take the entry with newer timestamp.
+- `tree.json`: append-only for nodes. On conflict, union all nodes by ID. If the same node ID has conflicting result data, take the version with a non-null result (completed > in-progress > pending).
+
+**Limitation**: git-synced JSON is adequate for a small team (2-5 concurrent researchers) in MVP. If concurrent writer contention becomes frequent, Phase 3 should consider a lightweight transactional store (e.g., SQLite shared via NFS, or a simple key-value service).
 
 ---
 
@@ -240,11 +249,22 @@ Each axis discretized into 5 bins → 125 total cells. Fixed grid (no adaptive s
 
 Each occupied cell stores:
 - Best fitness (lap time) for that behavioral niche
+- Promotion status: `candidate | approved | rejected` (see Archive Promotion)
 - W&B run ID (links to all metrics, Rerun recordings, config)
 - Git commit hash (exact code that produced it)
 - Behavioral descriptor values
 - Constraint validation results (pass/fail + details)
 - Total compute budget spent (timesteps trained) — helps UCB-style selection distinguish "well-explored" from "barely tried" cells
+
+### Archive Promotion
+
+Results enter the archive in stages:
+
+1. **Candidate**: experiment passes all hard constraints and has better fitness than the current cell incumbent. Inserted automatically by the post-training hook or Phase 5 evaluation.
+2. **Approved**: promoted from candidate status. In interactive mode, requires human approval via `/ar-review`. In autonomous/YOLO modes, candidates are auto-approved after a configurable hold period (default: 0 — immediate approval).
+3. **Rejected**: human explicitly rejects a candidate during review, or a subsequent re-evaluation invalidates it.
+
+Only `approved` entries are used by the branch selection algorithm for fitness comparisons. `Candidate` entries are visible in `/ar-status` and `/ar-review` but do not influence branch scoring until approved. This ensures interactive mode's "human review before promotion" guarantee (Phase 1) is consistent with the automated insertion path.
 
 ### Storage & Sync
 
@@ -351,8 +371,15 @@ Each node contains:
 A single concrete scoring function replaces the menu of strategies:
 
 ```python
-def score_branch(branch, archive, config) -> float:
-    """Score a branch for selection. Higher = more likely to be explored next."""
+def score_branch(branch, archive, tree, config) -> float:
+    """Score a branch for selection. Higher = more likely to be explored next.
+
+    Args:
+        branch: The branch to score.
+        archive: Current MAP-Elites archive state.
+        tree: Full research tree (needed for global experiment count).
+        config: Branch selection config (exploit_weight, explore_weight, gap_weight, diversity_weight).
+    """
 
     # Best fitness achieved by any descendant of this branch
     best_fitness = branch.best_descendant_fitness or float('inf')
@@ -360,15 +387,18 @@ def score_branch(branch, archive, config) -> float:
     # How many experiments have been run on this branch
     visit_count = branch.total_experiments
 
+    # Total experiments across all branches (for UCB normalization)
+    total_experiments = tree.total_experiments
+
     # Archive coverage: what fraction of this branch's target cells are still empty
-    empty_target_ratio = branch.empty_target_cells / branch.total_target_cells
+    empty_target_ratio = branch.empty_target_cells / max(branch.total_target_cells, 1)
 
     # Behavioral distance from the current global best
     diversity = behavioral_distance(branch.centroid, archive.global_best.descriptors)
 
     # UCB-style score: exploit good branches, explore under-visited ones
-    exploit = 1.0 / best_fitness  # lower lap time = higher exploit score
-    explore = config.exploration_weight * sqrt(log(total_experiments) / max(visit_count, 1))
+    exploit = config.exploit_weight / best_fitness  # lower lap time = higher exploit score
+    explore = config.explore_weight * sqrt(log(max(total_experiments, 1)) / max(visit_count, 1))
 
     # Bonuses
     gap_bonus = config.gap_weight * empty_target_ratio  # reward filling archive gaps
@@ -432,11 +462,11 @@ Launch training: `python -m training [+experiment=<name>] [hydra overrides...]`
 - **Git worktree creation failure**: fall back to a fresh branch from main. If that also fails (dirty state), abort and report to user.
 - **W&B upload failure**: retry once after 30s. If still failing, save results locally — the next successful sync will apply pending updates.
 - **Coordination claim expiry during long training**: the monitoring loop (Phase 4) refreshes the claim timestamp every `claim_timeout / 2` hours. If the session dies without cleanup, the claim expires naturally and other instances can pick up the work.
-- **State file merge conflict**: for `archive.json`, take the entry with better fitness. For `claims.json`, take the entry with newer timestamp. For `tree.json`, merge additively (new nodes are appended, existing nodes keep the version with more data).
+- **State file merge conflict**: see State Management section for per-file resolution rules.
 
 ### Phase 4 — Monitoring & Early Stopping
 
-Claude Code monitors training via a polling loop within the active session. The `/auto-research` skill runs a check cycle:
+**Phase 1 (MVP)**: Claude Code monitors training via a polling loop within the active session:
 1. Query W&B API for latest metrics of the active run
 2. Compute provisional behavioral descriptors from available trajectory `.npz` files
 3. Refresh the coordination claim timestamp in `state/claims.json`
@@ -446,7 +476,14 @@ Claude Code monitors training via a polling loop within the active session. The 
 5. Adaptive budget extension if learning curve is still improving at budget limit
 6. Sleep for a configurable poll interval (default 60s) and repeat
 
-In autonomous/YOLO modes, this loop is self-sustaining within the Claude Code session. The session must remain active for the loop to run — if the session ends, the experiment continues training but monitoring stops. The next `/auto-research` invocation picks up where it left off by checking W&B for completed/in-progress runs. Training runs are self-contained and log to W&B regardless of whether Claude Code is watching.
+If the Claude Code session ends, the training run continues (it logs to W&B independently). The next `/auto-research` invocation picks up completed runs by checking W&B for results. Early stopping and claim refresh are best-effort in Phase 1 — acceptable since all archive insertions require human review anyway.
+
+**Phase 2+ (durable monitoring)**: a lightweight Python process (`autoresearch/runner.py`) runs independently of the Claude Code session:
+- Launched by Claude Code as a background process: `nohup python -m autoresearch.runner --run-id <wandb_run_id> --claim-id <hypothesis_id> &`
+- Responsibilities: claim timestamp refresh (every `claim_refresh_minutes`), early stopping checks, writing results to `state/` on completion
+- Does NOT generate hypotheses or make decisions — it only monitors and records
+- Claude Code checks for runner output on next `/auto-research` invocation
+- If the runner crashes, the claim expires naturally and the run is picked up as an orphan on next session
 
 ### Phase 5 — Evaluation & Archive Update
 
@@ -507,10 +544,10 @@ Each constraint has explicit thresholds and aggregation rules:
    - Gate offset: compute distance from drone center to gate center plane at passage timestep (using `gate_events`, `positions`, `gate_positions`, `gate_orientations` from `.npz`). Reject if mean offset > 80% of gate half-extent (clipping edges)
    - Minimum gate clearance: reject if any passage has offset > 95% of gate half-extent
 
-4. **Behavioral sanity**
-   - Forward progress: reject if the drone's cumulative distance traveled toward the next gate is negative over any 2-second sliding window (circling/oscillating)
+4. **Behavioral sanity** (provisional heuristics — thresholds should be refined empirically during Phase 1 validation)
+   - Forward progress: reject if the drone's cumulative distance traveled toward the next gate is negative over any 3-second sliding window (circling/oscillating). Note: 3s chosen over 2s to allow legitimate setup maneuvers like pre-gate deceleration and realignment.
    - Minimum speed: reject if mean speed over completed laps < 2.0 m/s
-   - Trajectory diversity: reject if the standard deviation of per-episode lap times < 0.01s across 10+ episodes (suspiciously identical trajectories suggesting degenerate memorization)
+   - Trajectory diversity: reject if the standard deviation of per-episode lap times < 0.05s across 10+ episodes AND evaluation is stochastic (has domain randomization enabled). Deterministic evaluation naturally produces low variance — this check only applies when DR is active.
 
 5. **Edit surface compliance**
    - The diff must pass the allowlist/denylist check (see Edit Surface Constraints)
@@ -597,7 +634,40 @@ Every experiment records a reproducibility snapshot:
 | W&B run ID | From the training run |
 | Hypothesis ID | Links back to the research tree |
 
-Stored as W&B run metadata. Enables any experiment to be reproduced exactly.
+Stored as W&B run metadata. Enables substantially reproducible experiments. Full exact reproducibility would additionally require Docker image digests, CUDA/driver versions, and a complete dependency lockfile — these are out of scope for MVP but can be added in Phase 3.
+
+---
+
+## Resource Limits
+
+Each laptop runs one experiment at a time (single GPU constraint). No queueing or preemption needed for a 3-person team.
+
+| Constraint | Limit |
+|------------|-------|
+| Max concurrent experiments per machine | 1 |
+| Max total active claims across team | 3 (one per person) |
+| Max experiment wall-clock time | 24 hours (configurable, prevents runaway jobs) |
+| Max worktrees per repo | 5 (prevents disk bloat) |
+
+If a researcher starts `/auto-research` while another experiment is running on the same machine, the system detects the active training process and offers to: (a) monitor the existing run, (b) queue the next hypothesis for after completion, or (c) abort the current run.
+
+---
+
+## Worktree Lifecycle (Phase 2+)
+
+Git worktrees are created per experiment and must be cleaned up:
+
+| State | Action |
+|-------|--------|
+| Experiment completed, result archived | Delete worktree and branch after state files are updated |
+| Experiment failed | Keep worktree for 48 hours (allows debugging), then auto-delete |
+| Experiment produced a winning result that should be merged to main | Keep worktree, flag for human review via `/ar-review` |
+| Stale worktree (no activity for 7 days) | Auto-delete with warning in `/ar-status` |
+| Worktree count exceeds max (5) | Prompt cleanup of oldest completed/failed worktrees before creating new ones |
+
+Worktree branch naming convention: `ar/<hypothesis-id-short>` (e.g., `ar/exp-a1b2c3`).
+
+Cleanup is performed by `/auto-research` at session start (Phase 1 — Situational Awareness) and can be triggered manually via `/ar-status --cleanup`.
 
 ---
 
@@ -616,7 +686,7 @@ Stored as W&B run metadata. Enables any experiment to be reproduced exactly.
 
 | Hook | Trigger | Action |
 |------|---------|--------|
-| Post-training | After `python -m training` completes | Compute descriptors, validate constraints, attempt archive insertion |
+| Post-training | After `python -m training` completes | Compute descriptors, validate constraints, insert as `candidate` (promoted to `approved` per mode rules) |
 | Pre-commit | Committing experiment results | Validate diff policy compliance |
 | Session-start | `/auto-research` launch | `git pull` state files, display archive/coordination summary |
 
@@ -645,18 +715,17 @@ autoresearch:
       algorithm: 500
       architecture: 1000
       system: 2000
-  exploration:
-    random_restart_pct: 0.2
-    min_branch_experiments: 3
-    exploration_weight: 1.0
-    gap_weight: 0.5
-    diversity_weight: 0.3
+  branch_selection:
+    exploit_weight: 1.0        # Weight for UCB exploitation term (1/fitness)
+    explore_weight: 1.0        # Weight for UCB exploration term (sqrt(log(N)/n))
+    gap_weight: 0.5            # Weight for archive gap-filling bonus
+    diversity_weight: 0.3      # Weight for behavioral diversity bonus
+    random_restart_pct: 0.2    # Fraction of iterations that skip scoring and try novel ideas
+    min_branch_experiments: 3  # Minimum experiments before a branch can be deprioritized
+    tie_threshold: 0.05        # Scores within this fraction are considered tied (random selection)
   coordination:
     claim_timeout_hours: 4
-  branch_selection:
-    exploit_weight: 1.0
-    explore_weight: 1.0
-    tie_threshold: 0.05
+    claim_refresh_minutes: 15  # How often to refresh claim timestamps during monitoring
 ```
 
 ---
