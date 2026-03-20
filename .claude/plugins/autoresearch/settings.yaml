@@ -1,0 +1,28 @@
+autoresearch:
+  wandb_project: corvidx-drone-racing
+  mode: interactive
+  budgets:
+    hyperparameter: 5_000_000
+    algorithm: 15_000_000
+    architecture: 30_000_000
+    system: 50_000_000
+  early_stop:
+    baseline_threshold: 0.7
+    archive_redundancy: true
+    poll_interval_seconds: 60
+  constraints:
+    min_success_rate: 0.8
+    min_avg_speed: 2.0
+    max_gate_offset_ratio: 0.8
+    max_acceleration_g: 4.0
+  branch_selection:
+    exploit_weight: 1.0
+    explore_weight: 1.0
+    gap_weight: 0.5
+    diversity_weight: 0.3
+    random_restart_pct: 0.2
+    min_branch_experiments: 3
+    tie_threshold: 0.05
+  coordination:
+    claim_timeout_hours: 4
+    claim_refresh_minutes: 15
