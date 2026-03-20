@@ -70,7 +70,7 @@ reward:
 # aRPO bootstrap — helps LSTM learn from consistent trajectories
 arpo:
   enabled: true
-  k_end_fraction: 0.15        # Remove base policy by 6M steps
+  k_end_fraction: 0.80        # Slow attenuation: base policy active until 32M, removed by 40M
 
 curriculum:
   enabled: true
