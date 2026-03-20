@@ -374,12 +374,23 @@ Simply mixing figure-eights into training doesn't solve the hardcoded figure-8 �
 - **The tight geometry (±3m)** requires precision the policy hasn't learned on wider tracks
 - The drone needs **direct exposure to the specific hardcoded layout** or very similar tight configurations
 
+### Run 7: `figure8_finetune` — CATASTROPHIC FAILURE
+
+Attempted a 5M step fine-tune directly on the hardcoded figure-8 track with high centering reward and low LR. **The policy collapsed completely**: 5% gate passage (down from 55%), zero laps, crashes in ~100 steps every episode.
+
+**What went wrong:** The tight figure-8 with gate_collision=True creates a near-impossible environment for a policy trained on wider tracks. Every episode ends in a gate collision, so the reward signal is overwhelmingly negative. Over 5M steps, the policy learned "don't fly toward gates" — the opposite of what we wanted. This is **catastrophic forgetting**: intense single-task fine-tuning destroyed the general skills.
+
+**Lesson learned:** Never fine-tune a general policy on a single hard track with harsh penalties. Instead:
+- Mix the hard track into a broader distribution (low ratio)
+- Disable gate_collision termination on the hard track initially
+- Use very short fine-tune passes (500K, not 5M) with even lower LR
+
 ### Remaining Next Steps
 
-1. **Direct fine-tune on the hardcoded figure-8** — a few million steps specifically on `build_figure8_track()` should close the gap quickly
-2. **Increase `n_lookahead_gates` to 3** — requires training from scratch (obs dim changes) but is the fundamental fix for crossing-point ambiguity
-3. **Tighter figure-8 generator params** — reduce loop_radius_max and crossing_offset to generate tracks closer to the hardcoded one
-4. **GRU temporal context** — the architectural solution for track memory
+1. **Increase `n_lookahead_gates` to 3** and train from scratch — the fundamental fix for crossing-point ambiguity (obs dim changes, can't resume)
+2. **GRU temporal context** — the architectural solution for track memory
+3. **Tighter figure-8 generator params** — generate tracks closer to the hardcoded one
+4. **Gate collision as penalty, not termination** — on figure-8s, penalize but don't terminate so the policy can learn from near-misses
 
 ---
 
