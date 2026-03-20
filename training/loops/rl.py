@@ -63,6 +63,10 @@ def build_ppo(cfg: DictConfig) -> PPO:
         extra_policy_kwargs=extra_policy_kwargs,
         action_bias_init=list(ctrl.action_bias_init) if ctrl.get("action_bias_init") else None,
         tensorboard_log=str(Path(cfg.output_dir) / "tb_logs") if cfg.get("output_dir") else None,
+        # Recurrent (LSTM) support
+        recurrent=ctrl.get("recurrent", False),
+        lstm_hidden_size=ctrl.get("lstm_hidden_size", 128),
+        n_lstm_layers=ctrl.get("n_lstm_layers", 1),
     )
 
 
