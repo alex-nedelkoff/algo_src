@@ -1,0 +1,17 @@
+{
+  "root_id": "baseline_v1",
+  "nodes": {
+    "baseline_v1": {
+      "parent_id": null,
+      "inspired_by": null,
+      "scope": "baseline",
+      "description": "monorace_baseline",
+      "status": "baseline",
+      "fitness": null,
+      "wandb_run_id": null,
+      "git_commit": null,
+      "failure_reason": null,
+      "archive_cell": null
+    }
+  }
+}
