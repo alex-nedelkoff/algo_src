@@ -270,13 +270,64 @@ We queried our research notebook (43 papers on autonomous drone racing) for insi
 | **Attractive Vector Fields** | DiffRacing | Replace distance-based rewards with field-based guidance that naturally spirals into gate center |
 | **Spherical coordinate observations** | Multiple | Represent gate position as (distance, azimuth, elevation) instead of (x, y, z) — better separates "how far" from "which direction" |
 
-### Recommended Next Steps
+### What We Implemented (gate_fix run)
 
-1. **Gate proximity centering reward (easiest, highest impact):** When the drone is within ~2 meters of a gate, add a continuous reward proportional to how centered it is on the gate plane. Formula: `r = -lambda * lateral_offset * (1 / distance_to_gate_plane)`. This gives the policy gradient information *before* the binary pass/fail event.
+We implemented the top recommendation — a **gate centering reward** that gives continuous feedback about lateral offset as the drone approaches each gate. The formula `r = -(offset/radius) * 1/(1+d²)` creates a "funnel" that gets stronger near the gate plane. Combined with forced low entropy (`ent_coef=0.001`), this dramatically reduced gate collisions in eval from ~73% to **8.5%**.
 
-2. **GRU integration (medium effort, large potential):** Replace the memoryless MLP with MLP + GRU (128 hidden). The CRL paper's ablation showed this is the difference between 77% and 100% success. Requires handling hidden state resets across episode boundaries in SB3.
+### Run 5: `gate_fix` (20 million steps, 2026-03-19)
 
-3. **Lower entropy / tighter exploration:** The policy's action standard deviation is 3.1 — very high. The drone is exploring aggressively, which causes crashes. Reducing entropy more aggressively (start at 0.003, anneal to 0.0005) would tighten the policy around its learned behavior.
+| Metric | Before (quick_wins) | After (gate_fix) |
+|--------|:---:|:---:|
+| Eval gate collision | ~73% | **8.5%** |
+| Eval success rate | 80% | **90.5%** |
+| Eval avg speed | 5.2 m/s | **5.7 m/s** |
+| Eval laps/ep | 7.38 | **8.41** |
+| Best lap time | 1.78s | **1.18s** |
+| Best laps in one ep | 16 | **18** |
+
+---
+
+## 11. Figure-Eight Track Evaluation — Transfer Test
+
+After achieving strong results on procedural tracks, we tested the gate_fix policy on a hardcoded **figure-eight track** — a track shape the policy had **never seen during training**.
+
+### Why This Matters
+
+All training used **procedurally generated closed loops** — simple oval/kidney shapes with 4-8 gates where the path never crosses itself. A figure-eight is fundamentally different: the path crosses itself at the center, meaning the drone passes through the same spatial region going in *opposite directions* on alternating halves of the lap.
+
+### Results: Significant Performance Drop
+
+| Metric | Procedural tracks (eval) | Figure-8 track |
+|--------|:---:|:---:|
+| Gate passage | 100% | **55%** |
+| Lap completion | 99% | **30%** |
+| Success rate | 90.5% | **35%** |
+| Gates/ep | 49 | **4.2** |
+| Laps/ep | 8.4 | **0.3** |
+| Avg speed | 5.7 m/s | **2.65 m/s** |
+| Gate collisions | 8.5% | **40%** |
+| Ground crashes | 1% | **20%** |
+
+### Why the Figure-Eight Is Hard
+
+1. **The crossing point is confusing.** Gates 3 and 7 sit just 0.6 meters apart at the center of the eight. The drone's observation includes the next 2 gates — at the crossing point, gates from both loops are nearby, creating ambiguity about which direction to fly.
+
+2. **Much tighter geometry.** The figure-eight fits within ±3 meters, while procedural tracks spread to ±10m. The 180° turns required for the loops are beyond the 120° maximum the procedural generator uses.
+
+3. **Speed drops by half.** The drone slows to 2.65 m/s — it's cautious and uncertain on unfamiliar geometry.
+
+4. **Ground crashes increase 20×.** The tight turns may cause altitude loss that the policy hasn't learned to recover from.
+
+### Key Insight
+
+This is a **generalization gap**, not a capability gap. The policy learned excellent skills (gate finding, centering, speed) but only on one family of track shapes. It would likely recover quickly with a few million steps of fine-tuning on figure-eight tracks, or by mixing figure-eights into the procedural training distribution.
+
+### Remaining Next Steps
+
+1. **Mix figure-eight tracks into training** — add the hardcoded figure-eight as a possible track alongside procedural ones
+2. **Increase `n_lookahead_gates`** from 2 to 3-4 — more gate context helps disambiguate at crossing points
+3. **GRU temporal context** — recurrent memory would help the policy "remember" which loop it's on
+4. **Fine-tune on competition track layout** once the track specification is available
 
 ---
 
