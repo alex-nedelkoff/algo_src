@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from sim.procedural_tracks import ProceduralTrackGenerator
+from sim.procedural_tracks import MixedTrackGenerator, ProceduralTrackGenerator
 from sim.tracks import Track
 
 
@@ -143,6 +143,61 @@ class TestGeneratorValidation:
     def test_elevation_min_gt_max(self):
         with pytest.raises(ValueError):
             ProceduralTrackGenerator(elevation_min=5.0, elevation_max=2.0)
+
+
+class TestMixedTrackGenerator:
+    """MixedTrackGenerator selects between procedural and figure-8 tracks."""
+
+    def setup_method(self):
+        from sim.figure8_tracks import Figure8TrackGenerator
+
+        self.proc = ProceduralTrackGenerator(
+            n_gates_min=4,
+            n_gates_max=8,
+            gate_spacing_min=2.0,
+            gate_spacing_max=6.0,
+        )
+        self.fig8 = Figure8TrackGenerator()
+
+    def test_all_procedural(self):
+        """figure8_ratio=0 should always produce procedural tracks (4-8 gates)."""
+        gen = MixedTrackGenerator(self.proc, self.fig8, figure8_ratio=0.0)
+        for seed in range(20):
+            rng = np.random.default_rng(seed)
+            track = gen.generate(rng)
+            assert isinstance(track, Track)
+            assert 4 <= track.num_gates <= 8
+
+    def test_all_figure8(self):
+        """figure8_ratio=1 should always produce figure-8 tracks (8 gates)."""
+        gen = MixedTrackGenerator(self.proc, self.fig8, figure8_ratio=1.0)
+        for seed in range(20):
+            rng = np.random.default_rng(seed)
+            track = gen.generate(rng)
+            assert isinstance(track, Track)
+            assert track.num_gates == 8
+
+    def test_mixed_ratio(self):
+        """figure8_ratio=0.5 should produce a mix — gate counts vary over 50 runs."""
+        gen = MixedTrackGenerator(self.proc, self.fig8, figure8_ratio=0.5)
+        gate_counts = set()
+        for seed in range(50):
+            rng = np.random.default_rng(seed)
+            track = gen.generate(rng)
+            assert isinstance(track, Track)
+            gate_counts.add(track.num_gates)
+        # With 50 runs and 50% ratio there must be variation in gate counts
+        assert len(gate_counts) > 1, (
+            f"Expected varied gate counts over 50 runs, got {gate_counts}"
+        )
+
+    def test_generate_interface(self):
+        """generate(rng) returns a Track — same interface as component generators."""
+        gen = MixedTrackGenerator(self.proc, self.fig8, figure8_ratio=0.5)
+        rng = np.random.default_rng(0)
+        track = gen.generate(rng)
+        assert isinstance(track, Track)
+        assert track.num_gates >= 1
 
 
 class TestGeneratorFallback:

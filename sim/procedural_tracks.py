@@ -244,3 +244,23 @@ class ProceduralTrackGenerator:
 
 def _wrap_angle(angle: float) -> float:
     return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+class MixedTrackGenerator:
+    """Randomly selects between procedural loop and figure-eight tracks.
+
+    Args:
+        procedural: ProceduralTrackGenerator for closed-loop tracks.
+        figure8: Figure8TrackGenerator for figure-eight tracks.
+        figure8_ratio: Probability of generating a figure-eight (0.0-1.0).
+    """
+
+    def __init__(self, procedural, figure8, figure8_ratio=0.3):
+        self.procedural = procedural
+        self.figure8 = figure8
+        self.figure8_ratio = figure8_ratio
+
+    def generate(self, rng):
+        if rng.random() < self.figure8_ratio:
+            return self.figure8.generate(rng)
+        return self.procedural.generate(rng)
