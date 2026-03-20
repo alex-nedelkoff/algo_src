@@ -118,3 +118,25 @@ class ResearchTree:
         if self._root_id is None:
             return []
         return [n.hypothesis_id for n in self.get_children(self._root_id)]
+
+    def promote_baseline(
+        self,
+        new_baseline_id: str,
+        git_commit: str,
+        description: str = "",
+        wandb_run_id: str | None = None,
+        promoter: str | None = None,
+    ) -> TreeNode:
+        """Create a new baseline root, linking to the previous baseline."""
+        new_root = TreeNode(
+            hypothesis_id=new_baseline_id,
+            parent_id=self._root_id,
+            scope="baseline",
+            description=description,
+            status="baseline",
+            git_commit=git_commit,
+            wandb_run_id=wandb_run_id,
+        )
+        self._nodes[new_baseline_id] = new_root
+        self._root_id = new_baseline_id
+        return new_root
