@@ -1,7 +1,7 @@
 """Tests for hypothesis schema and content hashing."""
 
 from autoresearch.hypothesis.schema import (
-    Hypothesis, HydraOverride, compute_hypothesis_id,
+    Hypothesis, HydraOverride, FileDiff, compute_hypothesis_id,
 )
 
 
@@ -91,3 +91,24 @@ def test_hypothesis_default_budget():
         rationale="test",
     )
     assert h2.estimated_budget == 15_000_000
+
+
+def test_file_diff_creation():
+    diff = FileDiff(path="control/algorithms/ppo.py", description="Add entropy bonus")
+    assert diff.path == "control/algorithms/ppo.py"
+
+
+def test_hypothesis_with_file_diffs():
+    h = Hypothesis.create(
+        scope="algorithm",
+        description="Add entropy bonus to PPO",
+        changes=[
+            HydraOverride("control.ent_coef", "0.01"),
+            FileDiff("control/algorithms/ppo.py", "Add entropy coefficient parameter"),
+        ],
+        rationale="Entropy bonus may improve exploration",
+    )
+    assert len(h.changes) == 2
+    overrides = h.to_cli_overrides()
+    assert len(overrides) == 1  # Only HydraOverrides produce CLI args
+    assert "control.ent_coef=0.01" in overrides

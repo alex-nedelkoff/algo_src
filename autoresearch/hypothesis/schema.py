@@ -26,18 +26,38 @@ class HydraOverride:
         return f"{self.key}={self.value}"
 
 
+@dataclass(frozen=True)
+class FileDiff:
+    """A source file modification (Phase 2+)."""
+
+    path: str
+    description: str
+
+
+# Union type for changes — HydraOverride for config-only, FileDiff for code changes
+Change = HydraOverride | FileDiff
+
+
 def compute_hypothesis_id(
     scope: str,
-    changes: list[HydraOverride],
+    changes: list[Change],
     target_cells: list[tuple[int, int, int]] | None = None,
 ) -> str:
     """Compute a deterministic content hash for deduplication.
 
-    Hash includes scope + changes + target_cells per spec.
+    NOTE: Phase 2 changed hash format to include change type prefix.
+    Hypothesis IDs from Phase 1 are not compatible — existing state files
+    should be cleared or migrated when upgrading.
     """
+    change_tuples = []
+    for c in changes:
+        if isinstance(c, HydraOverride):
+            change_tuples.append(("override", c.key, c.value))
+        elif isinstance(c, FileDiff):
+            change_tuples.append(("filediff", c.path, c.description))
     content = {
         "scope": scope,
-        "changes": sorted([(c.key, c.value) for c in changes]),
+        "changes": sorted(change_tuples),
         "target_cells": sorted([list(c) for c in (target_cells or [])]),
     }
     blob = json.dumps(content, sort_keys=True).encode()
@@ -53,7 +73,7 @@ class Hypothesis:
     inspired_by: str | None
     scope: Literal["hyperparameter", "algorithm", "architecture", "system"]
     description: str
-    changes: list[HydraOverride]
+    changes: list[Change]
     target_cells: list[tuple[int, int, int]]
     predicted_descriptor_range: dict
     rationale: str
@@ -66,7 +86,7 @@ class Hypothesis:
         cls,
         scope: Literal["hyperparameter", "algorithm", "architecture", "system"],
         description: str,
-        changes: list[HydraOverride],
+        changes: list[Change],
         rationale: str,
         parent_id: str | None = None,
         inspired_by: str | None = None,
@@ -93,5 +113,5 @@ class Hypothesis:
         )
 
     def to_cli_overrides(self) -> list[str]:
-        """Generate Hydra CLI override arguments."""
-        return [c.to_cli_arg() for c in self.changes]
+        """Generate Hydra CLI override arguments (ignores FileDiff changes)."""
+        return [c.to_cli_arg() for c in self.changes if isinstance(c, HydraOverride)]
