@@ -28,6 +28,11 @@ def save_archive(archive: MapElitesArchive, path: Path | str) -> None:
             "budget_spent": entry.budget_spent,
             "hypothesis_id": entry.hypothesis_id,
         }
+    data["subdivided"] = [list(c) for c in archive._subdivided]
+    data["insertion_counts"] = {
+        f"{c[0]},{c[1]},{c[2]}": count
+        for c, count in archive._insertion_counts.items()
+    }
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -51,4 +56,9 @@ def load_archive(path: Path | str) -> MapElitesArchive:
             hypothesis_id=entry_data["hypothesis_id"],
         )
         archive.try_insert(entry)
+    for sub_cell in data.get("subdivided", []):
+        archive._subdivided.add(tuple(sub_cell))
+    for key, count in data.get("insertion_counts", {}).items():
+        cell_indices = tuple(int(x) for x in key.split(","))
+        archive._insertion_counts[cell_indices] = count
     return archive

@@ -35,6 +35,8 @@ class MapElitesArchive:
             (0.25, 1.0), (0.0, 1.0), (0.0, 24.0),
         ]
         self._grid: dict[tuple[int, int, int], CellEntry] = {}
+        self._subdivided: set[tuple[int, int, int]] = set()
+        self._insertion_counts: dict[tuple[int, int, int], int] = {}
 
     @property
     def n_cells(self) -> int:
@@ -63,6 +65,8 @@ class MapElitesArchive:
 
     def try_insert(self, entry: CellEntry) -> bool:
         cell = self.descriptor_to_cell(entry.descriptors)
+        # Track insertion attempts
+        self._insertion_counts[cell] = self._insertion_counts.get(cell, 0) + 1
         existing = self._grid.get(cell)
         if existing is None or entry.fitness < existing.fitness:
             self._grid[cell] = entry
@@ -74,6 +78,15 @@ class MapElitesArchive:
         if entry is None:
             raise KeyError(f"Cell {cell} is empty")
         entry.status = status
+
+    def mark_subdivided(self, cell: tuple[int, int, int]) -> None:
+        self._subdivided.add(cell)
+
+    def is_subdivided(self, cell: tuple[int, int, int]) -> bool:
+        return cell in self._subdivided
+
+    def get_insertion_count(self, cell: tuple[int, int, int]) -> int:
+        return self._insertion_counts.get(cell, 0)
 
     def occupied_cells(self) -> dict[tuple[int, int, int], CellEntry]:
         return dict(self._grid)
