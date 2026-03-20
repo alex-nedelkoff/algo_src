@@ -57,3 +57,9 @@ class AutoResearchConfig:
         "claim_timeout_hours": 4,
         "claim_refresh_minutes": 15,
     })
+
+    resource_limits: dict[str, object] = field(default_factory=lambda: {
+        "max_concurrent_per_machine": 1,
+        "max_wall_clock_hours": 24,
+        "max_worktrees": 5,
+    })
