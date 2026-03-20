@@ -385,12 +385,29 @@ Attempted a 5M step fine-tune directly on the hardcoded figure-8 track with high
 - Disable gate_collision termination on the hard track initially
 - Use very short fine-tune passes (500K, not 5M) with even lower LR
 
+### Run 8: `figure8_gentle` — THE FIX THAT WORKED
+
+Key insight: **train with `gate_collision=false`** (don't terminate on gate clips) so the policy gets centering reward signal instead of immediate death. Combined with tighter figure-8 generator params (loop_radius_max=2.5, gates_per_loop_max=4, crossing_offset_max=0.6).
+
+**Figure-8 eval (strict gate_collision=true):**
+
+| Metric | Before (gate_fix) | figure8_finetune (FAILED) | **figure8_gentle** |
+|--------|:---:|:---:|:---:|
+| Gate passage | 55% | 5% | **75%** |
+| Lap completion | 30% | 0% | **50%** |
+| Success rate | 35% | 0% | **50%** |
+| Gates/ep | 4.2 | 0.1 | **8.2** |
+| Laps/ep | 0.3 | 0 | **0.8** |
+
+The successful episodes complete **2 full figure-8 laps in 30 seconds**. General procedural performance also held: 100% eval gate passage, 5.8 m/s, 93.5% success.
+
+**Lesson:** Disable harsh termination on hard tracks during training. Let the policy learn from near-misses via continuous centering reward, not binary death.
+
 ### Remaining Next Steps
 
-1. **Increase `n_lookahead_gates` to 3** and train from scratch — the fundamental fix for crossing-point ambiguity (obs dim changes, can't resume)
-2. **GRU temporal context** — the architectural solution for track memory
-3. **Tighter figure-8 generator params** — generate tracks closer to the hardcoded one
-4. **Gate collision as penalty, not termination** — on figure-8s, penalize but don't terminate so the policy can learn from near-misses
+1. **Increase `n_lookahead_gates` to 3** and train from scratch — the fundamental fix for crossing-point ambiguity
+2. **GRU temporal context** — recurrent memory for track-shape awareness
+3. **More figure-8 training** — the 75% is promising, more steps should push toward 90%+
 
 ---
 
