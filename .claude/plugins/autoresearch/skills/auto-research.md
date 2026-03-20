@@ -1,6 +1,6 @@
 ---
 name: auto-research
-description: Launch the auto-research loop. Analyzes W&B data, proposes hypotheses for hyperparameter changes, runs experiments with human approval.
+description: Launch the auto-research loop. Analyzes W&B data, proposes hypotheses, implements changes, runs experiments with configurable approval gates.
 ---
 
 # Auto-Research
@@ -8,36 +8,143 @@ description: Launch the auto-research loop. Analyzes W&B data, proposes hypothes
 Start an automated research session exploring the drone racing algorithm stack.
 
 ## Usage
+
 `/auto-research [mode] [focus]`
-- mode: `interactive` (default) — all hypotheses require human approval
-- focus: optional area to focus on (e.g., "reward shaping", "learning rate", "domain randomization")
+
+- mode: `interactive` (default), `autonomous`, or `yolo`
+- focus: optional area (e.g., "reward shaping", "learning rate", "new policy architecture")
+
+## Modes
+
+### Interactive (default)
+All hypotheses require human approval before running. Archive insertions require human review.
+
+### Autonomous
+- Hyperparameter + algorithm scope: proceed without approval
+- Architecture + system scope: escalate to human for approval
+- Use: `/auto-research autonomous [focus]`
+
+### YOLO
+- All hypotheses proceed without approval gates
+- Hard constraints (diff policy, physics, behavioral) still enforced
+- **Baseline promotion (merge to main) is ALWAYS human-gated regardless of mode**
+- Use: `/auto-research yolo [focus]`
 
 ## Research Loop
 
-1. **Situational Awareness**: Pull latest state files (`git pull`), load archive from `autoresearch/state/archive.json`, load tree from `autoresearch/state/tree.json`, check active claims in `autoresearch/state/claims.json`. Query W&B for recent run metrics.
+### 1. Situational Awareness
+- `git pull` to sync state files
+- Load archive: `python -c "from autoresearch.archive.serialization import load_archive; a = load_archive('autoresearch/state/archive.json'); print(f'{a.n_occupied}/{a.n_cells} cells occupied')"`
+- Load tree: `python -c "from autoresearch.tree.serialization import load_tree; t = load_tree('autoresearch/state/tree.json'); print(f'{t.total_experiments} experiments')"`
+- Check claims: `python -c "from autoresearch.coordination.claims import load_claims; c = load_claims('autoresearch/state/claims.json'); print(f'{len([x for x in c if x.status==\"running\"])} active claims')"`
+- Check W&B for recent run metrics and completed/orphaned runs
 
-2. **Hypothesis Generation**: Analyze archive gaps, recent experiment results, and trajectory data. Generate 3-5 candidate hypotheses for hyperparameter changes (MVP scope). Each hypothesis must specify Hydra override strings, rationale, and target archive cells.
+### 2. Branch Selection (Phase 2)
+Use the branch selection algorithm to decide where to explore:
+```python
+from autoresearch.tree.selection import select_next_branch
+from autoresearch.tree.serialization import load_tree
+from autoresearch.archive.serialization import load_archive
 
-3. **Human Approval**: Present top 3 candidates with rationale, expected impact, and novelty score. Wait for human to choose one or provide direction.
+tree = load_tree("autoresearch/state/tree.json")
+archive = load_archive("autoresearch/state/archive.json")
+config = {
+    "exploit_weight": 1.0, "explore_weight": 1.0, "gap_weight": 0.5,
+    "diversity_weight": 0.3, "random_restart_pct": 0.2,
+    "min_branch_experiments": 3, "tie_threshold": 0.05,
+}
+branch_id = select_next_branch(tree, archive, config)
+# None means random restart — generate a novel hypothesis
+```
 
-4. **Implementation**: Create git branch `ar/exp-<hypothesis-id>`. Build the training command with Hydra overrides. Write claim to `state/claims.json`, commit and push.
+### 3. Hypothesis Generation
+Generate 3-5 candidate hypotheses. For Phase 2, hypotheses can include code changes:
 
-5. **Launch Training**: Run `python -m training [hydra overrides...]`. Monitor via polling loop (check W&B every 60s for metrics).
+```python
+from autoresearch.hypothesis.schema import Hypothesis, HydraOverride, FileDiff
 
-6. **Evaluation**: On completion, load trajectory .npz files. Run:
-   - `python -c "from autoresearch.descriptors.compute import compute_descriptors; from autoresearch.analysis.trajectory import load_trajectory; ..."` to compute behavioral descriptors
-   - `python -c "from autoresearch.constraints.validator import ConstraintValidator; ..."` to validate constraints
+# Config-only (hyperparameter scope)
+h = Hypothesis.create(
+    scope="hyperparameter",
+    description="Increase learning rate",
+    changes=[HydraOverride("control.learning_rate", "3e-4")],
+    rationale="Current LR may be too conservative",
+    parent_id=branch_id,
+)
 
-7. **Archive Update**: If constraints pass, insert result as `candidate` in archive. Present to human for approval/rejection.
+# With code changes (algorithm/architecture/system scope)
+h = Hypothesis.create(
+    scope="algorithm",
+    description="Add entropy bonus to PPO",
+    changes=[
+        HydraOverride("control.ent_coef", "0.01"),
+        FileDiff("control/algorithms/ppo.py", "Add entropy coefficient"),
+    ],
+    rationale="Improve exploration",
+    parent_id=branch_id,
+)
+```
 
-8. **Report**: Show results, suggest next hypothesis direction, ask if human wants to continue.
+### 4. Approval Gate
+- **Interactive**: present top 3 candidates with rationale, let human choose
+- **Autonomous**: auto-approve hyperparameter + algorithm; escalate architecture + system
+- **YOLO**: auto-approve all
 
-## Key Commands
-- Use `python -m pytest tests/test_autoresearch/ -v` to verify the autoresearch package works
-- Use `/ar-status` to check current archive and coordination state
-- Use `/ar-review` to review pending candidates
+### 5. Implementation
+- **Config-only**: generate Hydra override CLI args via `h.to_cli_overrides()`
+- **Code changes**: create git worktree, edit files, validate diff:
+
+```python
+from autoresearch.worktree import WorktreeManager
+from autoresearch.constraints.diff_policy import DiffPolicy, FileChange
+
+# Create worktree
+manager = WorktreeManager()
+wt_path = manager.create_worktree(h.id)
+
+# After making code changes, validate the diff
+policy = DiffPolicy()
+changes = [FileChange("control/algorithms/ppo.py", added=20, removed=5)]
+result = policy.validate(changes, scope=h.scope)
+if not result.passed:
+    print(f"Diff policy violations: {result.violations}")
+    # Reject and regenerate hypothesis
+```
+
+### 6. Launch Training
+Write claim, then launch:
+```bash
+python -m training [+experiment=<name>] [hydra overrides...]
+```
+
+Start durable monitor in background:
+```bash
+nohup python -m autoresearch.runner --run-id <wandb_run_id> --claim-id <hypothesis_id> --budget <budget> &
+```
+
+### 7. Evaluation
+On completion, compute descriptors and validate constraints:
+```python
+from autoresearch.analysis.trajectory import load_trajectory
+from autoresearch.descriptors.compute import compute_descriptors
+from autoresearch.constraints.validator import ConstraintValidator
+
+traj = load_trajectory("path/to/episode.npz")
+desc = compute_descriptors(traj, max_rpm=31470.0, control_freq=100.0)
+validator = ConstraintValidator(max_rpm=31470.0)
+result = validator.validate(traj, {"success_rate": 0.9, "lap_times": [...]}, dr_active=True)
+```
+
+### 8. Archive Update
+Insert as candidate, present for review (interactive) or auto-approve (autonomous/yolo).
 
 ## Anti-Gaming Rules
-- NEVER modify files in: `sim/dynamics/`, `sim/rewards.py`, `sim/rewards_mavlab.py`, `metrics/`, `training/callbacks.py`, `training/trajectory_recorder.py`, `autoresearch/`, `artifacts/`, `docker/`, `tests/`, `.claude/`
-- MVP scope is hyperparameter only — use Hydra override strings, NO source file edits
-- All archive insertions require human approval in interactive mode
+- NEVER modify files in: `sim/dynamics/`, `sim/rewards.py`, `sim/rewards_mavlab.py`, `metrics/`, `training/callbacks.py`, `training/trajectory_recorder.py`, `autoresearch/`, `artifacts/`, `docker/`, `.claude/`
+- `tests/` files: additions only, no deletions
+- All diff changes validated by `DiffPolicy` before launch
+- Baseline promotion (merge to main) is ALWAYS human-gated
+
+## Key Commands
+- `python -m pytest tests/test_autoresearch/ -v` — verify package works
+- `/ar-status` — check archive and coordination state
+- `/ar-review` — review pending candidates
