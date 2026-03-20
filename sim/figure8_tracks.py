@@ -35,17 +35,29 @@ class Figure8TrackGenerator:
     produces a fully deterministic but randomized figure-eight layout.
     """
 
-    # Parameter ranges
-    _RADIUS_MIN = 1.5
-    _RADIUS_MAX = 4.0
-    _GATES_PER_LOOP_MIN = 3  # includes the crossing endpoint on each loop
-    _GATES_PER_LOOP_MAX = 5
-    _CROSSING_OFFSET_MIN = 0.3
-    _CROSSING_OFFSET_MAX = 0.8
-    _BASE_Z_MIN = 1.0
-    _BASE_Z_MAX = 3.5
-    _ELEV_VARIATION = 0.3   # ± amplitude of sinusoidal elevation variation
-    _TRANSLATE_RANGE = 3.0  # random XY translation of whole track
+    def __init__(
+        self,
+        *,
+        loop_radius_min: float = 1.5,
+        loop_radius_max: float = 4.0,
+        gates_per_loop_min: int = 3,
+        gates_per_loop_max: int = 5,
+        crossing_offset_min: float = 0.3,
+        crossing_offset_max: float = 0.8,
+        elevation_min: float = 1.0,
+        elevation_max: float = 3.5,
+        elevation_delta_max: float = 0.6,
+    ) -> None:
+        self._RADIUS_MIN = loop_radius_min
+        self._RADIUS_MAX = loop_radius_max
+        self._GATES_PER_LOOP_MIN = gates_per_loop_min
+        self._GATES_PER_LOOP_MAX = gates_per_loop_max
+        self._CROSSING_OFFSET_MIN = crossing_offset_min
+        self._CROSSING_OFFSET_MAX = crossing_offset_max
+        self._BASE_Z_MIN = elevation_min
+        self._BASE_Z_MAX = elevation_max
+        self._ELEV_VARIATION = elevation_delta_max * 0.5
+        self._TRANSLATE_RANGE = 3.0
 
     def generate(self, rng: np.random.Generator) -> Track:
         """Generate a randomized figure-eight track.
