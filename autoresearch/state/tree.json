@@ -9,7 +9,7 @@
       "status": "baseline",
       "fitness": null,
       "wandb_run_id": null,
-      "git_commit": null,
+      "git_commit": "3293e352f556",
       "failure_reason": null,
       "archive_cell": null
     }
