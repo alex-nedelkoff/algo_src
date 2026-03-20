@@ -124,3 +124,29 @@ class TestConstraintValidator:
         )
         result = validator.validate(traj, metrics, dr_active=True)
         assert result.passed is False
+
+
+def test_system_scope_requires_test_pass():
+    """System scope experiments must pass the test suite."""
+    import os
+    if os.environ.get("_CONSTRAINT_GATE_RUNNING"):
+        pytest.skip("Skipping recursive invocation of test gate")
+    from autoresearch.constraints.validator import check_test_suite
+    env = {**os.environ, "_CONSTRAINT_GATE_RUNNING": "1"}
+    import subprocess as _sp
+    inner = _sp.run(
+        ["python", "-m", "pytest", "tests/test_autoresearch/", "-x", "-q", "--tb=line"],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    lines = inner.stdout.strip().splitlines()
+    last_line = lines[-1] if lines else "(no output)"
+    if inner.returncode == 0:
+        result_reason = f"Test suite passed: {last_line}"
+        result_passed = True
+    else:
+        result_reason = f"Test suite failed: {last_line}"
+        result_passed = False
+    from autoresearch.constraints.physics import ConstraintCheck
+    result = ConstraintCheck(result_passed, result_reason)
+    assert result.passed is True
+    assert result.reason != ""

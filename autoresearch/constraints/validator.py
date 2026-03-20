@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 
 from autoresearch.analysis.trajectory import TrajectoryData
@@ -65,3 +66,24 @@ class ConstraintValidator:
         reasoning = "All constraints passed" if all_passed else "; ".join(failed)
 
         return ValidationResult(passed=all_passed, constraint_results=results, reasoning=reasoning)
+
+
+def check_test_suite(
+    test_dir: str = "tests/",
+    timeout: int = 300,
+    python: str = "python",
+) -> ConstraintCheck:
+    """Run pytest on the test suite. Required for system-scope experiments."""
+    try:
+        result = subprocess.run(
+            [python, "-m", "pytest", test_dir, "-x", "-q", "--tb=line"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode == 0:
+            return ConstraintCheck(True, f"Test suite passed: {result.stdout.strip().splitlines()[-1]}")
+        else:
+            return ConstraintCheck(False, f"Test suite failed: {result.stdout.strip().splitlines()[-1]}")
+    except subprocess.TimeoutExpired:
+        return ConstraintCheck(False, f"Test suite timed out after {timeout}s")
+    except Exception as e:
+        return ConstraintCheck(False, f"Test suite error: {e}")
