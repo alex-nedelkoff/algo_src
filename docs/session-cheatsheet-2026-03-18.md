@@ -322,12 +322,64 @@ All training used **procedurally generated closed loops** — simple oval/kidney
 
 This is a **generalization gap**, not a capability gap. The policy learned excellent skills (gate finding, centering, speed) but only on one family of track shapes. It would likely recover quickly with a few million steps of fine-tuning on figure-eight tracks, or by mixing figure-eights into the procedural training distribution.
 
+---
+
+## 12. Figure-Eight Training Attempt (2026-03-20)
+
+### What We Built
+
+A `Figure8TrackGenerator` that creates randomized figure-eights with varying loop radius (1.5-4m), gates per loop (3-5), crossing offset (0.3-0.8m), and elevation. A `MixedTrackGenerator` wraps it with the existing procedural generator, selecting figure-8 tracks 30% of the time.
+
+### Run 6: `figure8_training` (20M steps)
+
+Mixed training: 30% randomized figure-eights, 70% procedural loops. Resumed from gate_fix checkpoint.
+
+**Procedural track eval (mixed training distribution):**
+
+| Metric | gate_fix (before) | figure8_training (after) |
+|--------|:---:|:---:|
+| Eval gate passage | 100% | **99%** |
+| Eval success rate | 90.5% | **89.5%** |
+| Eval avg speed | 5.7 m/s | **5.4 m/s** |
+| Eval laps/ep | 8.41 | **8.95** |
+| Best laps in one ep | 18 | **19** |
+| Best gates in one ep | 75 | **107** |
+
+Procedural track performance held — slightly slower (5.4 vs 5.7 m/s) but more laps per episode. The 107 gates in a single episode is a new all-time record.
+
+**Figure-8 specific eval (hardcoded figure-8 track, gate_radius=1.0):**
+
+| Metric | Before (gate_fix) | After (figure8_training) |
+|--------|:---:|:---:|
+| Gate passage | 55% | **55%** (no change) |
+| Lap completion | 30% | **10%** (worse) |
+| Success rate | 35% | **20%** (worse) |
+| Gates/ep | 4.2 | **2.0** (worse) |
+| OOB crashes | 5% | **35%** (much worse) |
+
+### Why It Didn't Help
+
+The figure-8 training **did not improve** performance on the hardcoded figure-8 track, and actually degraded it on some metrics:
+
+1. **The randomized figure-eights are different from the hardcoded one.** The generator creates elliptical loops with 3-5 gates per loop spread over a larger area (±4m radius + ±3m translation). The hardcoded figure-8 is very tight (±3m) with 4 gates per loop, all at the same height, and a tiny 0.6m crossing offset. The randomized versions are easier — wider loops, more space between gates.
+
+2. **OOB went from 5% to 35%.** The drone learned to fly faster on the wider randomized tracks but the hardcoded figure-8's tight geometry punishes that speed. It overshoots turns and flies out of bounds.
+
+3. **The crossing point is still the core problem.** With only 2 lookahead gates, the drone can't reliably distinguish which loop it's on at the crossing point. The randomized figure-8s have a wider crossing offset (0.3-0.8m vs 0.6m), giving more room, but the hardcoded track's tight crossing remains confusing.
+
+### Diagnosis
+
+Simply mixing figure-eights into training doesn't solve the hardcoded figure-8 — the randomized versions are too different. The real bottleneck is:
+- **2-gate lookahead is insufficient** at the crossing point
+- **The tight geometry (±3m)** requires precision the policy hasn't learned on wider tracks
+- The drone needs **direct exposure to the specific hardcoded layout** or very similar tight configurations
+
 ### Remaining Next Steps
 
-1. **Mix figure-eight tracks into training** — add the hardcoded figure-eight as a possible track alongside procedural ones
-2. **Increase `n_lookahead_gates`** from 2 to 3-4 — more gate context helps disambiguate at crossing points
-3. **GRU temporal context** — recurrent memory would help the policy "remember" which loop it's on
-4. **Fine-tune on competition track layout** once the track specification is available
+1. **Direct fine-tune on the hardcoded figure-8** — a few million steps specifically on `build_figure8_track()` should close the gap quickly
+2. **Increase `n_lookahead_gates` to 3** — requires training from scratch (obs dim changes) but is the fundamental fix for crossing-point ambiguity
+3. **Tighter figure-8 generator params** — reduce loop_radius_max and crossing_offset to generate tracks closer to the hardcoded one
+4. **GRU temporal context** — the architectural solution for track memory
 
 ---
 
