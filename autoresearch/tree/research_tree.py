@@ -98,3 +98,23 @@ class ResearchTree:
 
     def all_nodes(self) -> list[TreeNode]:
         return list(self._nodes.values())
+
+    def get_children(self, hypothesis_id: str) -> list[TreeNode]:
+        """Get all direct children of a node."""
+        return [n for n in self._nodes.values() if n.parent_id == hypothesis_id]
+
+    def get_descendants(self, hypothesis_id: str) -> list[TreeNode]:
+        """Get all descendants (children, grandchildren, etc.) of a node."""
+        descendants = []
+        queue = list(self.get_children(hypothesis_id))
+        while queue:
+            node = queue.pop(0)
+            descendants.append(node)
+            queue.extend(self.get_children(node.hypothesis_id))
+        return descendants
+
+    def get_level1_branches(self) -> list[str]:
+        """Get hypothesis IDs of Level 1 branches (direct children of root)."""
+        if self._root_id is None:
+            return []
+        return [n.hypothesis_id for n in self.get_children(self._root_id)]
