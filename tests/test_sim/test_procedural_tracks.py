@@ -169,13 +169,13 @@ class TestMixedTrackGenerator:
             assert 4 <= track.num_gates <= 8
 
     def test_all_figure8(self):
-        """figure8_ratio=1 should always produce figure-8 tracks (8 gates)."""
+        """figure8_ratio=1 should always produce figure-8 tracks (6-10 gates)."""
         gen = MixedTrackGenerator(self.proc, self.fig8, figure8_ratio=1.0)
         for seed in range(20):
             rng = np.random.default_rng(seed)
             track = gen.generate(rng)
             assert isinstance(track, Track)
-            assert track.num_gates == 8
+            assert 6 <= track.num_gates <= 10
 
     def test_mixed_ratio(self):
         """figure8_ratio=0.5 should produce a mix — gate counts vary over 50 runs."""

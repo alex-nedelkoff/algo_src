@@ -154,16 +154,35 @@ class NumpyQuadEnvFactory:
     # ------------------------------------------------------------------
 
     def _make_track_generator(self):
-        """Construct a ProceduralTrackGenerator from config, or None."""
+        """Construct a track generator from config, or None.
+
+        Supports optional figure-8 mixing via ``figure8`` and ``figure8_ratio``
+        keys in the track_gen config. When present, returns a MixedTrackGenerator
+        that randomly selects between procedural loops and figure-eights.
+        """
         if self._track_gen_cfg is None:
             return None
         from sim.procedural_tracks import ProceduralTrackGenerator
 
         tg_dict = OmegaConf.to_container(self._track_gen_cfg, resolve=True)
-        return ProceduralTrackGenerator(
+
+        # Extract figure-8 config before passing remainder to ProceduralTrackGenerator
+        figure8_cfg = tg_dict.pop("figure8", None)
+        figure8_ratio = tg_dict.pop("figure8_ratio", 0.0)
+
+        procedural = ProceduralTrackGenerator(
             arena_half_width=self.arena_bounds,
             **tg_dict,
         )
+
+        if figure8_cfg is not None and figure8_ratio > 0:
+            from sim.figure8_tracks import Figure8TrackGenerator
+            from sim.procedural_tracks import MixedTrackGenerator
+
+            fig8_gen = Figure8TrackGenerator(**figure8_cfg)
+            return MixedTrackGenerator(procedural, fig8_gen, figure8_ratio)
+
+        return procedural
 
     def _build(
         self,
