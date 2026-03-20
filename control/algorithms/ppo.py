@@ -65,10 +65,17 @@ class PPO(Algorithm):
         critic_obs_dim: int = 48,
         actor_obs_dim: int = 24,
         tensorboard_log: str | None = None,
+        # Recurrent (LSTM) support via sb3-contrib
+        recurrent: bool = False,
+        lstm_hidden_size: int = 128,
+        n_lstm_layers: int = 1,
         **kwargs: Any,
     ) -> None:
         _check_deps()
 
+        self.recurrent = recurrent
+        self.lstm_hidden_size = lstm_hidden_size
+        self.n_lstm_layers = n_lstm_layers
         self.learning_rate = learning_rate
         self.n_steps = n_steps
         self.batch_size = batch_size
@@ -141,7 +148,15 @@ class PPO(Algorithm):
             "log_std_init": self.log_std_init,
         }
 
-        if self.hidden_dims:
+        if self.recurrent:
+            # Recurrent mode: inject MLP encoder for LSTM
+            from control.policies.recurrent_gcnet import RecurrentGCNetExtractor
+            encoder_dims = self.hidden_dims if self.hidden_dims else (64, 64)
+            kwargs["features_extractor_class"] = RecurrentGCNetExtractor
+            kwargs["features_extractor_kwargs"] = {"hidden_dims": encoder_dims}
+            kwargs["lstm_hidden_size"] = self.lstm_hidden_size
+            kwargs["n_lstm_layers"] = self.n_lstm_layers
+        elif self.hidden_dims:
             kwargs["features_extractor_class"] = GCNetExtractor
             kwargs["features_extractor_kwargs"] = {"hidden_dims": self.hidden_dims}
 
@@ -150,10 +165,11 @@ class PPO(Algorithm):
 
         return kwargs
 
-    def _create_model(self, env: gym.Env) -> SB3_PPO:
-        """Instantiate the SB3 PPO model."""
-        return SB3_PPO(
-            policy=self.policy_type,
+    def _create_model(self, env: gym.Env):
+        """Instantiate the SB3 PPO or RecurrentPPO model."""
+        policy_kwargs = self._build_policy_kwargs()
+
+        common_kwargs = dict(
             env=env,
             learning_rate=self.learning_rate,
             n_steps=self.n_steps,
@@ -166,10 +182,16 @@ class PPO(Algorithm):
             vf_coef=self.vf_coef,
             max_grad_norm=self.max_grad_norm,
             use_sde=self.use_sde,
-            policy_kwargs=self._build_policy_kwargs(),
+            policy_kwargs=policy_kwargs,
             tensorboard_log=self.tensorboard_log,
             verbose=1,
         )
+
+        if self.recurrent:
+            from sb3_contrib import RecurrentPPO as SB3RecurrentPPO
+            return SB3RecurrentPPO(policy="MlpLstmPolicy", **common_kwargs)
+
+        return SB3_PPO(policy=self.policy_type, **common_kwargs)
 
     def train(
         self,
@@ -213,7 +235,11 @@ class PPO(Algorithm):
     def load(self, path: str | Path, env: gym.Env | None = None) -> None:
         """Load a model checkpoint."""
         _check_deps()
-        self._model = SB3_PPO.load(str(path), env=env)
+        if self.recurrent:
+            from sb3_contrib import RecurrentPPO as SB3RecurrentPPO
+            self._model = SB3RecurrentPPO.load(str(path), env=env)
+        else:
+            self._model = SB3_PPO.load(str(path), env=env)
 
     def export_onnx(self, path: str | Path, obs_dim: int | None = None) -> Path:
         """Export the trained actor network to ONNX.

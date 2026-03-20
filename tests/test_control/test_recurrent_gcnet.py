@@ -35,3 +35,48 @@ class TestRecurrentGCNetExtractor:
         obs = torch.randn(3, 28)
         out = ext(obs)
         assert out.shape == (3, 64)
+
+
+class TestRecurrentPPOWrapper:
+    def test_recurrent_flag_default_false(self):
+        from control.algorithms.ppo import PPO
+        ppo = PPO()
+        assert ppo.recurrent is False
+
+    def test_recurrent_creates_recurrent_model(self):
+        from control.algorithms.ppo import PPO
+        from sim.tracks import build_figure8_track
+        from sim.envs.gate_race_env import GateRaceEnv
+        from sim.envs.vec_env_adapter import VecEnvAdapter
+
+        env = VecEnvAdapter(GateRaceEnv(
+            track=build_figure8_track(), n_envs=2, dt=0.01, max_steps=50,
+            action_mode="trpy", n_lookahead_gates=3,
+        ))
+        ppo = PPO(
+            recurrent=True, lstm_hidden_size=64, n_lstm_layers=1,
+            net_arch={"pi": [32], "vf": [32]},
+        )
+        model = ppo._create_model(env)
+        from sb3_contrib import RecurrentPPO as SB3RecurrentPPO
+        assert isinstance(model, SB3RecurrentPPO)
+        env.close()
+
+    def test_recurrent_train_100_steps(self):
+        from control.algorithms.ppo import PPO
+        from sim.tracks import build_figure8_track
+        from sim.envs.gate_race_env import GateRaceEnv
+        from sim.envs.vec_env_adapter import VecEnvAdapter
+
+        env = VecEnvAdapter(GateRaceEnv(
+            track=build_figure8_track(), n_envs=2, dt=0.01, max_steps=50,
+            action_mode="trpy", n_lookahead_gates=3,
+        ))
+        ppo = PPO(
+            recurrent=True, lstm_hidden_size=64, n_lstm_layers=1,
+            n_steps=50, batch_size=50, n_epochs=1,
+            net_arch={"pi": [32], "vf": [32]},
+        )
+        ppo.train(env, total_timesteps=100)
+        assert ppo._model is not None
+        env.close()
