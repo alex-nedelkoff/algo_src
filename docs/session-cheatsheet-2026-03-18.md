@@ -431,12 +431,48 @@ The MLP policy succeeded from scratch because MLPs learn reactive control (one o
 - **sb3-contrib integration** — RecurrentPPO infrastructure tested and working
 - **The code is ready** if a better training approach emerges (MLP→LSTM distillation, DAgger, etc.)
 
-### Remaining Next Steps
+---
 
-1. **Stick with MLP for now** — the 3×64 MLP achieves 100% eval gate passage on procedural tracks at 5.8 m/s. Strong enough for competition.
-2. **ONNX export + Jetson benchmark** (COR-66) — validate deployment path
-3. **Speed optimization** (COR-67) — push from 5.8 toward 8+ m/s
-4. **MLP→LSTM distillation** — future approach: train MLP expert, generate trajectories, train LSTM supervised, then fine-tune with RL
+## 14. Golden Set Benchmark — Standardized Evaluation (2026-03-21)
+
+Janahan built a **golden set benchmark suite** that tests policies across 10 diverse track types with 5 starting variants each (50 episodes total). We cherry-picked this from origin/main and ran our best policy through it.
+
+### Track Types
+
+| Category | Tracks | Description |
+|----------|--------|-------------|
+| **Handcrafted** | figure8, oval, hairpin, elevation_climb | Specific geometric challenges |
+| **Procedural** | gen_seed_42/77/123/256/314/999 | Randomly generated with fixed seeds for reproducibility |
+
+### Our Results vs Janahan's Best (60M steps)
+
+| Track | Our policy | Janahan's |
+|-------|:---:|:---:|
+| **oval** | **19g, 3L, 0% crash** | 3.8g, 0L, 100% crash |
+| **figure8** | 0g, 100% crash | **23.8g, 2.8L** |
+| **hairpin** | 1g, 100% crash | 3.8g, 100% crash |
+| **elevation_climb** | 0g, 100% crash | 2g, 100% crash |
+| **gen_seed_123** | **5g, 0% crash** | 2.8g |
+| **gen_seed_999** | **10g, 1L** | 1.4g |
+| **Aggregate** | 3.8g, 0.4L, 80% crash | 4.4g, 0.3L, 90% crash |
+
+*g=gates passed, L=laps completed per episode*
+
+### Key Insight
+
+Both policies have **significant generalization gaps**. Our policy dominates on smooth loops (oval, some seeds) but fails on hairpins and elevation changes. Janahan's dominates on figure-8 but crashes on ovals. Neither generalizes well to all track types.
+
+The procedural track generator only creates smooth closed loops — it doesn't produce hairpins, elevation climbs, or figure-8 crossings. The policy overfits to the training distribution.
+
+### Next Direction
+
+Improve the procedural track generator to produce tracks with:
+- **Sharp hairpin turns** (>120°, which the current generator caps at)
+- **Elevation variation** (steeper climbs/descents than ±0.6m)
+- **Self-crossing paths** (figure-8 style, already partially implemented)
+- **Mixed difficulty** — some easy segments, some challenging
+
+This should produce a single generalist policy that performs reasonably across all golden set tracks without overfitting to any specific layout.
 
 ---
 

@@ -1,0 +1,28 @@
+# Oval track — hand-designed
+# 6 gates forming an elongated oval at z=2.0 within 5m arena bounds.
+# Gate orientations are yaw-only quaternions [w, x, y, z] pointing from
+# current gate toward the next gate.
+
+track_type: hand_designed
+arena_bounds: 5.0
+gate_passage_radius: 0.75
+max_steps: 1200
+
+gates:
+  - position: [3.0, 0.0, 2.0]
+    orientation: [0.525731, 0.0, 0.0, 0.850651]    # yaw=116.57 deg
+
+  - position: [1.5, 3.0, 2.0]
+    orientation: [0.000000, 0.0, 0.0, 1.000000]    # yaw=180.00 deg
+
+  - position: [-1.5, 3.0, 2.0]
+    orientation: [0.525731, 0.0, 0.0, -0.850651]   # yaw=-116.57 deg
+
+  - position: [-3.0, 0.0, 2.0]
+    orientation: [0.850651, 0.0, 0.0, -0.525731]   # yaw=-63.43 deg
+
+  - position: [-1.5, -3.0, 2.0]
+    orientation: [1.000000, 0.0, 0.0, 0.000000]    # yaw=0.00 deg
+
+  - position: [1.5, -3.0, 2.0]
+    orientation: [0.850651, 0.0, 0.0, 0.525731]    # yaw=63.43 deg
