@@ -464,15 +464,36 @@ Both policies have **significant generalization gaps**. Our policy dominates on 
 
 The procedural track generator only creates smooth closed loops — it doesn't produce hairpins, elevation climbs, or figure-8 crossings. The policy overfits to the training distribution.
 
-### Next Direction
+---
 
-Improve the procedural track generator to produce tracks with:
-- **Sharp hairpin turns** (>120°, which the current generator caps at)
-- **Elevation variation** (steeper climbs/descents than ±0.6m)
-- **Self-crossing paths** (figure-8 style, already partially implemented)
-- **Mixed difficulty** — some easy segments, some challenging
+## 15. Generalist Training Attempts — Two Failures (2026-03-21)
 
-This should produce a single generalist policy that performs reasonably across all golden set tracks without overfitting to any specific layout.
+Attempted to train a generalist policy matching golden set parameters (5m arena, 0.75m gate radius, diverse tracks with ±170° turns and ±1.5m elevation).
+
+### Attempt 1: α-RPO bootstrap + diverse tracks (generalist v1)
+
+At 24.8M steps, α-RPO base policy fully removed → policy collapsed to 0% gate passage, 82% OOB. Same failure pattern as the LSTM attempts — the learned policy "rides along" during bootstrap but doesn't internalize skills.
+
+### Attempt 2: Spline-bootstrapped, no α-RPO (generalist v2)
+
+Replaced α-RPO with heavy spline reward (3.0 weight) as the primary bootstrap signal. The idea: "the spline IS the teacher." At 37M steps:
+- Eval spline proximity reward was 54.9 — **the drone learned to follow the spline**
+- But **0% gate passage, 83% OOB** — following the spline wasn't enough to pass gates in a 5m arena
+- Curriculum auto-advanced to stage 3 at 25M (timestep trigger), removing spline reward too early
+- Episodes only 0.4 seconds — crashes almost immediately
+
+### Root Cause
+
+The 5m arena + 0.75m gate radius + diverse tracks (±170° turns, ±1.5m elevation) is too hard to learn from scratch in one shot. The drone can't survive long enough to accumulate meaningful experience. Even with dense spline rewards, the tight arena kills episodes before the drone reaches gates.
+
+### Next Approach: Progressive Difficulty
+
+Instead of starting at the hard environment, gradually increase difficulty:
+1. Start with easy params (10m arena, 1.5m gates, ±120° turns) — policy learns to fly and pass gates
+2. Progressively tighten: shrink arena, narrow gates, widen turn angles, increase elevation
+3. End at golden set params (5m arena, 0.75m gates, ±170° turns)
+
+This is the CRL paper's core insight applied to environment difficulty, not just reward weights.
 
 ---
 
