@@ -1,0 +1,138 @@
+# @package _global_
+# Generalist policy: train on diverse tracks matching golden set difficulty.
+# From scratch with gate_passage_radius=0.75 (golden set standard).
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: corner_noise
+  - override /domain_rand: uniform_30pct
+  - override /logging: wandb
+  - _self_
+
+sim:
+  action_mode: trpy
+  n_lookahead_gates: 2
+  max_steps: 1200
+  arena_bounds: 5
+  gate_passage_radius: 0.75
+  gate_collision: false
+
+total_timesteps: 40_000_000
+
+track_gen:
+  n_gates_min: 4
+  n_gates_max: 10
+  gate_spacing_min: 1.0
+  gate_spacing_max: 6.0
+  turn_angle_min: -170
+  turn_angle_max: 170
+  elevation_min: 0.5
+  elevation_max: 4.0
+  elevation_delta_max: 1.5
+  closure_max_angle: 120
+  closure_max_retries: 30
+  figure8_ratio: 0.3
+  figure8:
+    loop_radius_min: 1.5
+    loop_radius_max: 3.0
+    gates_per_loop_min: 3
+    gates_per_loop_max: 4
+    crossing_offset_min: 0.3
+    crossing_offset_max: 0.6
+    elevation_min: 1.0
+    elevation_max: 3.0
+    elevation_delta_max: 0.8
+
+perception:
+  noise_scale: 1.0
+  dropout_onset: null
+  dropout_continuation: 0.7
+
+reward:
+  weights:
+    gate_passage: 1.5
+    gate_progress: 1.0
+    gate_offset: 1.5
+    body_rate: 0.001
+    action_smoothness: 0.0
+    crash_penalty: 10.0
+    spline_proximity: 0.5
+    heading_alignment: 0.05
+    speed_bonus: 0.0
+    boundary_penalty: 5.0
+    gate_approach: 0.2
+    gate_centering: 3.0
+  v_max: 10.0
+  action_smoothness_threshold: 0.5
+
+arpo:
+  enabled: true
+  k_end_fraction: 0.5
+
+curriculum:
+  enabled: true
+  stages:
+    - timestep: 0
+      reward_weights:
+        gate_passage: 1.5
+        gate_progress: 1.0
+        gate_offset: 1.5
+        crash_penalty: 10.0
+        spline_proximity: 0.5
+        heading_alignment: 0.05
+        boundary_penalty: 5.0
+        gate_approach: 0.2
+        gate_centering: 3.0
+      v_max: 8.0
+      ent_coef: 0.005
+      trigger: null
+    - timestep: 15_000_000
+      reward_weights:
+        gate_passage: 10.0
+        gate_progress: 0.5
+        gate_offset: 2.0
+        crash_penalty: 5.0
+        spline_proximity: 0.2
+        heading_alignment: 0.03
+        speed_bonus: 0.3
+        boundary_penalty: 3.0
+        gate_approach: 0.3
+        gate_centering: 2.0
+      v_max: 15.0
+      ent_coef: 0.003
+      trigger:
+        metric: racing/gate_passage_rate
+        threshold: 0.70
+        window: 200
+    - timestep: 30_000_000
+      reward_weights:
+        gate_passage: 30.0
+        gate_progress: 0.0
+        gate_offset: 2.0
+        crash_penalty: 3.0
+        spline_proximity: 0.0
+        heading_alignment: 0.0
+        speed_bonus: 0.5
+        boundary_penalty: 2.0
+        gate_approach: 0.3
+        gate_centering: 1.0
+      v_max: 20.0
+      ent_coef: 0.001
+      trigger:
+        metric: racing/lap_completion_rate
+        threshold: 0.3
+        window: 200
+
+multi_scene:
+  enabled: true
+  n_scenes: 10
+
+lr_schedule:
+  initial_lr: 0.0003
+  final_lr: 0.00005
+
+logging:
+  tags: ["trpy", "generalist", "diverse-tracks", "golden-match", "arpo", "40M"]
+  group: generalist
+  notes: "Generalist: diverse tracks (±170deg, ±1.5m elev, 0.75m gate radius), 5m arena, 1200 steps, aRPO k_end=0.5"
