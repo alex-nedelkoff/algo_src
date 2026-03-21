@@ -403,11 +403,40 @@ The successful episodes complete **2 full figure-8 laps in 30 seconds**. General
 
 **Lesson:** Disable harsh termination on hard tracks during training. Let the policy learn from near-misses via continuous centering reward, not binary death.
 
+---
+
+## 13. LSTM Integration Attempt — Failed (2026-03-20/21)
+
+### What We Built
+
+Integrated sb3-contrib's `RecurrentPPO` with a custom `RecurrentGCNetExtractor` (MLP encoder → LSTM(128) → Actor/Critic). Also installed CUDA PyTorch (was CPU-only) for a 3.4× training speedup.
+
+### Three Training Attempts — All Failed
+
+**Attempt 1 (fast attenuation, CPU):** Base policy removed at 6M steps. LSTM collapsed immediately — 0% gate passage, 98% ground crashes. The LSTM hadn't learned to fly during the bootstrap phase.
+
+**Attempt 2 (slow attenuation, CPU):** Base policy active until 32M of 40M steps. At 24.5M: training 92% gate passage (with base policy helping), but eval 1% (LSTM alone). Killed — LSTM was "riding along" without learning.
+
+**Attempt 3 (slow attenuation, GPU):** Same config on CUDA. At 18.4M: training 84% gate passage, eval 1%. Same pattern — killed.
+
+### Root Cause: Chicken-and-Egg Problem
+
+The LSTM needs successful multi-gate trajectories to learn temporal patterns. But it can't generate those trajectories without the base policy. With the base policy active, the LSTM "rides along" — it receives good actions but doesn't internalize them. Without it, it crashes immediately.
+
+The MLP policy succeeded from scratch because MLPs learn reactive control (one obs → one action) faster. LSTMs need consistent sequential data which they can't generate early in training.
+
+### What Was Gained
+
+- **CUDA PyTorch** — all future runs 3.4× faster (was CPU-only!)
+- **sb3-contrib integration** — RecurrentPPO infrastructure tested and working
+- **The code is ready** if a better training approach emerges (MLP→LSTM distillation, DAgger, etc.)
+
 ### Remaining Next Steps
 
-1. **Increase `n_lookahead_gates` to 3** and train from scratch — the fundamental fix for crossing-point ambiguity
-2. **GRU temporal context** — recurrent memory for track-shape awareness
-3. **More figure-8 training** — the 75% is promising, more steps should push toward 90%+
+1. **Stick with MLP for now** — the 3×64 MLP achieves 100% eval gate passage on procedural tracks at 5.8 m/s. Strong enough for competition.
+2. **ONNX export + Jetson benchmark** (COR-66) — validate deployment path
+3. **Speed optimization** (COR-67) — push from 5.8 toward 8+ m/s
+4. **MLP→LSTM distillation** — future approach: train MLP expert, generate trajectories, train LSTM supervised, then fine-tune with RL
 
 ---
 
