@@ -1084,3 +1084,11 @@ class GateRaceEnv(gym.Env):
     def set_v_max(self, v_max: float) -> None:
         """Update v_max at runtime (for curriculum learning)."""
         self.v_max = v_max
+
+    def set_arena_bounds(self, arena_bounds: float) -> None:
+        """Update arena bounds at runtime (for progressive difficulty)."""
+        self.arena_bounds = arena_bounds
+
+    def set_gate_passage_radius(self, radius: float) -> None:
+        """Update gate passage radius at runtime (for progressive difficulty)."""
+        self.gate_passage_radius = radius

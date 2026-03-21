@@ -114,11 +114,23 @@ if _SB3_AVAILABLE:
                 model.ent_coef = ent_coef
                 log.info("Curriculum: set ent_coef=%.4f", ent_coef)
 
+            # Progressive difficulty — env parameters
+            arena_bounds = stage.get("arena_bounds")
+            if arena_bounds is not None and hasattr(self.env, "set_arena_bounds"):
+                self.env.set_arena_bounds(float(arena_bounds))
+                log.info("Curriculum: set arena_bounds=%.1f", arena_bounds)
+
+            gate_radius = stage.get("gate_passage_radius")
+            if gate_radius is not None and hasattr(self.env, "set_gate_passage_radius"):
+                self.env.set_gate_passage_radius(float(gate_radius))
+                log.info("Curriculum: set gate_passage_radius=%.2f", gate_radius)
+
             if self.verbose:
                 log.info(
-                    "Curriculum stage %d applied: v_max=%.1f, ent_coef=%s, weights=%s",
+                    "Curriculum stage %d applied: v_max=%s, ent_coef=%s, arena=%s, gate_r=%s",
                     self.curriculum.current_stage,
                     stage.get("v_max", "?"),
                     stage.get("ent_coef", "unchanged"),
-                    stage.get("reward_weights", {}),
+                    stage.get("arena_bounds", "unchanged"),
+                    stage.get("gate_passage_radius", "unchanged"),
                 )

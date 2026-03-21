@@ -1,7 +1,7 @@
 # @package _global_
-# Generalist policy v2: spline-bootstrapped, no aRPO.
-# Dense spline reward teaches "follow the path" before gate passage.
-# From scratch with golden set parameters.
+# Generalist policy v3: progressive difficulty.
+# Start easy (10m arena, 1.5m gates), progressively tighten to golden set
+# params (5m arena, 0.75m gates). Spline-bootstrapped, no aRPO.
 
 defaults:
   - override /sim: numpy_quad
@@ -15,12 +15,13 @@ sim:
   action_mode: trpy
   n_lookahead_gates: 2
   max_steps: 1200
-  arena_bounds: 5
-  gate_passage_radius: 0.75
+  arena_bounds: 10            # START easy — curriculum will tighten
+  gate_passage_radius: 1.5    # START easy — curriculum will tighten
   gate_collision: false
 
 total_timesteps: 40_000_000
 
+# Diverse tracks from the start — but arena/gates start easy
 track_gen:
   n_gates_min: 4
   n_gates_max: 10
@@ -50,7 +51,6 @@ perception:
   dropout_onset: null
   dropout_continuation: 0.7
 
-# Stage 1 reward: HEAVY spline + boundary = "stay on the path, don't leave"
 reward:
   weights:
     gate_passage: 1.5
@@ -59,76 +59,81 @@ reward:
     body_rate: 0.001
     action_smoothness: 0.0
     crash_penalty: 10.0
-    spline_proximity: 3.0      # HEAVY — dominant signal early on
-    heading_alignment: 0.5     # Strong heading guidance
+    spline_proximity: 3.0
+    heading_alignment: 0.5
     speed_bonus: 0.0
-    boundary_penalty: 10.0     # HEAVY — stay in arena
+    boundary_penalty: 10.0
     gate_approach: 0.2
     gate_centering: 2.0
-  v_max: 5.0                   # Conservative speed target
+  v_max: 5.0
   action_smoothness_threshold: 0.5
 
-# NO aRPO — spline reward provides the bootstrap instead
 arpo:
   enabled: false
 
 curriculum:
   enabled: true
   stages:
-    # Stage 1: SPLINE BOOTSTRAP — learn to follow the path
-    # Spline proximity is 3.0 (dominant), boundary is 10.0
-    # The drone learns "fly along this curve and don't leave the arena"
+    # Stage 1: EASY — learn to fly and pass gates
+    # 10m arena, 1.5m gate radius, heavy spline bootstrap
     - timestep: 0
       reward_weights:
         gate_passage: 1.5
         gate_progress: 1.0
         gate_offset: 1.5
         crash_penalty: 10.0
-        spline_proximity: 3.0     # Dominant signal
-        heading_alignment: 0.5    # Strong — face the right direction
-        boundary_penalty: 10.0    # Very strong — stay in arena
+        spline_proximity: 3.0
+        heading_alignment: 0.5
+        boundary_penalty: 10.0
         gate_approach: 0.2
         gate_centering: 2.0
       v_max: 5.0
       ent_coef: 0.005
+      arena_bounds: 10.0
+      gate_passage_radius: 1.5
       trigger: null
 
-    # Stage 2: GATE FOCUS — reduce spline, increase gate rewards
-    # The drone already knows how to follow the path, now learn gate precision
+    # Stage 2: MEDIUM — tighten arena and gates
+    # 7m arena, 1.0m gate radius, reduce spline
     - timestep: 10_000_000
       reward_weights:
-        gate_passage: 10.0       # Boost gate passage
+        gate_passage: 10.0
         gate_progress: 0.5
         gate_offset: 2.0
         crash_penalty: 5.0
-        spline_proximity: 1.0    # Reduced but still active
+        spline_proximity: 1.5
         heading_alignment: 0.2
         speed_bonus: 0.2
         boundary_penalty: 5.0
         gate_approach: 0.3
-        gate_centering: 3.0      # Boost centering
+        gate_centering: 3.0
       v_max: 10.0
       ent_coef: 0.003
+      arena_bounds: 7.0
+      gate_passage_radius: 1.0
       trigger:
         metric: racing/gate_passage_rate
-        threshold: 0.50
+        threshold: 0.60
         window: 200
 
-    # Stage 3: SPEED PUSH — remove spline, maximize gates + speed
+    # Stage 3: HARD — golden set parameters
+    # 5m arena, 0.75m gate radius, speed push
     - timestep: 25_000_000
       reward_weights:
         gate_passage: 30.0
         gate_progress: 0.0
         gate_offset: 2.0
         crash_penalty: 3.0
-        spline_proximity: 0.0    # Off — free racing line
+        spline_proximity: 0.5
         heading_alignment: 0.0
         speed_bonus: 0.5
         boundary_penalty: 3.0
         gate_approach: 0.3
         gate_centering: 1.0
-      v_max: 20.0
+      v_max: 15.0
       ent_coef: 0.001
+      arena_bounds: 5.0
+      gate_passage_radius: 0.75
       trigger:
         metric: racing/lap_completion_rate
         threshold: 0.2
@@ -143,6 +148,6 @@ lr_schedule:
   final_lr: 0.00005
 
 logging:
-  tags: ["trpy", "generalist-v2", "spline-bootstrap", "no-arpo", "diverse", "40M"]
-  group: generalist_v2
-  notes: "Generalist v2: spline_proximity=3.0 bootstrap (no aRPO), boundary=10.0, golden set params, diverse tracks"
+  tags: ["trpy", "generalist-v3", "progressive-difficulty", "spline-bootstrap", "diverse", "40M"]
+  group: generalist_v3
+  notes: "Generalist v3: progressive difficulty 10m/1.5m -> 7m/1.0m -> 5m/0.75m. Spline bootstrap=3.0, no aRPO, diverse tracks"
