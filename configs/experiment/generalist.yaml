@@ -74,7 +74,7 @@ arpo:
 curriculum:
   enabled: true
   stages:
-    # Stage 1: EASY — learn to fly and pass gates
+    # Stage 1: EASY — learn to fly and pass gates (5M steps)
     # 10m arena, 1.5m gate radius, heavy spline bootstrap
     - timestep: 0
       reward_weights:
@@ -93,50 +93,49 @@ curriculum:
       gate_passage_radius: 1.5
       trigger: null
 
-    # Stage 2: MEDIUM — tighten arena and gates
+    # Stage 2: MEDIUM — tighten arena and gates (5M steps)
     # 7m arena, 1.0m gate radius, reduce spline
+    - timestep: 5_000_000
+      reward_weights:
+        gate_passage: 5.0
+        gate_progress: 0.5
+        gate_offset: 2.0
+        crash_penalty: 8.0
+        spline_proximity: 2.0
+        heading_alignment: 0.3
+        boundary_penalty: 8.0
+        gate_approach: 0.3
+        gate_centering: 3.0
+      v_max: 8.0
+      ent_coef: 0.004
+      arena_bounds: 7.0
+      gate_passage_radius: 1.0
+      trigger:
+        metric: racing/gate_passage_rate
+        threshold: 0.50
+        window: 200
+
+    # Stage 3: HARD — tighter than golden set (30M steps!)
+    # 5m arena, 0.5m gate radius (golden set uses 0.75 — train harder)
     - timestep: 10_000_000
       reward_weights:
         gate_passage: 10.0
         gate_progress: 0.5
         gate_offset: 2.0
         crash_penalty: 5.0
-        spline_proximity: 1.5
-        heading_alignment: 0.2
+        spline_proximity: 1.0
+        heading_alignment: 0.1
         speed_bonus: 0.2
         boundary_penalty: 5.0
         gate_approach: 0.3
         gate_centering: 3.0
       v_max: 10.0
-      ent_coef: 0.003
-      arena_bounds: 7.0
-      gate_passage_radius: 1.0
+      ent_coef: 0.002
+      arena_bounds: 5.0
+      gate_passage_radius: 0.5
       trigger:
         metric: racing/gate_passage_rate
-        threshold: 0.60
-        window: 200
-
-    # Stage 3: HARD — golden set parameters
-    # 5m arena, 0.75m gate radius, speed push
-    - timestep: 25_000_000
-      reward_weights:
-        gate_passage: 30.0
-        gate_progress: 0.0
-        gate_offset: 2.0
-        crash_penalty: 3.0
-        spline_proximity: 0.5
-        heading_alignment: 0.0
-        speed_bonus: 0.5
-        boundary_penalty: 3.0
-        gate_approach: 0.3
-        gate_centering: 1.0
-      v_max: 15.0
-      ent_coef: 0.001
-      arena_bounds: 5.0
-      gate_passage_radius: 0.75
-      trigger:
-        metric: racing/lap_completion_rate
-        threshold: 0.2
+        threshold: 0.40
         window: 200
 
 multi_scene:
@@ -148,6 +147,6 @@ lr_schedule:
   final_lr: 0.00005
 
 logging:
-  tags: ["trpy", "generalist-v3", "progressive-difficulty", "spline-bootstrap", "diverse", "40M"]
-  group: generalist_v3
-  notes: "Generalist v3: progressive difficulty 10m/1.5m -> 7m/1.0m -> 5m/0.75m. Spline bootstrap=3.0, no aRPO, diverse tracks"
+  tags: ["trpy", "generalist-v4", "progressive-difficulty", "spline-bootstrap", "diverse", "smaller-gates", "40M"]
+  group: generalist_v4
+  notes: "Generalist v4: 5M easy (10m/1.5m) -> 5M medium (7m/1.0m) -> 30M hard (5m/0.5m). Train tighter than golden set (0.5m vs 0.75m)."
