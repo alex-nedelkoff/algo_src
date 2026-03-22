@@ -1,7 +1,7 @@
 # @package _global_
-# Generalist policy v3: progressive difficulty.
-# Start easy (10m arena, 1.5m gates), progressively tighten to golden set
-# params (5m arena, 0.75m gates). Spline-bootstrapped, no aRPO.
+# Generalist v5: Resume from figure8_gentle (our best policy) and
+# progressively tighten arena/gates to golden set difficulty.
+# The policy already knows how to fly — just needs precision refinement.
 
 defaults:
   - override /sim: numpy_quad
@@ -15,13 +15,14 @@ sim:
   action_mode: trpy
   n_lookahead_gates: 2
   max_steps: 1200
-  arena_bounds: 10            # START easy — curriculum will tighten
-  gate_passage_radius: 1.5    # START easy — curriculum will tighten
+  arena_bounds: 10            # Start at what the policy knows
+  gate_passage_radius: 1.5    # Start at what the policy knows
   gate_collision: false
 
 total_timesteps: 40_000_000
+resume_checkpoint: outputs/2026-03-20/03-32-01/final_model.zip  # figure8_gentle
 
-# Diverse tracks from the start — but arena/gates start easy
+# Diverse tracks — the policy already handles these
 track_gen:
   n_gates_min: 4
   n_gates_max: 10
@@ -53,19 +54,19 @@ perception:
 
 reward:
   weights:
-    gate_passage: 1.5
-    gate_progress: 1.0
-    gate_offset: 1.5
+    gate_passage: 10.0
+    gate_progress: 0.5
+    gate_offset: 2.0
     body_rate: 0.001
     action_smoothness: 0.0
-    crash_penalty: 10.0
-    spline_proximity: 3.0
-    heading_alignment: 0.5
-    speed_bonus: 0.0
-    boundary_penalty: 10.0
-    gate_approach: 0.2
-    gate_centering: 2.0
-  v_max: 5.0
+    crash_penalty: 5.0
+    spline_proximity: 1.0
+    heading_alignment: 0.1
+    speed_bonus: 0.2
+    boundary_penalty: 5.0
+    gate_approach: 0.3
+    gate_centering: 3.0
+  v_max: 8.0
   action_smoothness_threshold: 0.5
 
 arpo:
@@ -74,50 +75,9 @@ arpo:
 curriculum:
   enabled: true
   stages:
-    # Stage 1: EASY — learn to fly and pass gates (5M steps)
-    # 10m arena, 1.5m gate radius, heavy spline bootstrap
+    # Stage 1: COMFORT ZONE — diverse tracks at familiar params (10M steps)
+    # Policy adjusts to diverse tracks (hairpins, elevation) at 10m/1.5m
     - timestep: 0
-      reward_weights:
-        gate_passage: 1.5
-        gate_progress: 1.0
-        gate_offset: 1.5
-        crash_penalty: 10.0
-        spline_proximity: 3.0
-        heading_alignment: 0.5
-        boundary_penalty: 10.0
-        gate_approach: 0.2
-        gate_centering: 2.0
-      v_max: 5.0
-      ent_coef: 0.005
-      arena_bounds: 10.0
-      gate_passage_radius: 1.5
-      trigger: null
-
-    # Stage 2: MEDIUM — tighten arena and gates (5M steps)
-    # 7m arena, 1.0m gate radius, reduce spline
-    - timestep: 5_000_000
-      reward_weights:
-        gate_passage: 5.0
-        gate_progress: 0.5
-        gate_offset: 2.0
-        crash_penalty: 8.0
-        spline_proximity: 2.0
-        heading_alignment: 0.3
-        boundary_penalty: 8.0
-        gate_approach: 0.3
-        gate_centering: 3.0
-      v_max: 8.0
-      ent_coef: 0.004
-      arena_bounds: 7.0
-      gate_passage_radius: 1.0
-      trigger:
-        metric: racing/gate_passage_rate
-        threshold: 0.50
-        window: 200
-
-    # Stage 3: HARD — tighter than golden set (30M steps!)
-    # 5m arena, 0.5m gate radius (golden set uses 0.75 — train harder)
-    - timestep: 10_000_000
       reward_weights:
         gate_passage: 10.0
         gate_progress: 0.5
@@ -129,13 +89,54 @@ curriculum:
         boundary_penalty: 5.0
         gate_approach: 0.3
         gate_centering: 3.0
-      v_max: 10.0
+      v_max: 8.0
       ent_coef: 0.002
-      arena_bounds: 5.0
-      gate_passage_radius: 0.5
+      arena_bounds: 10.0
+      gate_passage_radius: 1.5
+      trigger: null
+
+    # Stage 2: TIGHTEN — shrink arena and gates (10M steps)
+    - timestep: 10_000_000
+      reward_weights:
+        gate_passage: 20.0
+        gate_progress: 0.3
+        gate_offset: 2.0
+        crash_penalty: 5.0
+        spline_proximity: 0.5
+        heading_alignment: 0.05
+        speed_bonus: 0.3
+        boundary_penalty: 5.0
+        gate_approach: 0.3
+        gate_centering: 3.0
+      v_max: 10.0
+      ent_coef: 0.0015
+      arena_bounds: 7.0
+      gate_passage_radius: 1.0
       trigger:
         metric: racing/gate_passage_rate
-        threshold: 0.40
+        threshold: 0.70
+        window: 200
+
+    # Stage 3: GOLDEN SET — match benchmark params (20M steps)
+    - timestep: 20_000_000
+      reward_weights:
+        gate_passage: 30.0
+        gate_progress: 0.0
+        gate_offset: 2.0
+        crash_penalty: 3.0
+        spline_proximity: 0.0
+        heading_alignment: 0.0
+        speed_bonus: 0.5
+        boundary_penalty: 3.0
+        gate_approach: 0.3
+        gate_centering: 2.0
+      v_max: 15.0
+      ent_coef: 0.001
+      arena_bounds: 5.0
+      gate_passage_radius: 0.75
+      trigger:
+        metric: racing/gate_passage_rate
+        threshold: 0.60
         window: 200
 
 multi_scene:
@@ -143,10 +144,10 @@ multi_scene:
   n_scenes: 10
 
 lr_schedule:
-  initial_lr: 0.0003
-  final_lr: 0.00005
+  initial_lr: 0.0001
+  final_lr: 0.00003
 
 logging:
-  tags: ["trpy", "generalist-v4", "progressive-difficulty", "spline-bootstrap", "diverse", "smaller-gates", "40M"]
-  group: generalist_v4
-  notes: "Generalist v4: 5M easy (10m/1.5m) -> 5M medium (7m/1.0m) -> 30M hard (5m/0.5m). Train tighter than golden set (0.5m vs 0.75m)."
+  tags: ["trpy", "generalist-v5", "resume-finetune", "progressive", "diverse", "40M"]
+  group: generalist_v5
+  notes: "Generalist v5: resume from figure8_gentle, progressive 10m/1.5m -> 7m/1.0m -> 5m/0.75m, diverse tracks, LR 1e-4"
