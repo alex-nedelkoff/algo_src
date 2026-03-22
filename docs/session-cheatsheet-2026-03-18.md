@@ -523,7 +523,59 @@ The curriculum auto-advanced from medium to hard after just 300K steps (the easy
 2. Resume from a capable policy and fine-tune to tighter params
 3. Match training conditions more closely to golden set tracks
 
-**Best policy remains `figure8_gentle`** — 3.8 gates, 0.4 laps on golden benchmark, trained on easier params (10m/1.5m). Our best approach would be to resume from this policy and gradually tighten parameters.
+**Best policy remains `figure8_gentle`** — 3.8 gates, 0.4 laps on golden benchmark, trained on easier params (10m/1.5m).
+
+---
+
+## 17. Generalist v5 — Resume + Progressive Tighten (2026-03-22)
+
+### The Idea
+
+Resume from figure8_gentle (our best policy) instead of training from scratch. Progressive curriculum tightens from 10m/1.5m → 7m/1.0m → 5m/0.75m. The policy already knows how to fly — just needs precision refinement.
+
+### Result: 0 Gates on Golden Benchmark (again)
+
+Training eval showed 90.5% gate passage, 8.3 m/s — looked great. But golden benchmark: 0 gates, 100% crash, 6.1 m/s.
+
+### Why: Curriculum Raced Through Stages
+
+The performance triggers fired instantly because the resumed policy already had >70% gate passage:
+- Stage 0 → 1 in **32 seconds**
+- Stage 1 → 2 in **31 seconds more**
+
+The policy spent essentially all 40M steps at stage 3 (5m/0.75m). It never had gradual adaptation time at intermediate stages.
+
+### The Deeper Problem: Training Eval ≠ Golden Benchmark
+
+The 90.5% eval gate passage was **misleading**. The curriculum only applies to the training env (`set_arena_bounds`, `set_gate_passage_radius`). The eval env is created separately by the factory and uses the **original config values** (10m arena, 1.5m gates). So eval metrics reflected the easy settings, not the hard curriculum stage.
+
+This means every run where we saw "good eval" after curriculum tightening was actually measuring the wrong thing.
+
+### Systemic Issues Identified
+
+1. **Eval env doesn't track curriculum** — eval metrics don't reflect training difficulty changes, giving false confidence
+2. **Performance triggers on resumed models** — triggers based on absolute thresholds fire instantly when resuming from a capable policy, skipping the intended gradual progression
+3. **40M steps may not be enough** for golden set difficulty even with resume — the policy needs time to adapt to each tighter constraint level
+4. **No direct feedback loop** — we've been training and benchmarking separately; the training eval doesn't predict benchmark performance
+
+### Where We Stand
+
+| Attempt | Golden Benchmark | Speed | Notes |
+|---------|:---:|:---:|---|
+| figure8_gentle (original) | **3.8 gates, 0.4 laps** | 3.9 m/s | Best. Trained on 10m/1.5m |
+| generalist v1 (aRPO) | 0 gates | — | aRPO cliff |
+| generalist v2 (spline) | 0 gates | — | 5m too hard from scratch |
+| generalist v3 (progressive) | 0 gates | — | Not enough time at hard |
+| generalist v4 (0.5m gates) | 0 gates | 4.2 m/s | Gates too tight |
+| generalist v5 (resume) | 0 gates | 6.1 m/s | Curriculum skipped stages |
+
+### Open Questions
+
+- Should the eval env also apply curriculum parameters?
+- Should triggers be timestep-only (no performance triggers) when resuming?
+- Is 40M steps fundamentally insufficient for 5m/0.75m difficulty?
+- Should we benchmark intermediate checkpoints to find the sweet spot?
+- Is the gap between training distribution (procedural diverse) and golden set (handcrafted specific layouts) the real problem?
 
 ---
 
