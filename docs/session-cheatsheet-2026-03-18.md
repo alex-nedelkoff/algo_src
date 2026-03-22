@@ -497,6 +497,36 @@ This is the CRL paper's core insight applied to environment difficulty, not just
 
 ---
 
+## 16. Generalist v4 — Training on Tighter Gates Than Benchmark (2026-03-22)
+
+### The Idea
+
+Train on 0.5m gate radius (tighter than golden set's 0.75m) so the benchmark feels easy by comparison. Progressive difficulty: 5M easy (10m/1.5m) → 5M medium (7m/1.0m) → 30M hard (5m/0.5m).
+
+### Result: Complete Failure
+
+0 gates passed, 100% crash on golden benchmark. The policy learned to fly at 4.2 m/s but **never learned to pass through any gates at all**. 30M steps at 0.5m gate radius wasn't enough — the precision requirement was simply too high.
+
+The curriculum auto-advanced from medium to hard after just 300K steps (the easy → medium performance trigger fired immediately). So the policy spent almost all 40M steps at the impossible difficulty.
+
+### Lessons Learned Across All Generalist Attempts
+
+| Attempt | Approach | Result | Problem |
+|---------|----------|--------|---------|
+| v1 | α-RPO + diverse tracks, golden set params | 0% gates at 24.8M | α-RPO attenuation cliff |
+| v2 | Spline bootstrap, golden set params | 0% gates at 37M | 5m arena too hard from scratch |
+| v3 | Progressive difficulty 10m→7m→5m/0.75m | 0% gates on benchmark | Only 15M steps at hard stage |
+| **v4** | **Progressive + 0.5m gates** | **0% gates** | **0.5m too tight, never learned** |
+
+**Core finding:** Training from scratch on golden set difficulty doesn't work with 40M steps. The 5m arena + tight gates + diverse tracks (hairpins, elevation) requires either:
+1. Much more training (100M+ steps)
+2. Resume from a capable policy and fine-tune to tighter params
+3. Match training conditions more closely to golden set tracks
+
+**Best policy remains `figure8_gentle`** — 3.8 gates, 0.4 laps on golden benchmark, trained on easier params (10m/1.5m). Our best approach would be to resume from this policy and gradually tighten parameters.
+
+---
+
 ## Full Acronym Glossary
 
 | Acronym | Full name | What it means in plain English |
