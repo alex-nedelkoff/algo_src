@@ -51,17 +51,17 @@ perception:
 
 reward:
   weights:
-    gate_passage: 10.0
-    gate_progress: 1.0
+    gate_passage: 50.0         # HUGE — must be worth more than hovering near spline
+    gate_progress: 2.0         # Strong pull toward gate (not just near spline)
     gate_offset: 3.0
     body_rate: 0.001
     action_smoothness: 0.0
     crash_penalty: 5.0
-    spline_proximity: 1.0
+    spline_proximity: 0.5      # Reduced — guide but don't dominate
     heading_alignment: 0.1
-    speed_bonus: 0.0
+    speed_bonus: 0.3           # Reward moving — prevent hovering
     boundary_penalty: 5.0
-    gate_approach: 0.3
+    gate_approach: 0.5         # Stronger — reward flying toward gate
     gate_centering: 3.0
   v_max: 3.0
   action_smoothness_threshold: 0.5
