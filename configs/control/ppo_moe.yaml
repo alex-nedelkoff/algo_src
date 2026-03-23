@@ -1,0 +1,23 @@
+# PPO with Mixture of Experts policy.
+# 4 experts (2x128 each), top-2 router, load balance loss.
+_target_: control.algorithms.ppo.PPO
+learning_rate: 0.0003
+n_steps: 1000
+batch_size: 5000
+n_epochs: 10
+gamma: 0.999
+gae_lambda: 0.95
+clip_range: 0.2
+ent_coef: 0.005
+vf_coef: 0.5
+max_grad_norm: 0.5
+policy_type: MlpPolicy  # overridden by moe=true
+activation_fn: relu
+use_sde: false
+
+# MoE settings
+moe: true
+n_experts: 4
+expert_hidden_dim: 128    # subject to change
+top_k: 2
+balance_coef: 0.01

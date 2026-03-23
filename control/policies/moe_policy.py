@@ -177,6 +177,10 @@ class MoEPolicy(ActorCriticPolicy):
         )
         return distribution.get_actions(deterministic=deterministic)
 
+    def predict_values(self, obs: torch.Tensor) -> torch.Tensor:
+        """Predict state values (for bootstrapping)."""
+        return self.value_net(obs).squeeze(-1)
+
     def evaluate_actions(
         self, obs: torch.Tensor, actions: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
