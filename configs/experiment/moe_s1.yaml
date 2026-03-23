@@ -18,7 +18,7 @@ sim:
   gate_passage_radius: 1.5
   gate_collision: false
 
-total_timesteps: 10_000_000
+total_timesteps: 30_000_000
 
 track_gen:
   n_gates_min: 4
