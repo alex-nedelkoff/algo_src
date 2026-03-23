@@ -18,7 +18,8 @@ sim:
   gate_passage_radius: 1.5
   gate_collision: false
 
-total_timesteps: 30_000_000
+total_timesteps: 60_000_000
+resume_checkpoint: outputs/2026-03-23/06-57-49/final_model
 
 track_gen:
   n_gates_min: 4
