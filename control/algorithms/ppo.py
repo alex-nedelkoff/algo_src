@@ -69,6 +69,12 @@ class PPO(Algorithm):
         recurrent: bool = False,
         lstm_hidden_size: int = 128,
         n_lstm_layers: int = 1,
+        # Mixture of Experts
+        moe: bool = False,
+        n_experts: int = 4,
+        expert_hidden_dim: int = 128,
+        top_k: int = 2,
+        balance_coef: float = 0.01,
         **kwargs: Any,
     ) -> None:
         _check_deps()
@@ -76,6 +82,11 @@ class PPO(Algorithm):
         self.recurrent = recurrent
         self.lstm_hidden_size = lstm_hidden_size
         self.n_lstm_layers = n_lstm_layers
+        self.moe = moe
+        self.n_experts = n_experts
+        self.expert_hidden_dim = expert_hidden_dim
+        self.top_k = top_k
+        self.balance_coef = balance_coef
         self.learning_rate = learning_rate
         self.n_steps = n_steps
         self.batch_size = batch_size
@@ -190,6 +201,14 @@ class PPO(Algorithm):
         if self.recurrent:
             from sb3_contrib import RecurrentPPO as SB3RecurrentPPO
             return SB3RecurrentPPO(policy="MlpLstmPolicy", **common_kwargs)
+
+        if self.moe:
+            from control.policies.moe_policy import MoEPolicy
+            common_kwargs["policy_kwargs"]["n_experts"] = self.n_experts
+            common_kwargs["policy_kwargs"]["expert_hidden_dim"] = self.expert_hidden_dim
+            common_kwargs["policy_kwargs"]["top_k"] = self.top_k
+            common_kwargs["policy_kwargs"]["balance_coef"] = self.balance_coef
+            return SB3_PPO(policy=MoEPolicy, **common_kwargs)
 
         return SB3_PPO(policy=self.policy_type, **common_kwargs)
 

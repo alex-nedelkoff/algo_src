@@ -67,6 +67,12 @@ def build_ppo(cfg: DictConfig) -> PPO:
         recurrent=ctrl.get("recurrent", False),
         lstm_hidden_size=ctrl.get("lstm_hidden_size", 128),
         n_lstm_layers=ctrl.get("n_lstm_layers", 1),
+        # Mixture of Experts
+        moe=ctrl.get("moe", False),
+        n_experts=ctrl.get("n_experts", 4),
+        expert_hidden_dim=ctrl.get("expert_hidden_dim", 128),
+        top_k=ctrl.get("top_k", 2),
+        balance_coef=ctrl.get("balance_coef", 0.01),
     )
 
 
