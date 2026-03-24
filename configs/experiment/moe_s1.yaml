@@ -18,8 +18,8 @@ sim:
   gate_passage_radius: 1.5
   gate_collision: false
 
-total_timesteps: 30_000_000
-# No resume — fresh start with fixed log_std
+total_timesteps: 20_000_000
+resume_checkpoint: outputs/2026-03-23/20-32-54/final_model  # 30M with fixed log_std
 
 track_gen:
   n_gates_min: 4
@@ -52,19 +52,19 @@ perception:
 
 reward:
   weights:
-    gate_passage: 50.0         # HUGE — must be worth more than hovering near spline
-    gate_progress: 2.0         # Strong pull toward gate (not just near spline)
+    gate_passage: 50.0
+    gate_progress: 3.0         # DOMINANT continuous signal — fly toward gate
     gate_offset: 3.0
     body_rate: 0.001
     action_smoothness: 0.0
     crash_penalty: 5.0
-    spline_proximity: 0.5      # Reduced — guide but don't dominate
-    heading_alignment: 0.1
-    speed_bonus: 0.3           # Reward moving — prevent hovering
+    spline_proximity: 0.1      # Minimal — just a hint, not worth hovering for
+    heading_alignment: 0.05
+    speed_bonus: 1.0           # STRONG — must be moving to earn this
     boundary_penalty: 5.0
-    gate_approach: 0.5         # Stronger — reward flying toward gate
+    gate_approach: 1.0         # STRONG — flying toward gate is rewarded
     gate_centering: 3.0
-  v_max: 3.0
+  v_max: 5.0                   # Higher speed cap — encourage faster flight
   action_smoothness_threshold: 0.5
 
 arpo:
