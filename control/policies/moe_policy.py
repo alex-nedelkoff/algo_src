@@ -49,7 +49,7 @@ class ExpertNetwork(nn.Module):
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.net(obs)
+        return torch.tanh(self.net(obs))  # Tanh keeps means in [-1, 1]
 
 
 def top_k_selection(
@@ -121,13 +121,20 @@ class MoEPolicy(ActorCriticPolicy):
 
         self.action_dist = DiagGaussianDistribution(action_dim)
         self.log_std = nn.Parameter(
-            torch.zeros(action_dim) * self.log_std_init,
+            torch.full((action_dim,), self.log_std_init),
             requires_grad=True,
         )
+        # Cap for log_std: prevent runaway exploration
+        self._log_std_max = 0.0  # std <= 1.0
+        self._log_std_min = -3.0  # std >= 0.05
 
         self.optimizer = self.optimizer_class(
             self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
         )
+
+    def _clamped_log_std(self) -> torch.Tensor:
+        """Return log_std clamped to valid range."""
+        return torch.clamp(self.log_std, self._log_std_min, self._log_std_max)
 
     def _get_moe_action_mean(
         self, obs: torch.Tensor
@@ -157,7 +164,7 @@ class MoEPolicy(ActorCriticPolicy):
         values = self.value_net(obs)
 
         distribution = self.action_dist.proba_distribution(
-            action_mean, self.log_std.expand_as(action_mean)
+            action_mean, self._clamped_log_std().expand_as(action_mean)
         )
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
@@ -173,7 +180,7 @@ class MoEPolicy(ActorCriticPolicy):
     ) -> torch.Tensor:
         action_mean, _, _ = self._get_moe_action_mean(observation)
         distribution = self.action_dist.proba_distribution(
-            action_mean, self.log_std.expand_as(action_mean)
+            action_mean, self._clamped_log_std().expand_as(action_mean)
         )
         return distribution.get_actions(deterministic=deterministic)
 
@@ -188,7 +195,7 @@ class MoEPolicy(ActorCriticPolicy):
         values = self.value_net(obs)
 
         distribution = self.action_dist.proba_distribution(
-            action_mean, self.log_std.expand_as(action_mean)
+            action_mean, self._clamped_log_std().expand_as(action_mean)
         )
         log_prob = distribution.log_prob(actions)
         entropy = distribution.entropy()
