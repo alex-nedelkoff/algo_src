@@ -610,4 +610,34 @@ This means every run where we saw "good eval" after curriculum tightening was ac
 
 ---
 
-*Generated 2026-03-18, updated 2026-03-19 — Corvidx drone racing team*
+## 18. Two Critical Bugs Found (2026-03-23/24)
+
+### Bug 1: log_std — Policies Never Learned Deterministic Control
+
+ALL policies (MLP, LSTM, MoE) had action standard deviations of 1.5-7.7 on a [-1, 1] action range. The "learned" action means were saturated at ±1.0 — all useful behavior came from random noise, not intentional control. When evaluated deterministically (noise=0), every policy crashed in under 1 second.
+
+**Root cause:** `log_std_init=0.0` (std=1.0) was too high, and `ent_coef=0.005` prevented it from decreasing. Literature standard: log_std_init=-1.0 (std=0.37), converging to -1.6 (std=0.20).
+
+**Fix:** log_std_init=-1.0, clamp log_std to [-3, 0], ent_coef=0.001. Verified — deterministic actions are now sensible values like [0.1, -0.3, 0.4, 0.05] instead of [-1, -1, 1, 1].
+
+### Bug 2: Benchmark Reset — Drone Started at Wrong Position
+
+`GateRaceEnv.reset(options=...)` was documented as "unused" and ignored the `initial_state` and `gate_index` parameters. The benchmark runner passed these to place the drone behind the correct gate, but the env always started at [0, 0, 1] — the middle of nowhere relative to the track.
+
+**Fix:** Implemented options handling in reset(). The drone now starts at the benchmark's requested position.
+
+### Impact
+
+With both fixes, the old best policy (figure8_gentle S2) improved:
+- Gates: 4.5 → **4.7**
+- Laps: 0 → **0.5**
+- Fastest lap: N/A → **4.0s**
+- Crash rate: 80% → **74%**
+
+### Lesson
+
+Two "small" implementation details — a default parameter value and an ignored function argument — caused months of misleading results. Every benchmark score we collected was measuring a policy that (a) couldn't control itself deterministically and (b) started in the wrong location. Always verify the full eval pipeline end-to-end.
+
+---
+
+*Generated 2026-03-18, updated 2026-03-24 — Corvidx drone racing team*
