@@ -485,7 +485,9 @@ class GateRaceEnv(gym.Env):
 
         Args:
             seed: Random seed.
-            options: Additional options (unused).
+            options: Optional dict with:
+                - initial_state: (17,) state vector to place env 0
+                - gate_index: int gate index for env 0
 
         Returns:
             Tuple of (observation, info_dict).
@@ -514,7 +516,16 @@ class GateRaceEnv(gym.Env):
             for i in range(self.n_envs):
                 self._tracks[i] = self.track_generator.generate(self.np_random)
 
-        if self.random_gate_start:
+        # Apply custom initial state from options (used by benchmark runner)
+        if options is not None:
+            initial_state = options.get("initial_state")
+            if initial_state is not None:
+                self._states[0] = np.asarray(initial_state, dtype=np.float64)
+            gate_index = options.get("gate_index")
+            if gate_index is not None:
+                self._gate_indices[0] = int(gate_index)
+                self._start_gate_indices[0] = int(gate_index)
+        elif self.random_gate_start:
             self._randomize_start(all_indices)
 
         self._update_gate_tracking(all_indices)
