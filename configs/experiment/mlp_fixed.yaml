@@ -19,7 +19,7 @@ sim:
   gate_collision: false
 
 total_timesteps: 20_000_000
-resume_checkpoint: outputs/2026-03-24/01-30-02/final_model
+# Fresh start — both bugs fixed (log_std + reset options)
 
 track_gen:
   n_gates_min: 4
