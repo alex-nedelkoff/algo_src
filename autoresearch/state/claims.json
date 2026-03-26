@@ -1,3 +1,64 @@
 {
-  "claims": []
+  "claims": [
+    {
+      "hypothesis_id": "da6ec254814b",
+      "researcher": "claude-code",
+      "branch": "autoresearch-mvp",
+      "target_cells": [],
+      "scope": "hyperparameter",
+      "timestamp": "2026-03-26T03:30:35.018600+00:00",
+      "wandb_run_id": "x5dtk4sc",
+      "status": "completed"
+    },
+    {
+      "hypothesis_id": "0964d3bf9bbd",
+      "researcher": "claude-code",
+      "branch": "autoresearch-mvp",
+      "target_cells": [],
+      "scope": "hyperparameter",
+      "timestamp": "2026-03-26T04:27:39.302160+00:00",
+      "wandb_run_id": null,
+      "status": "completed"
+    },
+    {
+      "hypothesis_id": "90ee91a30948",
+      "researcher": "claude-code",
+      "branch": "autoresearch-mvp",
+      "target_cells": [],
+      "scope": "hyperparameter",
+      "timestamp": "2026-03-26T05:22:39.233246+00:00",
+      "wandb_run_id": null,
+      "status": "completed"
+    },
+    {
+      "hypothesis_id": "40ba6a79a030",
+      "researcher": "claude-code",
+      "branch": "autoresearch-mvp",
+      "target_cells": [],
+      "scope": "hyperparameter",
+      "timestamp": "2026-03-26T06:16:18.111887+00:00",
+      "wandb_run_id": null,
+      "status": "completed"
+    },
+    {
+      "hypothesis_id": "moe_h3_lr5e4_20m",
+      "researcher": "claude-code",
+      "branch": "autoresearch-mvp",
+      "target_cells": [],
+      "scope": "architecture",
+      "timestamp": "2026-03-26T13:36:02.900459+00:00",
+      "wandb_run_id": "light-leaf-122",
+      "status": "completed"
+    },
+    {
+      "hypothesis_id": "moe_h3_vmax10",
+      "researcher": "claude-code",
+      "branch": "autoresearch-mvp",
+      "target_cells": [],
+      "scope": "hyperparameter",
+      "timestamp": "2026-03-26T15:36:57.629781+00:00",
+      "wandb_run_id": "fresh-bee-123",
+      "status": "completed"
+    }
+  ]
 }
