@@ -588,3 +588,70 @@ class TestGateCenteringReward:
         from sim.rewards import gate_centering_reward
         r = gate_centering_reward(lateral_offset=1.0, dist_to_plane=0.0, gate_radius=0.0)
         assert r == pytest.approx(0.0)
+
+
+class TestSplineSpeedReward:
+    def test_aligned_at_vmax_gives_one(self):
+        from sim.rewards import spline_speed_reward
+        r = spline_speed_reward(
+            np.array([5.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]), v_max=5.0
+        )
+        assert r == pytest.approx(1.0)
+
+    def test_stationary_gives_zero(self):
+        from sim.rewards import spline_speed_reward
+        r = spline_speed_reward(
+            np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]), v_max=5.0
+        )
+        assert r == pytest.approx(0.0)
+
+    def test_perpendicular_gives_zero(self):
+        from sim.rewards import spline_speed_reward
+        r = spline_speed_reward(
+            np.array([0.0, 5.0, 0.0]), np.array([1.0, 0.0, 0.0]), v_max=5.0
+        )
+        assert r == pytest.approx(0.0)
+
+    def test_backwards_gives_negative(self):
+        from sim.rewards import spline_speed_reward
+        r = spline_speed_reward(
+            np.array([-5.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]), v_max=5.0
+        )
+        assert r == pytest.approx(-1.0)
+
+    def test_half_speed_aligned(self):
+        from sim.rewards import spline_speed_reward
+        r = spline_speed_reward(
+            np.array([2.5, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]), v_max=5.0
+        )
+        assert r == pytest.approx(0.5)
+
+    def test_diagonal_velocity_projects_correctly(self):
+        """Flying at 45 degrees to tangent at speed sqrt(2)*5 projects to 5 along tangent."""
+        from sim.rewards import spline_speed_reward
+        r = spline_speed_reward(
+            np.array([5.0, 5.0, 0.0]), np.array([1.0, 0.0, 0.0]), v_max=5.0
+        )
+        assert r == pytest.approx(1.0)
+
+    def test_zero_vmax_gives_zero(self):
+        from sim.rewards import spline_speed_reward
+        r = spline_speed_reward(
+            np.array([5.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]), v_max=0.0
+        )
+        assert r == pytest.approx(0.0)
+
+    def test_zero_tangent_gives_zero(self):
+        from sim.rewards import spline_speed_reward
+        r = spline_speed_reward(
+            np.array([5.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.0]), v_max=5.0
+        )
+        assert r == pytest.approx(0.0)
+
+    def test_3d_tangent(self):
+        """Tangent with vertical component works correctly."""
+        from sim.rewards import spline_speed_reward
+        tangent = np.array([0.0, 0.0, 1.0])
+        velocity = np.array([0.0, 0.0, 7.5])
+        r = spline_speed_reward(velocity, tangent, v_max=7.5)
+        assert r == pytest.approx(1.0)

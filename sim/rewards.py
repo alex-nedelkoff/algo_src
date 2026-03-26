@@ -264,6 +264,36 @@ def boundary_penalty(
     return -(penetration * penetration)
 
 
+def spline_speed_reward(
+    velocity: NDArray[np.float64],
+    spline_tangent: NDArray[np.float64],
+    v_max: float,
+) -> float:
+    """Reward for speed projected along the spline tangent direction.
+
+    r = dot(velocity, tangent_unit) / v_max
+
+    Positive when flying along the racing line, zero when perpendicular,
+    negative when flying backwards. Naturally encourages sprinting on
+    straights and braking for turns (tangent curves away from velocity).
+
+    Args:
+        velocity: [vx, vy, vz] drone velocity in world frame.
+        spline_tangent: Unit tangent vector of the nearest spline point.
+        v_max: Normalizing speed (m/s). Reward ~1.0 at this speed.
+
+    Returns:
+        Reward, typically in [-1, 1] but unbounded if speed > v_max.
+    """
+    if v_max <= 0.0:
+        return 0.0
+    tangent_norm = np.linalg.norm(spline_tangent)
+    if tangent_norm < 1e-6:
+        return 0.0
+    tangent_unit = spline_tangent / tangent_norm
+    return float(np.dot(velocity, tangent_unit)) / v_max
+
+
 def gate_approach_reward(
     velocity: NDArray[np.float64],
     gate_normal: NDArray[np.float64],
