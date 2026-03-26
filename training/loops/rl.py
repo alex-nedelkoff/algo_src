@@ -63,6 +63,16 @@ def build_ppo(cfg: DictConfig) -> PPO:
         extra_policy_kwargs=extra_policy_kwargs,
         action_bias_init=list(ctrl.action_bias_init) if ctrl.get("action_bias_init") else None,
         tensorboard_log=str(Path(cfg.output_dir) / "tb_logs") if cfg.get("output_dir") else None,
+        # Recurrent (LSTM) support
+        recurrent=ctrl.get("recurrent", False),
+        lstm_hidden_size=ctrl.get("lstm_hidden_size", 128),
+        n_lstm_layers=ctrl.get("n_lstm_layers", 1),
+        # Mixture of Experts
+        moe=ctrl.get("moe", False),
+        n_experts=ctrl.get("n_experts", 4),
+        expert_hidden_dim=ctrl.get("expert_hidden_dim", 128),
+        top_k=ctrl.get("top_k", 2),
+        balance_coef=ctrl.get("balance_coef", 0.01),
     )
 
 
@@ -71,6 +81,7 @@ def setup_callbacks(
     eval_env=None,
     uploader: ArtifactUploader | None = None,
     env_factory: Any = None,
+    train_env=None,
 ) -> list:
     """Create SB3 training callbacks from config.
 
@@ -128,6 +139,44 @@ def setup_callbacks(
         )
     )
 
+    # Curriculum learning (if configured)
+    curriculum_cfg = cfg.get("curriculum")
+    if curriculum_cfg is not None and train_env is not None:
+        from omegaconf import OmegaConf
+        from training.curriculum_callback import CurriculumCallback, CurriculumSB3Callback
+
+        curr_dict = OmegaConf.to_container(curriculum_cfg, resolve=True)
+        curriculum = CurriculumCallback(curr_dict)
+        if curriculum.enabled:
+            unwrapped_env = train_env
+            while hasattr(unwrapped_env, "env"):
+                unwrapped_env = unwrapped_env.env
+            callbacks.append(CurriculumSB3Callback(curriculum, unwrapped_env))
+
+    # Multi-scene track regeneration
+    ms_cfg = cfg.get("multi_scene")
+    if ms_cfg is not None and ms_cfg.get("enabled", False) and train_env is not None:
+        from training.multi_scene_callback import MultiSceneCallback
+
+        unwrapped_env = train_env
+        while hasattr(unwrapped_env, "env"):
+            unwrapped_env = unwrapped_env.env
+        callbacks.append(MultiSceneCallback(
+            unwrapped_env, n_scenes=ms_cfg.get("n_scenes", 10)
+        ))
+
+    # aRPO alpha schedule callback (sync trick)
+    arpo_cfg = cfg.get("arpo")
+    if arpo_cfg is not None and arpo_cfg.get("enabled", False) and train_env is not None:
+        from training.arpo import ARPOAlphaCallback, AlphaSchedule
+
+        alpha_sched = AlphaSchedule(
+            k_end_fraction=arpo_cfg.get("k_end_fraction", 0.25),
+            total_steps=cfg.total_timesteps,
+        )
+        # train_env should be the ARPOActionWrapper at this point
+        callbacks.append(ARPOAlphaCallback(train_env, alpha_sched))
+
     return callbacks
 
 
@@ -149,17 +198,57 @@ class RLTrainingLoop:
         # 1. Build training environment via EnvFactory
         log.info("Building training env (n_envs=%d)...", cfg.sim.n_envs)
         env_factory = hydra.utils.instantiate(cfg.sim)
+
+        # Wire track generation config (top-level, not under sim)
+        if "track_gen" in cfg:
+            env_factory._track_gen_cfg = cfg.track_gen
+            env_factory._seed = cfg.get("seed", 42)
+
         train_env = env_factory.make_vec_env(cfg.domain_rand, cfg.reward)
 
         # 2. Wrap with perception (no-op if identity)
         perception_wrapper = hydra.utils.instantiate(cfg.perception)
         train_env = perception_wrapper.wrap(train_env)
 
+        # 2b. Wrap with EKF filtering if configured
+        if "ekf" in cfg:
+            from sim.envs.ekf_env_wrapper import EKFVecEnvWrapper
+
+            ekf_kwargs = OmegaConf.to_container(cfg.ekf, resolve=True)
+            log.info("Applying EKF wrapper (corner_noise_k=%s)", ekf_kwargs.get("corner_noise_k"))
+            train_env = EKFVecEnvWrapper(train_env, **ekf_kwargs)
+
         # 3. Build eval env (no domain rand, fewer envs)
         eval_dr_cfg = OmegaConf.create(OmegaConf.to_container(cfg.domain_rand, resolve=True))
         OmegaConf.update(eval_dr_cfg, "enabled", False)
         eval_env = env_factory.make_eval_env(eval_dr_cfg, cfg.reward, n_envs=cfg.n_eval_episodes)
         eval_env = perception_wrapper.wrap(eval_env)
+
+        if "ekf" in cfg:
+            from sim.envs.ekf_env_wrapper import EKFVecEnvWrapper
+
+            eval_ekf_kwargs = OmegaConf.to_container(cfg.ekf, resolve=True)
+            eval_env = EKFVecEnvWrapper(eval_env, **eval_ekf_kwargs)
+
+        # 3b. aRPO base policy wrapper (must wrap env BEFORE PPO sees it)
+        arpo_cfg = cfg.get("arpo")
+        if arpo_cfg is not None and arpo_cfg.get("enabled", False):
+            import numpy as np_
+            from control.base_policies.pd_waypoint_tracker import PDWaypointTracker
+            from training.arpo import ARPOActionWrapper, AlphaSchedule
+
+            unwrapped = train_env
+            while hasattr(unwrapped, "env"):
+                unwrapped = unwrapped.env
+            gate_positions = np_.array([g.position for g in unwrapped._tracks[0].gates])
+            base_policy = PDWaypointTracker(gate_positions, mass=unwrapped.params.mass)
+
+            alpha_sched = AlphaSchedule(
+                k_end_fraction=arpo_cfg.get("k_end_fraction", 0.25),
+                total_steps=cfg.total_timesteps,
+            )
+            train_env = ARPOActionWrapper(train_env, base_policy, alpha_sched)
+            log.info("aRPO wrapper applied: k_end_fraction=%.2f", arpo_cfg.get("k_end_fraction", 0.25))
 
         # 4. Build PPO trainer
         log.info("Building PPO trainer...")
@@ -173,8 +262,24 @@ class RLTrainingLoop:
 
         # 6. Setup callbacks
         callbacks = setup_callbacks(
-            cfg, eval_env=eval_env, uploader=uploader, env_factory=env_factory
+            cfg, eval_env=eval_env, uploader=uploader, env_factory=env_factory,
+            train_env=train_env,
         )
+
+        # 6b. Apply LR schedule if configured
+        lr_schedule_cfg = cfg.get("lr_schedule")
+        if lr_schedule_cfg is not None and ppo._model is not None:
+            from control.algorithms.ppo import PPO as PPOWrapper
+            schedule = PPOWrapper.cosine_lr_schedule(
+                initial_lr=lr_schedule_cfg.get("initial_lr", 3e-4),
+                final_lr=lr_schedule_cfg.get("final_lr", 5e-5),
+            )
+            ppo._model.learning_rate = schedule
+            log.info(
+                "LR cosine schedule: %.1e -> %.1e",
+                lr_schedule_cfg.get("initial_lr", 3e-4),
+                lr_schedule_cfg.get("final_lr", 5e-5),
+            )
 
         # 7. Train
         log.info("Starting training for %d timesteps...", cfg.total_timesteps)

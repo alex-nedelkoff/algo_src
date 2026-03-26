@@ -1,0 +1,69 @@
+# @package _global_
+# Direct fine-tune on the hardcoded figure-8 track.
+# The mixed training didn't help because randomized figure-8s were too easy.
+# This run trains specifically on the tight hardcoded figure-8 layout.
+# NO procedural generation — fixed track only.
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: corner_noise
+  - override /domain_rand: uniform_30pct
+  - override /logging: wandb
+  - _self_
+
+sim:
+  action_mode: trpy
+  n_lookahead_gates: 2
+  max_steps: 3000
+  arena_bounds: 10
+  gate_passage_radius: 1.0    # TIGHT — match eval conditions
+
+total_timesteps: 5_000_000    # Short fine-tune, not full training
+
+# Resume from figure8_training (best general policy)
+resume_checkpoint: outputs/2026-03-20/00-55-48/final_model.zip
+
+# NO track_gen — uses default figure-8 track from build_figure8_track()
+# (no procedural generation, no track_gen key = fixed track)
+
+perception:
+  noise_scale: 1.0
+  dropout_onset: null
+  dropout_continuation: 0.7
+
+reward:
+  weights:
+    gate_passage: 50.0
+    gate_progress: 1.0        # Higher progress for tight track navigation
+    gate_offset: 3.0          # Higher offset penalty — need precision
+    body_rate: 0.001
+    action_smoothness: 0.0
+    crash_penalty: 8.0        # Higher crash penalty — learn to survive
+    spline_proximity: 0.0
+    heading_alignment: 0.0
+    speed_bonus: 0.1          # Lower speed bonus — precision over speed
+    boundary_penalty: 5.0
+    gate_approach: 0.3
+    gate_centering: 5.0       # HIGH centering — the whole point
+  v_max: 5.0                  # Conservative speed target
+  action_smoothness_threshold: 0.5
+
+control:
+  ent_coef: 0.0005            # Very low — policy is mature, minimal exploration
+  learning_rate: 0.00005      # Low LR for fine-tuning
+
+arpo:
+  enabled: false
+
+# No curriculum — single stage fine-tune
+curriculum: null
+
+# No multi-scene — fixed track only
+multi_scene:
+  enabled: false
+
+logging:
+  tags: ["trpy", "figure8-finetune", "fixed-track", "5M"]
+  group: figure8_finetune
+  notes: "Direct fine-tune on hardcoded figure-8. gate_centering=5, crash_penalty=8, ent_coef=0.0005, LR=5e-5"

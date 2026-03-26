@@ -1,0 +1,86 @@
+# @package _global_
+# MLP Fixed S3: Golden set params with v_max=7.5 (split difference).
+# Resume from S2. Learn to fly at realistic speed in tight arena.
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: corner_noise
+  - override /domain_rand: uniform_30pct
+  - override /logging: wandb
+  - _self_
+
+sim:
+  action_mode: trpy
+  n_lookahead_gates: 2
+  max_steps: 1200
+  arena_bounds: 5
+  gate_passage_radius: 0.75
+  gate_collision: false
+
+total_timesteps: 20_000_000
+resume_checkpoint: outputs/2026-03-24/13-01-20/final_model
+
+track_gen:
+  n_gates_min: 4
+  n_gates_max: 10
+  gate_spacing_min: 1.0
+  gate_spacing_max: 6.0
+  turn_angle_min: -170
+  turn_angle_max: 170
+  elevation_min: 0.5
+  elevation_max: 4.0
+  elevation_delta_max: 1.5
+  closure_max_angle: 120
+  closure_max_retries: 30
+  figure8_ratio: 0.3
+  figure8:
+    loop_radius_min: 1.5
+    loop_radius_max: 3.0
+    gates_per_loop_min: 3
+    gates_per_loop_max: 4
+    crossing_offset_min: 0.3
+    crossing_offset_max: 0.6
+    elevation_min: 1.0
+    elevation_max: 3.0
+    elevation_delta_max: 0.8
+
+perception:
+  noise_scale: 1.0
+  dropout_onset: null
+  dropout_continuation: 0.7
+
+reward:
+  weights:
+    gate_passage: 50.0
+    gate_progress: 3.0
+    gate_offset: 5.0
+    body_rate: 0.001
+    action_smoothness: 0.0
+    crash_penalty: 5.0
+    spline_proximity: 0.1
+    heading_alignment: 0.05
+    speed_bonus: 1.0
+    boundary_penalty: 10.0
+    gate_approach: 1.0
+    gate_centering: 5.0
+  v_max: 7.5
+  action_smoothness_threshold: 0.5
+
+control:
+  ent_coef: 0.001
+  learning_rate: 0.0001
+  log_std_init: -1.0
+
+arpo:
+  enabled: false
+curriculum: null
+
+multi_scene:
+  enabled: true
+  n_scenes: 10
+
+logging:
+  tags: ["trpy", "mlp-fixed-s3", "5m", "0.75m", "vmax-7.5", "20M"]
+  group: mlp_fixed_staged
+  notes: "MLP Fixed S3: 5m/0.75m, v_max=7.5 (split diff), resume from S2"

@@ -13,21 +13,33 @@ import numpy as np
 from gymnasium import spaces
 from numpy.typing import NDArray
 
-from sim.rewards import gate_offset_penalty, monorace_reward
+from sim.rewards import gate_offset_penalty, monorace_reward, spline_proximity_reward, heading_alignment_reward, speed_bonus_reward, boundary_penalty, gate_approach_reward, gate_centering_reward
+from sim.spline import GateSpline
+from sim.dynamics.trpy_mixer import TRPYMixer
+from sim.types import ActionMode
 
-# Reward component column indices for the (n_envs, 6) array
+# Reward component column indices for the (n_envs, 8) array
 RC_PROGRESS = 0
 RC_BODY_RATE = 1
 RC_ACTION_SMOOTH = 2
 RC_GATE_PASSAGE = 3
 RC_GATE_OFFSET = 4
 RC_CRASH_PENALTY = 5
-NUM_REWARD_COMPONENTS = 6
+RC_SPLINE_PROXIMITY = 6
+RC_HEADING_ALIGNMENT = 7
+RC_SPEED_BONUS = 8
+RC_BOUNDARY_PENALTY = 9
+RC_GATE_APPROACH = 10
+RC_GATE_CENTERING = 11
+NUM_REWARD_COMPONENTS = 12
 REWARD_COMPONENT_NAMES = [
     "progress", "body_rate", "action_smooth",
     "gate_passage", "gate_offset", "crash_penalty",
+    "spline_proximity", "heading_alignment", "speed_bonus",
+    "boundary_penalty", "gate_approach", "gate_centering",
 ]
 from sim.tracks import Track
+from sim.procedural_tracks import ProceduralTrackGenerator
 from sim.types import Action, GateState, QuadState
 from sim.dynamics.numpy_quad import (
     GRAVITY,
@@ -42,11 +54,16 @@ from sim.domain_randomization import DomainRandomizer
 from sim.dynamics.params import VehicleParams
 
 
-# Observation dimension breakdown (MonoRace paper spec):
+# Default observation dimension (n_lookahead_gates=1):
 #   gate_rel_pos(3) + vel(3) + roll_pitch(2) + yaw_rel(1) +
-#   body_rates(3) + motor_speeds(4) + next_gate_rel_pos(3) +
-#   next_gate_yaw_rel(1) + prev_action(4) = 24
-OBS_DIM = 24
+#   body_rates(3) + motor_speeds(4) + prev_action(4) +
+#   lookahead_gates(4 * n_lookahead_gates) = 20 + 4*N
+OBS_DIM = 24  # Keep for backwards compat (N=1 default)
+
+
+def _compute_obs_dim(n_lookahead_gates: int) -> int:
+    """Compute observation dimension: 20 base + 4 per lookahead gate."""
+    return 20 + 4 * n_lookahead_gates
 
 # Default termination thresholds
 DEFAULT_CEILING = 10.0
@@ -206,16 +223,15 @@ def _rotate_xy(
 class GateRaceEnv(gym.Env):
     """Gymnasium environment for quadrotor gate racing.
 
-    Observation (24-dim, MonoRace paper spec):
-        [0:3]   position to current gate (gate-yaw-relative frame)
-        [3:6]   velocity (gate-yaw-relative frame)
-        [6:8]   roll, pitch (world frame Euler angles)
-        [8]     yaw relative to gate (drone_yaw - gate_yaw, wrapped [-pi, pi])
-        [9:12]  body angular rates p, q, r (body frame)
-        [12:16] motor speeds (normalized to [-1, 1]: (w / w_max) * 2 - 1)
-        [16:19] position from current gate to next gate (gate-yaw-relative frame)
-        [19]    relative yaw to next gate (next_yaw - cur_yaw, wrapped [-pi, pi])
-        [20:24] previous action / motor commands (normalized [-1, 1])
+    Observation (20 + 4*N dims, where N = n_lookahead_gates, default N=1 → 24 dims):
+        [0:3]       position to current gate (gate-yaw-relative frame)
+        [3:6]       velocity (gate-yaw-relative frame)
+        [6:8]       roll, pitch (world frame Euler angles)
+        [8]         yaw relative to gate (drone_yaw - gate_yaw, wrapped [-pi, pi])
+        [9:12]      body angular rates p, q, r (body frame)
+        [12:16]     motor speeds (normalized to [-1, 1]: (w / w_max) * 2 - 1)
+        [16:20]     previous action / motor commands (normalized [-1, 1])
+        [20:20+4*N] lookahead gates (4 dims each: rel_pos(3) + yaw_delta(1))
 
     Action (4-dim):
         Normalized motor commands in [-1, 1], mapped to motor speeds via a
@@ -276,8 +292,21 @@ class GateRaceEnv(gym.Env):
         max_body_rate: float = 17.45,
         max_velocity: float = 50.0,
         arena_bounds: float = 20.0,
+        track_generator: ProceduralTrackGenerator | None = None,
+        tracks: list[Track] | None = None,
+        n_lookahead_gates: int = 1,
+        action_mode: ActionMode | str = ActionMode.MOTOR_RPM,
     ) -> None:
         super().__init__()
+
+        if isinstance(action_mode, str):
+            action_mode = ActionMode(action_mode)
+        self.action_mode = action_mode
+
+        if n_lookahead_gates < 1:
+            raise ValueError(f"n_lookahead_gates must be >= 1, got {n_lookahead_gates}")
+        self._n_lookahead_gates = n_lookahead_gates
+        self._obs_dim = _compute_obs_dim(n_lookahead_gates)
 
         self.n_envs = n_envs
         self.dt = dt
@@ -300,18 +329,33 @@ class GateRaceEnv(gym.Env):
         self.max_velocity = max_velocity
         self.arena_bounds = arena_bounds
 
-        # Default track: figure-8 with 8 gates (MonoRace M23, 5m×5m arena)
-        if track is None:
+        # Track initialization: explicit list > single track > default figure-8
+        if tracks is not None:
+            assert len(tracks) == n_envs, (
+                f"tracks list length ({len(tracks)}) must match n_envs ({n_envs})"
+            )
+            self._tracks: list[Track] = list(tracks)
+        elif track is not None:
+            self._tracks = [track] * n_envs
+        else:
             from sim.tracks import build_figure8_track
-            track = build_figure8_track()
-        self.track = track
+            self._tracks = [build_figure8_track()] * n_envs
+        self.track_generator: ProceduralTrackGenerator | None = track_generator
+
+        # Build splines for reward shaping (one per env track)
+        self._splines: list[GateSpline | None] = []
+        for t in self._tracks:
+            positions = np.array([g.position for g in t.gates])
+            self._splines.append(GateSpline(positions) if len(positions) >= 2 else None)
 
         # Dynamics
         self.params = params or VehicleParams()
         self.dynamics = NumpyQuadDynamics(params=self.params, dt=dt)
+        if action_mode == ActionMode.TRPY:
+            self._trpy_mixer = TRPYMixer(self.params)
 
         # Gymnasium spaces — normalized action space [-1, 1] per MonoRace paper
-        obs_high = np.full(OBS_DIM, np.inf, dtype=np.float32)
+        obs_high = np.full(self._obs_dim, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
         self.action_space = spaces.Box(
             low=-np.ones(4, dtype=np.float32),
@@ -350,6 +394,11 @@ class GateRaceEnv(gym.Env):
         # Per-episode first gate step tracking
         self._first_gate_step = np.full(n_envs, -1, dtype=np.int64)  # -1 = no gate passed
 
+    @property
+    def track(self) -> Track:
+        """First env's track (backwards compatibility)."""
+        return self._tracks[0]
+
     def _apply_domain_rand(self, env_indices: NDArray[np.intp]) -> None:
         """Draw fresh randomized physics for specified envs."""
         if self._domain_randomizer is None:
@@ -382,10 +431,10 @@ class GateRaceEnv(gym.Env):
 
         for idx in env_indices:
             # Pick a random gate
-            gate_idx = int(rng.integers(0, self.track.num_gates))
+            gate_idx = int(rng.integers(0, self._tracks[idx].num_gates))
             self._gate_indices[idx] = gate_idx
             self._start_gate_indices[idx] = gate_idx
-            gate = self.track.gates[gate_idx]
+            gate = self._tracks[idx].gates[gate_idx]
             normal = _gate_normal(gate)
 
             # Position: behind gate along negative normal + small lateral noise
@@ -420,7 +469,7 @@ class GateRaceEnv(gym.Env):
         """
         for idx in env_indices:
             gate_idx = int(self._gate_indices[idx])
-            gate = self.track.gates[gate_idx % self.track.num_gates]
+            gate = self._tracks[idx].gates[gate_idx % self._tracks[idx].num_gates]
             rel_pos = self._states[idx, POS] - gate.position
             self._prev_gate_dists[idx] = float(np.linalg.norm(rel_pos))
             normal = _gate_normal(gate)
@@ -436,7 +485,9 @@ class GateRaceEnv(gym.Env):
 
         Args:
             seed: Random seed.
-            options: Additional options (unused).
+            options: Optional dict with:
+                - initial_state: (17,) state vector to place env 0
+                - gate_index: int gate index for env 0
 
         Returns:
             Tuple of (observation, info_dict).
@@ -461,7 +512,20 @@ class GateRaceEnv(gym.Env):
         if self._domain_randomizer is not None:
             self._apply_domain_rand(all_indices)
 
-        if self.random_gate_start:
+        if self.track_generator is not None:
+            for i in range(self.n_envs):
+                self._tracks[i] = self.track_generator.generate(self.np_random)
+
+        # Apply custom initial state from options (used by benchmark runner)
+        if options is not None:
+            initial_state = options.get("initial_state")
+            if initial_state is not None:
+                self._states[0] = np.asarray(initial_state, dtype=np.float64)
+            gate_index = options.get("gate_index")
+            if gate_index is not None:
+                self._gate_indices[0] = int(gate_index)
+                self._start_gate_indices[0] = int(gate_index)
+        elif self.random_gate_start:
             self._randomize_start(all_indices)
 
         self._update_gate_tracking(all_indices)
@@ -492,6 +556,17 @@ class GateRaceEnv(gym.Env):
         U = np.clip((u + 1.0) / 2.0, 0.0, 1.0)  # [-1,1] -> [0,1]
         return (w_max - w_min) * np.sqrt(k * U**2 + (1.0 - k) * U) + w_min
 
+    def _trpy_to_omega(self, u: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Map normalized TRPY action [-1, 1] to motor speed [rad/s].
+        u[0] in [-1,1] → thrust in [0, 2*m*g]
+        u[1:4] in [-1,1] → body rates in [-max_body_rate, max_body_rate]
+        """
+        physical = np.empty_like(u)
+        max_thrust = self.params.mass * GRAVITY * 2.0
+        physical[:, 0] = (u[:, 0] + 1.0) / 2.0 * max_thrust
+        physical[:, 1:4] = u[:, 1:4] * self.max_body_rate
+        return self._trpy_mixer.mix_batch(physical)
+
     def step(
         self, action: NDArray[np.float32]
     ) -> tuple[NDArray[np.float32], NDArray[np.float64], NDArray[np.bool_], NDArray[np.bool_], dict[str, Any]]:
@@ -507,8 +582,11 @@ class GateRaceEnv(gym.Env):
         if action.ndim == 1:
             action = action[None, :]  # (1, 4)
 
-        # Map normalized [-1, 1] action through nonlinear ESC curve to rad/s
-        action_rads = self._esc_to_omega(action)
+        # Map normalized [-1, 1] action to motor speeds in rad/s
+        if self.action_mode == ActionMode.TRPY:
+            action_rads = self._trpy_to_omega(action)
+        else:
+            action_rads = self._esc_to_omega(action)
 
         # Step dynamics
         self._states = self.dynamics.step(self._states, action_rads)
@@ -530,6 +608,53 @@ class GateRaceEnv(gym.Env):
         speed = np.linalg.norm(self._states[:, VEL], axis=1)
         self._episode_speed_sum += speed
         self._episode_speed_count += 1
+
+        # Pre-compute speed bonus (vectorized — speed already computed above)
+        speed_bonus_weight = (self.reward_weights or {}).get("speed_bonus", 0.0)
+        if speed_bonus_weight != 0.0:
+            v_target = max(self.v_max, 1e-6)
+            _speed_bonuses = speed_bonus_weight * np.clip(speed, 0.0, v_target) / v_target
+        else:
+            _speed_bonuses = np.zeros(self.n_envs, dtype=np.float64)
+
+        # Pre-compute boundary penalty (vectorized)
+        boundary_weight = (self.reward_weights or {}).get("boundary_penalty", 0.0)
+        if boundary_weight != 0.0:
+            _boundary_penalties = np.array([
+                boundary_weight * boundary_penalty(
+                    self._states[i, :2], self.arena_bounds, margin=3.0
+                ) for i in range(self.n_envs)
+            ], dtype=np.float64)
+        else:
+            _boundary_penalties = np.zeros(self.n_envs, dtype=np.float64)
+
+        # Pre-compute spline rewards
+        spline_weight = (self.reward_weights or {}).get("spline_proximity", 0.0)
+        heading_weight = (self.reward_weights or {}).get("heading_alignment", 0.0)
+        _spline_rewards = np.zeros(self.n_envs, dtype=np.float64)
+        _heading_rewards = np.zeros(self.n_envs, dtype=np.float64)
+
+        if (spline_weight != 0.0 or heading_weight != 0.0) and any(s is not None for s in self._splines):
+            for i in range(self.n_envs):
+                if self._splines[i] is None:
+                    continue
+                if spline_weight != 0.0:
+                    d = self._splines[i].distance_to_nearest(self._states[i, POS])
+                    _spline_rewards[i] = spline_weight * spline_proximity_reward(d)
+                if heading_weight != 0.0:
+                    _, tangent = self._splines[i].nearest_point_and_tangent(self._states[i, POS])
+                    drone_yaw = _quat_to_euler(self._states[i, QUAT])[2]
+                    tangent_xy = tangent[:2]
+                    tangent_xy_norm = np.linalg.norm(tangent_xy)
+                    if tangent_xy_norm > 1e-6:
+                        cos_a = np.clip(
+                            (np.cos(drone_yaw) * tangent_xy[0] + np.sin(drone_yaw) * tangent_xy[1])
+                            / tangent_xy_norm, -1.0, 1.0
+                        )
+                        yaw_error = np.arccos(cos_a)
+                    else:
+                        yaw_error = 0.0
+                    _heading_rewards[i] = heading_weight * heading_alignment_reward(yaw_error)
 
         for i in range(self.n_envs):
             # Check termination conditions
@@ -601,7 +726,7 @@ class GateRaceEnv(gym.Env):
 
             # Current target gate
             gate_idx = int(self._gate_indices[i])
-            gate = self.track.gates[gate_idx % self.track.num_gates]
+            gate = self._tracks[i].gates[gate_idx % self._tracks[i].num_gates]
 
             state_obj = QuadState.from_vector(self._states[i])
             action_obj = Action(values=action[i] if action.shape[0] > 1 else action[0])
@@ -631,6 +756,49 @@ class GateRaceEnv(gym.Env):
             self._step_reward_components[i, RC_BODY_RATE] = reward_result.components["body_rate"]
             self._step_reward_components[i, RC_ACTION_SMOOTH] = reward_result.components["action_smooth"]
 
+            # Spline proximity reward (pre-computed)
+            if spline_weight != 0.0:
+                rewards[i] += _spline_rewards[i]
+                self._step_reward_components[i, RC_SPLINE_PROXIMITY] = _spline_rewards[i]
+
+            # Heading alignment reward (pre-computed)
+            if heading_weight != 0.0:
+                rewards[i] += _heading_rewards[i]
+                self._step_reward_components[i, RC_HEADING_ALIGNMENT] = _heading_rewards[i]
+
+            # Speed bonus (pre-computed)
+            if speed_bonus_weight != 0.0:
+                rewards[i] += _speed_bonuses[i]
+                self._step_reward_components[i, RC_SPEED_BONUS] = _speed_bonuses[i]
+
+            # Boundary penalty (pre-computed)
+            if boundary_weight != 0.0:
+                rewards[i] += _boundary_penalties[i]
+                self._step_reward_components[i, RC_BOUNDARY_PENALTY] = _boundary_penalties[i]
+
+            # Gate approach reward (needs per-env gate normal + velocity)
+            approach_weight = (self.reward_weights or {}).get("gate_approach", 0.0)
+            if approach_weight != 0.0:
+                gate_for_approach = self._tracks[i].gates[int(self._gate_indices[i]) % self._tracks[i].num_gates]
+                approach_normal = _gate_normal(gate_for_approach)
+                approach_val = approach_weight * gate_approach_reward(self._states[i, VEL], approach_normal)
+                rewards[i] += approach_val
+                self._step_reward_components[i, RC_GATE_APPROACH] = approach_val
+
+            # Gate centering reward (continuous, distance-attenuated)
+            centering_weight = (self.reward_weights or {}).get("gate_centering", 0.0)
+            if centering_weight != 0.0:
+                centering_normal = _gate_normal(gate)
+                centering_rel = self._states[i, POS] - gate.position
+                dist_to_plane = float(np.dot(centering_rel, centering_normal))
+                lateral_vec = centering_rel - dist_to_plane * centering_normal
+                lateral_offset = float(np.linalg.norm(lateral_vec))
+                centering_val = centering_weight * gate_centering_reward(
+                    lateral_offset, dist_to_plane, self.gate_passage_radius
+                )
+                rewards[i] += centering_val
+                self._step_reward_components[i, RC_GATE_CENTERING] = centering_val
+
             # --- Plane-crossing gate passage detection ---
             normal = _gate_normal(gate)
             rel_pos = self._states[i, POS] - gate.position
@@ -645,10 +813,10 @@ class GateRaceEnv(gym.Env):
                 lateral_dist = float(np.linalg.norm(lateral))
                 if lateral_dist <= self.gate_passage_radius:
                     # Gate passed! Increment gate index (wrapping)
-                    self._gate_indices[i] = (self._gate_indices[i] + 1) % self.track.num_gates
+                    self._gate_indices[i] = (self._gate_indices[i] + 1) % self._tracks[i].num_gates
                     self._gates_passed[i] += 1
                     # Lap complete when we've passed num_gates gates (full circuit)
-                    if self._gates_passed[i] > 0 and self._gates_passed[i] % self.track.num_gates == 0:
+                    if self._gates_passed[i] > 0 and self._gates_passed[i] % self._tracks[i].num_gates == 0:
                         self._laps_completed[i] += 1
 
                     # Track first gate step
@@ -675,8 +843,8 @@ class GateRaceEnv(gym.Env):
                     self._step_reward_components[i, RC_GATE_OFFSET] = offset_val
 
                     # CRITICAL: recompute curr_dist against NEW target gate
-                    new_gate = self.track.gates[
-                        int(self._gate_indices[i]) % self.track.num_gates
+                    new_gate = self._tracks[i].gates[
+                        int(self._gate_indices[i]) % self._tracks[i].num_gates
                     ]
                     curr_dist = float(np.linalg.norm(
                         self._states[i, POS] - new_gate.position
@@ -738,6 +906,11 @@ class GateRaceEnv(gym.Env):
                      for j, name in enumerate(REWARD_COMPONENT_NAMES)}
                     for i in range(self.n_envs)
                 ], dtype=object),
+                "n_gates": np.array([self._tracks[i].num_gates for i in range(self.n_envs)]),
+                "track_id": np.array([
+                    hash(tuple(tuple(g.position) for g in self._tracks[i].gates))
+                    for i in range(self.n_envs)
+                ]),
             }
 
             done_indices = np.where(done)[0]
@@ -764,6 +937,13 @@ class GateRaceEnv(gym.Env):
             self._episode_speed_count[done] = 0
             self._first_gate_step[done] = -1
 
+            if self.track_generator is not None:
+                for idx in done_indices:
+                    self._tracks[idx] = self.track_generator.generate(self.np_random)
+                    # Rebuild spline for regenerated track
+                    positions = np.array([g.position for g in self._tracks[idx].gates])
+                    self._splines[idx] = GateSpline(positions) if len(positions) >= 2 else None
+
             if self.random_gate_start:
                 self._randomize_start(done_indices)
 
@@ -783,32 +963,29 @@ class GateRaceEnv(gym.Env):
     def _compute_obs_batched(self) -> NDArray[np.float32]:
         """Compute observation vectors for all environments.
 
-        Always returns shape ``(n_envs, OBS_DIM)`` regardless of ``n_envs``.
-        Use ``_compute_obs`` when you need the single-env squeeze behaviour.
-
-        MonoRace paper observation layout (24-dim):
+        Observation layout (20 + 4*N dims, where N = n_lookahead_gates):
             [0:3]   position drone -> current gate  (gate-yaw-relative frame)
             [3:6]   velocity                        (gate-yaw-relative frame)
             [6:8]   roll, pitch                     (world-frame Euler angles)
             [8]     yaw relative to gate             (drone_yaw - gate_yaw, wrapped)
             [9:12]  body angular rates (p, q, r)     (body frame)
             [12:16] motor speeds                     (normalized [-1, 1])
-            [16:19] position current gate -> next gate (gate-yaw-relative frame)
-            [19]    relative yaw to next gate        (next_yaw - cur_yaw, wrapped)
-            [20:24] previous action                  (normalized [-1, 1])
+            [16:20] previous action                  (normalized [-1, 1])
+            [20:20+4*N] lookahead gates              (4 dims each: rel_pos(3) + yaw_delta(1))
 
         Gate-yaw-relative frame: XY rotated by negative gate yaw, Z unchanged.
 
         Returns:
-            Observations (n_envs, OBS_DIM).
+            Observations (n_envs, obs_dim).
         """
-        obs = np.zeros((self.n_envs, OBS_DIM), dtype=np.float32)
+        obs = np.zeros((self.n_envs, self._obs_dim), dtype=np.float32)
 
         for i in range(self.n_envs):
             state = self._states[i]
             gate_idx = int(self._gate_indices[i])
-            gate = self.track.gates[gate_idx % self.track.num_gates]
-            next_gate = self.track.gates[(gate_idx + 1) % self.track.num_gates]
+            track = self._tracks[i]
+            n_gates = track.num_gates
+            gate = track.gates[gate_idx % n_gates]
 
             # Gate yaw from its orientation quaternion
             gate_yaw = _quat_to_yaw(gate.orientation)
@@ -816,14 +993,14 @@ class GateRaceEnv(gym.Env):
             sin_yaw = np.sin(gate_yaw)
 
             # --- [0:3] Position drone -> current gate (gate-yaw frame) ---
-            dpos = state[POS] - gate.position  # world frame
+            dpos = state[POS] - gate.position
             obs[i, 0:2] = _rotate_xy(dpos[:2], cos_yaw, sin_yaw)
-            obs[i, 2] = dpos[2]  # Z plain offset
+            obs[i, 2] = dpos[2]
 
             # --- [3:6] Velocity (gate-yaw frame) ---
             vel_world = state[VEL]
             obs[i, 3:5] = _rotate_xy(vel_world[:2], cos_yaw, sin_yaw)
-            obs[i, 5] = vel_world[2]  # Z unchanged
+            obs[i, 5] = vel_world[2]
 
             # --- [6:8] Roll, Pitch (world frame Euler) ---
             drone_quat = state[QUAT]
@@ -844,18 +1021,20 @@ class GateRaceEnv(gym.Env):
                 max_omega_i = self.params.max_omega
             obs[i, 12:16] = (state[MOTOR] / max(max_omega_i, 1e-10)) * 2.0 - 1.0
 
-            # --- [16:19] Position current gate -> next gate (gate-yaw frame) ---
-            dnext = next_gate.position - gate.position  # world frame
-            obs[i, 16:18] = _rotate_xy(dnext[:2], cos_yaw, sin_yaw)
-            obs[i, 18] = dnext[2]
+            # --- [16:20] Previous action (normalized [-1, 1]) ---
+            obs[i, 16:20] = self._prev_actions[i]
 
-            # --- [19] Relative yaw to next gate ---
-            next_gate_yaw = _quat_to_yaw(next_gate.orientation)
-            obs[i, 19] = _wrap_angle(next_gate_yaw - gate_yaw)
-
-            # --- [20:24] Previous action (normalized [-1, 1]) ---
-            # _prev_actions already stores normalized [-1, 1] values
-            obs[i, 20:24] = self._prev_actions[i]
+            # --- [20:20+4*N] Lookahead gates ---
+            for k in range(1, self._n_lookahead_gates + 1):
+                lookahead_gate = track.gates[(gate_idx + k) % n_gates]
+                # Relative position: lookahead gate - current gate, in current gate yaw frame
+                dg = lookahead_gate.position - gate.position
+                offset = 20 + 4 * (k - 1)
+                obs[i, offset:offset + 2] = _rotate_xy(dg[:2], cos_yaw, sin_yaw)
+                obs[i, offset + 2] = dg[2]
+                # Yaw delta: lookahead gate yaw - current gate yaw
+                lookahead_yaw = _quat_to_yaw(lookahead_gate.orientation)
+                obs[i, offset + 3] = _wrap_angle(lookahead_yaw - gate_yaw)
 
         return obs
 
@@ -863,7 +1042,7 @@ class GateRaceEnv(gym.Env):
         """Compute observation vectors, squeezing for single env.
 
         Returns:
-            Observations (n_envs, OBS_DIM) or (OBS_DIM,) for single env.
+            Observations (n_envs, obs_dim) or (obs_dim,) for single env.
         """
         obs = self._compute_obs_batched()
         if self.n_envs == 1:
@@ -883,15 +1062,16 @@ class GateRaceEnv(gym.Env):
             "motor_rpms": state[MOTOR].copy(),
         }
 
-    def get_gate_geometry(self) -> dict[str, np.ndarray]:
-        """Return gate geometry for the track."""
-        n_gates = self.track.num_gates
+    def get_gate_geometry(self, env_idx: int = 0) -> dict[str, np.ndarray]:
+        """Return gate geometry for a specific environment's track."""
+        track = self._tracks[env_idx]
+        n_gates = track.num_gates
         positions = np.zeros((n_gates, 3), dtype=np.float64)
         orientations = np.zeros((n_gates, 4), dtype=np.float64)
         half_extents = np.zeros((n_gates, 2), dtype=np.float64)
         radius = self.gate_passage_radius
         for g in range(n_gates):
-            gate = self.track.gates[g]
+            gate = track.gates[g]
             positions[g] = gate.position
             orientations[g] = gate.orientation
             half_extents[g] = [radius, radius]
@@ -904,3 +1084,22 @@ class GateRaceEnv(gym.Env):
     def get_step_reward_components(self, env_idx: int) -> tuple[list[str], np.ndarray]:
         """Return per-step reward component breakdown."""
         return REWARD_COMPONENT_NAMES, self._step_reward_components[env_idx].copy()
+
+    def set_reward_weights(self, updates: dict[str, float]) -> None:
+        """Update reward weights at runtime (for curriculum learning)."""
+        if self.reward_weights is None:
+            from sim.rewards import DEFAULT_WEIGHTS
+            self.reward_weights = dict(DEFAULT_WEIGHTS)
+        self.reward_weights.update(updates)
+
+    def set_v_max(self, v_max: float) -> None:
+        """Update v_max at runtime (for curriculum learning)."""
+        self.v_max = v_max
+
+    def set_arena_bounds(self, arena_bounds: float) -> None:
+        """Update arena bounds at runtime (for progressive difficulty)."""
+        self.arena_bounds = arena_bounds
+
+    def set_gate_passage_radius(self, radius: float) -> None:
+        """Update gate passage radius at runtime (for progressive difficulty)."""
+        self.gate_passage_radius = radius

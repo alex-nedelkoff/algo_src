@@ -1,0 +1,16 @@
+# Procedural track — seed 123
+# Ascending spiral — tests progressive climb with turns
+
+track_type: procedural
+arena_bounds: 5.0
+gate_passage_radius: 0.75
+max_steps: 1200
+seed: 123
+
+generator_params:
+  n_gates: 7
+  spread: 2.5
+  elevation_range: [1.0, 3.5]
+  shape: spiral
+  position_noise: 0.2
+  radius_variation: 0.2

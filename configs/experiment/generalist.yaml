@@ -1,0 +1,153 @@
+# @package _global_
+# Generalist v5: Resume from figure8_gentle (our best policy) and
+# progressively tighten arena/gates to golden set difficulty.
+# The policy already knows how to fly — just needs precision refinement.
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: corner_noise
+  - override /domain_rand: uniform_30pct
+  - override /logging: wandb
+  - _self_
+
+sim:
+  action_mode: trpy
+  n_lookahead_gates: 2
+  max_steps: 1200
+  arena_bounds: 10            # Start at what the policy knows
+  gate_passage_radius: 1.5    # Start at what the policy knows
+  gate_collision: false
+
+total_timesteps: 40_000_000
+resume_checkpoint: outputs/2026-03-20/03-32-01/final_model.zip  # figure8_gentle
+
+# Diverse tracks — the policy already handles these
+track_gen:
+  n_gates_min: 4
+  n_gates_max: 10
+  gate_spacing_min: 1.0
+  gate_spacing_max: 6.0
+  turn_angle_min: -170
+  turn_angle_max: 170
+  elevation_min: 0.5
+  elevation_max: 4.0
+  elevation_delta_max: 1.5
+  closure_max_angle: 120
+  closure_max_retries: 30
+  figure8_ratio: 0.3
+  figure8:
+    loop_radius_min: 1.5
+    loop_radius_max: 3.0
+    gates_per_loop_min: 3
+    gates_per_loop_max: 4
+    crossing_offset_min: 0.3
+    crossing_offset_max: 0.6
+    elevation_min: 1.0
+    elevation_max: 3.0
+    elevation_delta_max: 0.8
+
+perception:
+  noise_scale: 1.0
+  dropout_onset: null
+  dropout_continuation: 0.7
+
+reward:
+  weights:
+    gate_passage: 10.0
+    gate_progress: 0.5
+    gate_offset: 2.0
+    body_rate: 0.001
+    action_smoothness: 0.0
+    crash_penalty: 5.0
+    spline_proximity: 1.0
+    heading_alignment: 0.1
+    speed_bonus: 0.2
+    boundary_penalty: 5.0
+    gate_approach: 0.3
+    gate_centering: 3.0
+  v_max: 8.0
+  action_smoothness_threshold: 0.5
+
+arpo:
+  enabled: false
+
+curriculum:
+  enabled: true
+  stages:
+    # Stage 1: COMFORT ZONE — diverse tracks at familiar params (10M steps)
+    # Policy adjusts to diverse tracks (hairpins, elevation) at 10m/1.5m
+    - timestep: 0
+      reward_weights:
+        gate_passage: 10.0
+        gate_progress: 0.5
+        gate_offset: 2.0
+        crash_penalty: 5.0
+        spline_proximity: 1.0
+        heading_alignment: 0.1
+        speed_bonus: 0.2
+        boundary_penalty: 5.0
+        gate_approach: 0.3
+        gate_centering: 3.0
+      v_max: 8.0
+      ent_coef: 0.002
+      arena_bounds: 10.0
+      gate_passage_radius: 1.5
+      trigger: null
+
+    # Stage 2: TIGHTEN — shrink arena and gates (10M steps)
+    - timestep: 10_000_000
+      reward_weights:
+        gate_passage: 20.0
+        gate_progress: 0.3
+        gate_offset: 2.0
+        crash_penalty: 5.0
+        spline_proximity: 0.5
+        heading_alignment: 0.05
+        speed_bonus: 0.3
+        boundary_penalty: 5.0
+        gate_approach: 0.3
+        gate_centering: 3.0
+      v_max: 10.0
+      ent_coef: 0.0015
+      arena_bounds: 7.0
+      gate_passage_radius: 1.0
+      trigger:
+        metric: racing/gate_passage_rate
+        threshold: 0.70
+        window: 200
+
+    # Stage 3: GOLDEN SET — match benchmark params (20M steps)
+    - timestep: 20_000_000
+      reward_weights:
+        gate_passage: 30.0
+        gate_progress: 0.0
+        gate_offset: 2.0
+        crash_penalty: 3.0
+        spline_proximity: 0.0
+        heading_alignment: 0.0
+        speed_bonus: 0.5
+        boundary_penalty: 3.0
+        gate_approach: 0.3
+        gate_centering: 2.0
+      v_max: 15.0
+      ent_coef: 0.001
+      arena_bounds: 5.0
+      gate_passage_radius: 0.75
+      trigger:
+        metric: racing/gate_passage_rate
+        threshold: 0.60
+        window: 200
+
+multi_scene:
+  enabled: true
+  n_scenes: 10
+
+lr_schedule:
+  initial_lr: 0.0001
+  final_lr: 0.00003
+
+logging:
+  tags: ["trpy", "generalist-v5", "resume-finetune", "progressive", "diverse", "40M"]
+  group: generalist_v5
+  notes: "Generalist v5: resume from figure8_gentle, progressive 10m/1.5m -> 7m/1.0m -> 5m/0.75m, diverse tracks, LR 1e-4"

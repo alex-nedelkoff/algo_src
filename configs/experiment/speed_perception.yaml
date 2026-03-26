@@ -1,0 +1,113 @@
+# @package _global_
+# Speed push + perception noise + longer episodes + wider training gates.
+# Resumes from speed finetune checkpoint.
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: corner_noise
+  - override /domain_rand: uniform_30pct
+  - override /logging: wandb
+  - _self_
+
+sim:
+  action_mode: trpy
+  n_lookahead_gates: 2
+  max_steps: 3000        # 30s episodes (was 1000/10s) — room for 5-6 laps
+  arena_bounds: 10       # 10m (was 5m) — more room for procedural tracks
+  gate_passage_radius: 1.5  # WIDER for training (policy learned on 1.0)
+
+total_timesteps: 20_000_000
+
+# Resume from speed finetune checkpoint
+resume_checkpoint: outputs/2026-03-18/16-27-59/final_model.zip
+
+track_gen:
+  n_gates_min: 4
+  n_gates_max: 8
+  gate_spacing_min: 1.5
+  gate_spacing_max: 4.0
+  turn_angle_min: -120
+  turn_angle_max: 120
+  elevation_min: 1.0
+  elevation_max: 3.5
+  elevation_delta_max: 0.6
+  closure_max_angle: 90
+  closure_max_retries: 10
+
+# Perception noise — simulates real gate detection errors
+# (pinhole camera + distance-scaled Gaussian + HMM dropout)
+perception:
+  noise_scale: 1.0
+  dropout_onset: null         # randomized per-env
+  dropout_continuation: 0.7
+
+# Speed-focused reward with explicit speed bonus
+reward:
+  weights:
+    gate_passage: 50.0
+    gate_progress: 0.5
+    gate_offset: 2.0
+    body_rate: 0.001
+    action_smoothness: 0.0
+    crash_penalty: 5.0
+    spline_proximity: 0.0
+    heading_alignment: 0.0
+    speed_bonus: 0.3          # explicit speed incentive
+  v_max: 8.0                  # speed target for speed_bonus (8 m/s goal)
+  action_smoothness_threshold: 0.5
+
+# No aRPO — policy is standalone
+arpo:
+  enabled: false
+
+# Curriculum: ramp speed target 6 -> 8 -> 12 m/s
+curriculum:
+  enabled: true
+  stages:
+    - timestep: 0
+      reward_weights:
+        gate_passage: 50.0
+        gate_progress: 0.5
+        gate_offset: 2.0
+        body_rate: 0.001
+        crash_penalty: 5.0
+        speed_bonus: 0.3
+      v_max: 6.0
+      trigger: null
+    - timestep: 5_000_000
+      reward_weights:
+        gate_passage: 50.0
+        gate_progress: 0.3
+        gate_offset: 2.0
+        body_rate: 0.001
+        crash_penalty: 5.0
+        speed_bonus: 0.5
+      v_max: 8.0
+      trigger:
+        metric: racing/gate_passage_rate
+        threshold: 0.95
+        window: 200
+    - timestep: 12_000_000
+      reward_weights:
+        gate_passage: 50.0
+        gate_progress: 0.0
+        gate_offset: 2.0
+        body_rate: 0.001
+        crash_penalty: 3.0
+        speed_bonus: 0.8
+      v_max: 12.0
+      trigger:
+        metric: racing/avg_speed
+        threshold: 7.0
+        window: 200
+
+# Multi-scene for generalization
+multi_scene:
+  enabled: true
+  n_scenes: 10
+
+logging:
+  tags: ["trpy", "speed-push-v2", "perception-noise", "longer-episodes", "20M"]
+  group: speed_perception
+  notes: "Speed v2: speed_bonus, perception noise, 30s episodes, wider gates, curriculum 6->8->12 m/s"

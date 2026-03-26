@@ -35,6 +35,12 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "body_rate": 0.001,        # Both M16/M23: lambda_rate=0.001
     "action_smoothness": 0.0,  # M23: disabled
     "crash_penalty": 10.0,     # Both M16/M23: lambda_crash=10
+    "spline_proximity": 0.0,   # disabled by default (backwards compat)
+    "heading_alignment": 0.0,  # disabled by default
+    "speed_bonus": 0.0,        # disabled by default
+    "boundary_penalty": 0.0,   # disabled by default
+    "gate_approach": 0.0,      # disabled by default
+    "gate_centering": 0.0,     # disabled by default
 }
 
 
@@ -180,3 +186,130 @@ def monorace_reward(
 
     total = progress_val + body_rate_val + action_smooth_val
     return RewardResult(total=total, components=components)
+
+
+def spline_proximity_reward(distance: float) -> float:
+    """Reward for proximity to the racing spline.
+
+    TraD-RL Eq. 14 adapted: r = 1 / (1 + d^2)
+
+    Args:
+        distance: Euclidean distance to nearest spline point (meters).
+
+    Returns:
+        Reward in (0, 1].
+    """
+    d = abs(distance)
+    return 1.0 / (1.0 + d * d)
+
+
+def heading_alignment_reward(yaw_error: float) -> float:
+    """Reward for aligning heading with the spline tangent direction.
+
+    CRL paper adapted: r = 1 / (1 + theta^2)
+
+    Args:
+        yaw_error: Angle between drone heading and spline tangent (radians).
+
+    Returns:
+        Reward in (0, 1].
+    """
+    return 1.0 / (1.0 + yaw_error * yaw_error)
+
+
+def speed_bonus_reward(speed: float, v_target: float) -> float:
+    """Reward for flying fast, linearly scaled up to target speed.
+
+    r = min(max(speed, 0), v_target) / v_target
+
+    Gives continuous gradient for acceleration up to v_target,
+    then caps at 1.0 (no penalty for exceeding target).
+
+    Args:
+        speed: Current speed in m/s (scalar, magnitude of velocity).
+        v_target: Target speed in m/s. Reward = 1.0 at this speed.
+
+    Returns:
+        Reward in [0, 1].
+    """
+    if v_target <= 0.0:
+        return 0.0
+    return min(max(speed, 0.0), v_target) / v_target
+
+
+def boundary_penalty(
+    pos_xy: NDArray[np.float64],
+    arena_bounds: float,
+    margin: float = 3.0,
+) -> float:
+    """Penalty for proximity to arena boundaries.
+
+    Quadratic penalty that activates within `margin` meters of the arena edge.
+    Returns 0 when safely inside, -1.0 at the wall.
+
+    r = -max(0, 1 - d_wall / margin)^2
+
+    Args:
+        pos_xy: [x, y] position (world frame).
+        arena_bounds: Half-width of the square arena in meters.
+        margin: Distance from wall where penalty starts.
+
+    Returns:
+        Penalty in [-1, 0].
+    """
+    d_wall = arena_bounds - max(abs(float(pos_xy[0])), abs(float(pos_xy[1])))
+    if d_wall > margin:
+        return 0.0
+    penetration = min(1.0, max(0.0, 1.0 - d_wall / margin))
+    return -(penetration * penetration)
+
+
+def gate_approach_reward(
+    velocity: NDArray[np.float64],
+    gate_normal: NDArray[np.float64],
+) -> float:
+    """Reward for approaching a gate with velocity aligned to its normal.
+
+    r = max(0, cos(angle between velocity and gate_normal))
+
+    Positive when flying through the gate (aligned), zero when perpendicular
+    or flying away.
+
+    Args:
+        velocity: [vx, vy, vz] drone velocity in world frame.
+        gate_normal: [nx, ny, nz] gate forward-facing normal vector.
+
+    Returns:
+        Reward in [0, 1].
+    """
+    speed = np.linalg.norm(velocity)
+    if speed < 1e-6:
+        return 0.0
+    cos_angle = np.dot(velocity, gate_normal) / (speed * max(np.linalg.norm(gate_normal), 1e-6))
+    return max(0.0, float(cos_angle))
+
+
+def gate_centering_reward(
+    lateral_offset: float,
+    dist_to_plane: float,
+    gate_radius: float,
+) -> float:
+    """Continuous centering reward that activates near gate plane.
+
+    Penalizes lateral offset from gate center, with strength increasing
+    as the drone approaches the gate plane. Inspired by Song et al. (2021).
+
+    r = -(lateral_offset / gate_radius) * (1 / (1 + dist_to_plane^2))
+
+    Args:
+        lateral_offset: Distance from gate center perpendicular to normal (m).
+        dist_to_plane: Distance to gate plane along normal (m).
+        gate_radius: Gate passage radius (m). Normalizes penalty.
+
+    Returns:
+        Penalty in [-1, 0]. Zero when centered or far from gate.
+    """
+    if gate_radius <= 0.0:
+        return 0.0
+    proximity = 1.0 / (1.0 + dist_to_plane * dist_to_plane)
+    return -(abs(lateral_offset) / gate_radius) * proximity

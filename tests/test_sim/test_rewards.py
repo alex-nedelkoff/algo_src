@@ -17,7 +17,9 @@ from sim.rewards import (
     body_rate_penalty,
     gate_offset_penalty,
     gate_progress_reward,
+    heading_alignment_reward,
     monorace_reward,
+    spline_proximity_reward,
 )
 from sim.types import Action, GateState, QuadState
 
@@ -445,3 +447,144 @@ class TestMonoraceReward:
             prev_gate_dist=4.0, v_max=30.0, dt=0.01,
         )
         assert result.total == pytest.approx(0.297)
+
+
+class TestSplineProximityReward:
+    def test_on_spline_gives_max_reward(self):
+        assert spline_proximity_reward(0.0) == pytest.approx(1.0)
+
+    def test_far_from_spline_gives_low_reward(self):
+        r = spline_proximity_reward(10.0)
+        assert r < 0.02
+
+    def test_moderate_distance(self):
+        assert spline_proximity_reward(1.0) == pytest.approx(0.5)
+
+    def test_negative_distance_handled(self):
+        assert spline_proximity_reward(-1.0) == pytest.approx(0.5)
+
+
+class TestHeadingAlignmentReward:
+    def test_aligned_gives_max(self):
+        assert heading_alignment_reward(0.0) == pytest.approx(1.0)
+
+    def test_perpendicular_gives_low(self):
+        r = heading_alignment_reward(np.pi / 2)
+        assert 0.2 < r < 0.4
+
+    def test_opposite_gives_lowest(self):
+        r = heading_alignment_reward(np.pi)
+        assert r < 0.15
+
+
+class TestSpeedBonusReward:
+    def test_zero_speed_gives_zero(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(0.0, v_target=5.0) == pytest.approx(0.0)
+
+    def test_at_target_gives_one(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(5.0, v_target=5.0) == pytest.approx(1.0)
+
+    def test_above_target_capped(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(10.0, v_target=5.0) == pytest.approx(1.0)
+
+    def test_half_speed_gives_half(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(2.5, v_target=5.0) == pytest.approx(0.5)
+
+    def test_negative_speed_gives_zero(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(-1.0, v_target=5.0) == pytest.approx(0.0)
+
+    def test_zero_target_gives_zero(self):
+        from sim.rewards import speed_bonus_reward
+        assert speed_bonus_reward(5.0, v_target=0.0) == pytest.approx(0.0)
+
+
+class TestBoundaryPenalty:
+    def test_center_of_arena_zero_penalty(self):
+        from sim.rewards import boundary_penalty
+        assert boundary_penalty(np.array([0.0, 0.0]), arena_bounds=10.0, margin=3.0) == pytest.approx(0.0)
+
+    def test_at_margin_starts_penalty(self):
+        from sim.rewards import boundary_penalty
+        # 8m from center, 2m from wall, within 3m margin → penalty
+        p = boundary_penalty(np.array([8.0, 0.0]), arena_bounds=10.0, margin=3.0)
+        assert p < 0.0
+
+    def test_at_wall_max_penalty(self):
+        from sim.rewards import boundary_penalty
+        p = boundary_penalty(np.array([10.0, 0.0]), arena_bounds=10.0, margin=3.0)
+        assert p == pytest.approx(-1.0)
+
+    def test_outside_wall_capped(self):
+        from sim.rewards import boundary_penalty
+        p = boundary_penalty(np.array([12.0, 0.0]), arena_bounds=10.0, margin=3.0)
+        assert p == pytest.approx(-1.0)
+
+    def test_y_axis_also_penalized(self):
+        from sim.rewards import boundary_penalty
+        p = boundary_penalty(np.array([0.0, 9.0]), arena_bounds=10.0, margin=3.0)
+        assert p < 0.0
+
+
+class TestGateApproachReward:
+    def test_aligned_velocity_max_reward(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert r == pytest.approx(1.0, abs=0.01)
+
+    def test_perpendicular_velocity_zero(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([0.0, 1.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert r == pytest.approx(0.0, abs=0.01)
+
+    def test_opposite_velocity_zero(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([-1.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert r == pytest.approx(0.0)
+
+    def test_zero_velocity_zero_reward(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert r == pytest.approx(0.0)
+
+    def test_diagonal_approach(self):
+        from sim.rewards import gate_approach_reward
+        r = gate_approach_reward(np.array([1.0, 1.0, 0.0]), np.array([1.0, 0.0, 0.0]))
+        assert 0.6 < r < 0.8
+
+
+class TestGateCenteringReward:
+    def test_centered_at_gate_zero_penalty(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=0.0, dist_to_plane=0.0, gate_radius=1.5)
+        assert r == pytest.approx(0.0)
+
+    def test_off_center_at_gate_max_penalty(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=1.5, dist_to_plane=0.0, gate_radius=1.5)
+        assert r == pytest.approx(-1.0)
+
+    def test_off_center_far_from_gate_small_penalty(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=1.5, dist_to_plane=5.0, gate_radius=1.5)
+        assert abs(r) < 0.1
+
+    def test_half_offset_at_gate(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=0.75, dist_to_plane=0.0, gate_radius=1.5)
+        assert r == pytest.approx(-0.5)
+
+    def test_penalty_increases_as_approaching(self):
+        from sim.rewards import gate_centering_reward
+        far = gate_centering_reward(lateral_offset=1.0, dist_to_plane=3.0, gate_radius=1.5)
+        near = gate_centering_reward(lateral_offset=1.0, dist_to_plane=0.5, gate_radius=1.5)
+        assert near < far
+
+    def test_zero_radius_returns_zero(self):
+        from sim.rewards import gate_centering_reward
+        r = gate_centering_reward(lateral_offset=1.0, dist_to_plane=0.0, gate_radius=0.0)
+        assert r == pytest.approx(0.0)

@@ -1,0 +1,86 @@
+# @package _global_
+# Generalist Stage 1: Diverse tracks at easy params, LOW SPEED.
+# Resume from figure8_gentle. Learn hairpins/elevation at 3 m/s.
+# No curriculum — single stage, single set of params.
+
+defaults:
+  - override /sim: numpy_quad
+  - override /control: ppo
+  - override /perception: corner_noise
+  - override /domain_rand: uniform_30pct
+  - override /logging: wandb
+  - _self_
+
+sim:
+  action_mode: trpy
+  n_lookahead_gates: 2
+  max_steps: 1200
+  arena_bounds: 10
+  gate_passage_radius: 1.5
+  gate_collision: false
+
+total_timesteps: 10_000_000
+resume_checkpoint: outputs/2026-03-20/03-32-01/final_model.zip  # figure8_gentle
+
+track_gen:
+  n_gates_min: 4
+  n_gates_max: 10
+  gate_spacing_min: 1.0
+  gate_spacing_max: 6.0
+  turn_angle_min: -170
+  turn_angle_max: 170
+  elevation_min: 0.5
+  elevation_max: 4.0
+  elevation_delta_max: 1.5
+  closure_max_angle: 120
+  closure_max_retries: 30
+  figure8_ratio: 0.3
+  figure8:
+    loop_radius_min: 1.5
+    loop_radius_max: 3.0
+    gates_per_loop_min: 3
+    gates_per_loop_max: 4
+    crossing_offset_min: 0.3
+    crossing_offset_max: 0.6
+    elevation_min: 1.0
+    elevation_max: 3.0
+    elevation_delta_max: 0.8
+
+perception:
+  noise_scale: 1.0
+  dropout_onset: null
+  dropout_continuation: 0.7
+
+reward:
+  weights:
+    gate_passage: 10.0
+    gate_progress: 1.0
+    gate_offset: 3.0
+    body_rate: 0.001
+    action_smoothness: 0.0
+    crash_penalty: 5.0
+    spline_proximity: 1.0
+    heading_alignment: 0.1
+    speed_bonus: 0.0          # No speed bonus — learn geometry first
+    boundary_penalty: 5.0
+    gate_approach: 0.3
+    gate_centering: 3.0
+  v_max: 3.0                  # LOW SPEED CAP — master geometry slowly
+  action_smoothness_threshold: 0.5
+
+control:
+  ent_coef: 0.002
+  learning_rate: 0.0001       # Fine-tune LR
+
+arpo:
+  enabled: false
+curriculum: null              # NO curriculum — single stage
+
+multi_scene:
+  enabled: true
+  n_scenes: 10
+
+logging:
+  tags: ["trpy", "generalist-s1", "diverse", "slow", "10M"]
+  group: generalist_staged
+  notes: "Stage 1: diverse tracks at 10m/1.5m, v_max=3, resume from figure8_gentle"

@@ -57,8 +57,11 @@ class TrajectoryProvider(Protocol):
         """
         ...
 
-    def get_gate_geometry(self) -> dict[str, np.ndarray]:
-        """Return gate geometry for the track (shared across all envs).
+    def get_gate_geometry(self, env_idx: int = 0) -> dict[str, np.ndarray]:
+        """Return gate geometry for a specific environment's track.
+
+        Args:
+            env_idx: Environment index. Default 0 for backwards compatibility.
 
         Returns dict with keys:
             positions: (n_gates, 3) float64

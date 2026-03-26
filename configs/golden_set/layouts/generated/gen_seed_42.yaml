@@ -1,0 +1,16 @@
+# Procedural track — seed 42
+# Figure-8 crossing pattern with elevation variation
+
+track_type: procedural
+arena_bounds: 5.0
+gate_passage_radius: 0.75
+max_steps: 1200
+seed: 42
+
+generator_params:
+  n_gates: 8
+  spread: 3.0
+  elevation_range: [1.0, 3.5]
+  shape: figure8
+  position_noise: 0.2
+  radius_variation: 0.3

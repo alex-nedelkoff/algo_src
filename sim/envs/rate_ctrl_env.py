@@ -65,12 +65,57 @@ def make_figure8_track(
     gates = [
         {"pos": np.array([2.0, 2.0, gate_z]),   "yaw": np.pi},
         {"pos": np.array([-0.5, 1.0, gate_z]),  "yaw": -np.pi * 0.75},
-        {"pos": np.array([-2.0, -2.0, gate_z]), "yaw": 0.0},
+        {"pos": np.array([-2.0, -2.0, gate_z]), "yaw": np.pi},
         {"pos": np.array([-3.5, 0.0, gate_z]),  "yaw": np.pi / 2},
         {"pos": np.array([-2.0, 2.0, gate_z]),  "yaw": 0.0},
         {"pos": np.array([0.5, 1.0, gate_z]),   "yaw": -np.pi * 0.25},
-        {"pos": np.array([2.0, -2.0, gate_z]),  "yaw": np.pi},
+        {"pos": np.array([2.0, -2.0, gate_z]),  "yaw": 0.0},
         {"pos": np.array([3.5, 0.0, gate_z]),   "yaw": np.pi / 2},
+    ]
+    return {
+        "gates": gates,
+        "gate_width": gate_width,
+        "gate_height": gate_height,
+        "n_gates": len(gates),
+    }
+
+
+def make_oval_track(
+    gate_width: float = 0.55,
+    gate_height: float = 0.55,
+    gate_z: float = -1.5,
+) -> dict:
+    """Oval track with 4 gates at cardinal positions."""
+    # Drone flies counterclockwise: right -> top -> left -> bottom
+    gates = [
+        {"pos": np.array([3.0, 0.0, gate_z]),  "yaw": np.pi / 2},     # east, facing +y
+        {"pos": np.array([0.0, 3.0, gate_z]),  "yaw": np.pi},         # north, facing -x
+        {"pos": np.array([-3.0, 0.0, gate_z]), "yaw": -np.pi / 2},    # west, facing -y
+        {"pos": np.array([0.0, -3.0, gate_z]), "yaw": 0.0},           # south, facing +x
+    ]
+    return {
+        "gates": gates,
+        "gate_width": gate_width,
+        "gate_height": gate_height,
+        "n_gates": len(gates),
+    }
+
+
+def make_s_curve_track(
+    gate_width: float = 0.55,
+    gate_height: float = 0.55,
+    gate_z: float = -1.5,
+) -> dict:
+    """S-curve track with 6 gates and alternating left/right turns."""
+    # Yaw values computed as bisector of (−approach) and exit directions
+    # so that approach_sd < 0 and exit_sd > 0 for every gate.
+    gates = [
+        {"pos": np.array([-1.0, -3.0, gate_z]), "yaw":  1.8356},   # 105.2°
+        {"pos": np.array([2.0, -0.5, gate_z]),  "yaw":  np.pi / 2}, # 90.0°
+        {"pos": np.array([-1.0, 2.0, gate_z]),  "yaw": -2.9738},    # −170.4°
+        {"pos": np.array([-2.5, -0.5, gate_z]), "yaw": -1.3152},    # −75.4°
+        {"pos": np.array([1.0, -2.5, gate_z]),  "yaw": -0.6523},    # −37.4°
+        {"pos": np.array([2.0, -3.5, gate_z]),  "yaw": -2.0461},    # −117.2°
     ]
     return {
         "gates": gates,
@@ -138,6 +183,10 @@ class RateCtrlEnv:
     track : dict, optional
         Track definition dict with keys 'gates', 'gate_width', 'gate_height',
         'n_gates'. If None, uses the default figure-8 track.
+    tracks : list[dict], optional
+        List of track dicts for multi-track training. When provided, takes
+        precedence over ``track``. Each parallel env is randomly assigned
+        a track on reset.
     """
 
     def __init__(
@@ -153,6 +202,7 @@ class RateCtrlEnv:
         init_rate_range: float = 0.1,
         max_steps: int = 1200,
         track: Optional[dict] = None,
+        tracks: Optional[list[dict]] = None,
     ) -> None:
         self.n_envs = n_envs
         self.dt = dt
@@ -168,22 +218,53 @@ class RateCtrlEnv:
         # Build compiled dynamics function (cached)
         self._dynamics_fn = build_dynamics_fn()
 
-        # Track
-        self._track = track if track is not None else make_figure8_track()
+        # Track(s)
+        if tracks is not None:
+            self._tracks = tracks
+        elif track is not None:
+            self._tracks = [track]
+        else:
+            self._tracks = [make_figure8_track()]
+
+        # Pre-extract per-track gate data
+        self._track_gate_positions: list[np.ndarray] = []
+        self._track_gate_yaws: list[np.ndarray] = []
+        self._track_n_gates: list[int] = []
+        for t in self._tracks:
+            self._track_gate_positions.append(
+                np.array([g["pos"] for g in t["gates"]])
+            )
+            self._track_gate_yaws.append(
+                np.array([g["yaw"] for g in t["gates"]])
+            )
+            self._track_n_gates.append(t["n_gates"])
+
+        # Backward-compat aliases (used when single track)
+        self._track = self._tracks[0]
         self._n_gates = self._track["n_gates"]
-        self._gate_positions = np.array(
-            [g["pos"] for g in self._track["gates"]]
-        )  # (n_gates, 3)
-        self._gate_yaws = np.array(
-            [g["yaw"] for g in self._track["gates"]]
-        )  # (n_gates,)
+        self._gate_positions = self._track_gate_positions[0]
+        self._gate_yaws = self._track_gate_yaws[0]
+
+        # Compute mean inter-gate distance per track (for reward normalization)
+        self._mean_igd: list[float] = []
+        for t_idx in range(len(self._tracks)):
+            positions = self._track_gate_positions[t_idx]
+            n = self._track_n_gates[t_idx]
+            dists = [
+                float(np.linalg.norm(positions[(i + 1) % n] - positions[i]))
+                for i in range(n)
+            ]
+            self._mean_igd.append(float(np.mean(dists)))
+
+        # Per-env track assignment
+        self._track_idx = np.zeros(n_envs, dtype=np.int32)
 
         # Gymnasium spaces
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float64,
         )
         self.action_space = spaces.Box(
-            low=0.0, high=1.0, shape=(ACT_DIM,), dtype=np.float64,
+            low=0.0, high=1.0, shape=(ACT_DIM,), dtype=np.float32,
         )
 
         # Allocate persistent arrays
@@ -244,6 +325,13 @@ class RateCtrlEnv:
         if n_reset == 0:
             return self._get_obs(), {}
 
+        # Sample track for each resetting env (multi-track)
+        if len(self._tracks) > 1:
+            new_track_idx = self.rng.integers(
+                0, len(self._tracks), size=n_reset
+            )
+            self._track_idx[env_mask] = new_track_idx
+
         # Domain randomization
         if self.dr_percentage > 0:
             new_params = _randomize_params(
@@ -263,11 +351,24 @@ class RateCtrlEnv:
             self._params[k][env_mask] = new_params[k]
 
         # Reset state: spawn 1m behind a random target gate
-        gate_idx = self.rng.integers(0, self._n_gates, size=n_reset)
-        self._gate_idx[env_mask] = gate_idx
-
-        gate_pos = self._gate_positions[gate_idx]  # (n_reset, 3)
-        gate_yaw = self._gate_yaws[gate_idx]       # (n_reset,)
+        if len(self._tracks) == 1:
+            gate_idx = self.rng.integers(0, self._n_gates, size=n_reset)
+            self._gate_idx[env_mask] = gate_idx
+            gate_pos = self._gate_positions[gate_idx]  # (n_reset, 3)
+            gate_yaw = self._gate_yaws[gate_idx]       # (n_reset,)
+        else:
+            # Per-env track-aware gate sampling
+            reset_indices = np.where(env_mask)[0]
+            gate_idx = np.zeros(n_reset, dtype=np.int32)
+            gate_pos = np.zeros((n_reset, 3), dtype=np.float64)
+            gate_yaw = np.zeros(n_reset, dtype=np.float64)
+            for j, env_i in enumerate(reset_indices):
+                ti = self._track_idx[env_i]
+                gi = self.rng.integers(0, self._track_n_gates[ti])
+                gate_idx[j] = gi
+                gate_pos[j] = self._track_gate_positions[ti][gi]
+                gate_yaw[j] = self._track_gate_yaws[ti][gi]
+            self._gate_idx[env_mask] = gate_idx
 
         # Spawn 1m behind gate in its forward direction
         spawn_offset_x = -np.cos(gate_yaw)
@@ -311,8 +412,18 @@ class RateCtrlEnv:
         self._step_reward_components[env_mask] = 0.0
 
         # Initialize signed distance for plane-crossing detection
-        cur_gate_pos = self._gate_positions[self._gate_idx[env_mask]]
-        cur_gate_yaw = self._gate_yaws[self._gate_idx[env_mask]]
+        if len(self._tracks) == 1:
+            cur_gate_pos = self._gate_positions[self._gate_idx[env_mask]]
+            cur_gate_yaw = self._gate_yaws[self._gate_idx[env_mask]]
+        else:
+            reset_indices = np.where(env_mask)[0]
+            cur_gate_pos = np.zeros((n_reset, 3), dtype=np.float64)
+            cur_gate_yaw = np.zeros(n_reset, dtype=np.float64)
+            for j, env_i in enumerate(reset_indices):
+                ti = self._track_idx[env_i]
+                gi = self._gate_idx[env_i]
+                cur_gate_pos[j] = self._track_gate_positions[ti][gi]
+                cur_gate_yaw[j] = self._track_gate_yaws[ti][gi]
         dp = self._state[env_mask, :3] - cur_gate_pos
         normal_x = np.cos(cur_gate_yaw)
         normal_y = np.sin(cur_gate_yaw)
@@ -507,13 +618,39 @@ class RateCtrlEnv:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _per_env_gate_data(
+        self, gate_indices: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Get gate positions and yaws for each env's current gate index.
+
+        gate_indices must be n_envs-length (one index per env).
+        """
+        if len(self._tracks) == 1:
+            return (
+                self._gate_positions[gate_indices],
+                self._gate_yaws[gate_indices],
+            )
+        n = len(gate_indices)
+        positions = np.zeros((n, 3), dtype=np.float64)
+        yaws = np.zeros(n, dtype=np.float64)
+        for i in range(n):
+            ti = self._track_idx[i]
+            gi = gate_indices[i]
+            positions[i] = self._track_gate_positions[ti][gi]
+            yaws[i] = self._track_gate_yaws[ti][gi]
+        return positions, yaws
+
     def _get_obs(self) -> np.ndarray:
         """Compute 24D gate-relative observations for all envs."""
-        gate_pos = self._gate_positions[self._gate_idx]
-        gate_yaw = self._gate_yaws[self._gate_idx]
-        next_idx = (self._gate_idx + 1) % self._n_gates
-        next_gate_pos = self._gate_positions[next_idx]
-        next_gate_yaw = self._gate_yaws[next_idx]
+        gate_pos, gate_yaw = self._per_env_gate_data(self._gate_idx)
+        if len(self._tracks) == 1:
+            next_idx = (self._gate_idx + 1) % self._n_gates
+        else:
+            next_idx = np.array([
+                (self._gate_idx[i] + 1) % self._track_n_gates[self._track_idx[i]]
+                for i in range(self.n_envs)
+            ], dtype=np.int32)
+        next_gate_pos, next_gate_yaw = self._per_env_gate_data(next_idx)
 
         return gate_relative_obs(
             self._state, gate_pos, gate_yaw, next_gate_pos, next_gate_yaw
@@ -521,24 +658,33 @@ class RateCtrlEnv:
 
     def _get_obs_single(self, idx: int) -> np.ndarray:
         """Compute observation for a single env. Returns (24,)."""
+        ti = self._track_idx[idx]
         gi = self._gate_idx[idx]
-        ni = (gi + 1) % self._n_gates
+        ni = (gi + 1) % self._track_n_gates[ti]
         return gate_relative_obs(
             self._state[idx],
-            self._gate_positions[gi],
-            self._gate_yaws[gi],
-            self._gate_positions[ni],
-            self._gate_yaws[ni],
+            self._track_gate_positions[ti][gi],
+            self._track_gate_yaws[ti][gi],
+            self._track_gate_positions[ti][ni],
+            self._track_gate_yaws[ti][ni],
         )
 
     def _compute_d2g(self, mask: Optional[np.ndarray] = None) -> np.ndarray:
         """Euclidean distance from each env's drone to its current gate."""
         if mask is None:
             pos = self._state[:, :3]
-            gate_pos = self._gate_positions[self._gate_idx]
+            gate_pos, _ = self._per_env_gate_data(self._gate_idx)
         else:
             pos = self._state[mask, :3]
-            gate_pos = self._gate_positions[self._gate_idx[mask]]
+            if len(self._tracks) == 1:
+                gate_pos = self._gate_positions[self._gate_idx[mask]]
+            else:
+                indices = np.where(mask)[0]
+                gate_pos = np.zeros((len(indices), 3), dtype=np.float64)
+                for j, env_i in enumerate(indices):
+                    ti = self._track_idx[env_i]
+                    gi = self._gate_idx[env_i]
+                    gate_pos[j] = self._track_gate_positions[ti][gi]
         return np.linalg.norm(pos - gate_pos, axis=1)
 
     def _check_gate_passage(self) -> np.ndarray:
@@ -548,8 +694,7 @@ class RateCtrlEnv:
         (negative signed distance) to in front (positive) AND is within the
         gate opening dimensions.
         """
-        gate_pos = self._gate_positions[self._gate_idx]
-        gate_yaw = self._gate_yaws[self._gate_idx]
+        gate_pos, gate_yaw = self._per_env_gate_data(self._gate_idx)
 
         normal_x = np.cos(gate_yaw)
         normal_y = np.sin(gate_yaw)
@@ -564,10 +709,20 @@ class RateCtrlEnv:
         lateral = np.abs(dp[:, 0] * gate_right_x + dp[:, 1] * gate_right_y)
         vertical = np.abs(dp[:, 2])
 
-        within_opening = (
-            (lateral < self._track["gate_width"] / 2)
-            & (vertical < self._track["gate_height"] / 2)
-        )
+        if len(self._tracks) == 1:
+            half_w = self._tracks[0]["gate_width"] / 2
+            half_h = self._tracks[0]["gate_height"] / 2
+        else:
+            half_w = np.array([
+                self._tracks[self._track_idx[i]]["gate_width"] / 2
+                for i in range(self.n_envs)
+            ])
+            half_h = np.array([
+                self._tracks[self._track_idx[i]]["gate_height"] / 2
+                for i in range(self.n_envs)
+            ])
+
+        within_opening = (lateral < half_w) & (vertical < half_h)
 
         passed = crossed & within_opening
 
@@ -575,9 +730,21 @@ class RateCtrlEnv:
         self._prev_signed_dist = signed_dist
 
         if np.any(passed):
-            self._gate_idx[passed] = (self._gate_idx[passed] + 1) % self._n_gates
-            new_gate_pos = self._gate_positions[self._gate_idx[passed]]
-            new_gate_yaw = self._gate_yaws[self._gate_idx[passed]]
+            # Advance gate index per-track
+            for i in np.where(passed)[0]:
+                ti = self._track_idx[i]
+                self._gate_idx[i] = (
+                    (self._gate_idx[i] + 1) % self._track_n_gates[ti]
+                )
+            # Update signed distance for new target gates
+            passed_indices = np.where(passed)[0]
+            new_gate_pos = np.zeros((len(passed_indices), 3), dtype=np.float64)
+            new_gate_yaw = np.zeros(len(passed_indices), dtype=np.float64)
+            for j, env_i in enumerate(passed_indices):
+                ti = self._track_idx[env_i]
+                gi = self._gate_idx[env_i]
+                new_gate_pos[j] = self._track_gate_positions[ti][gi]
+                new_gate_yaw[j] = self._track_gate_yaws[ti][gi]
             new_dp = self._state[passed, :3] - new_gate_pos
             new_normal_x = np.cos(new_gate_yaw)
             new_normal_y = np.sin(new_gate_yaw)
@@ -628,8 +795,12 @@ class RateCtrlEnv:
             "motor_rpms": state[12:16].copy(),
         }
 
-    def get_gate_geometry(self) -> dict[str, np.ndarray]:
-        """Return gate geometry for the track."""
+    def get_gate_geometry(self, env_idx: int = 0) -> dict[str, np.ndarray]:
+        """Return gate geometry for the track.
+
+        Note: env_idx is accepted for protocol compatibility but currently
+        returns track 0 geometry regardless. RateCtrlEnv uses a single track.
+        """
         n_gates = self._n_gates
         positions = self._gate_positions.copy()
         yaws = self._gate_yaws

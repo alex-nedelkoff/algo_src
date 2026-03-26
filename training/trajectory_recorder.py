@@ -87,11 +87,15 @@ class TrajectoryRecorderCallback(BaseCallback):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _make_eval_env(self) -> Any:
+    def _make_eval_env(self, random_track: bool = False) -> Any:
         """Create a single-env evaluation environment.
 
         Uses the EnvFactory if available, otherwise falls back to cloning
         from the training env (GateRaceEnv legacy path).
+
+        Args:
+            random_track: If True, use the training env's track generator
+                so the viz episode shows a fresh random track layout.
 
         Validates the env implements TrajectoryProvider protocol.
         """
@@ -104,6 +108,13 @@ class TrajectoryRecorderCallback(BaseCallback):
             if reward_cfg is None:
                 reward_cfg = OmegaConf.create({})
             env = self._env_factory.make_eval_env(no_dr_cfg, reward_cfg, n_envs=1)
+            # Inject track generator for random-track viz episodes
+            if random_track:
+                raw = getattr(env, "env", env)
+                train_raw = getattr(self.training_env, "env", self.training_env)
+                tg = getattr(train_raw, "track_generator", None)
+                if tg is not None:
+                    raw.track_generator = tg
         else:
             # Legacy fallback: construct GateRaceEnv directly from training env
             from sim.envs.gate_race_env import GateRaceEnv
@@ -126,6 +137,7 @@ class TrajectoryRecorderCallback(BaseCallback):
                 max_velocity=train_env.max_velocity,
                 arena_bounds=train_env.arena_bounds,
                 domain_randomizer=None,
+                action_mode=getattr(train_env, "action_mode", "motor_rpm"),
             )
 
         # Validate TrajectoryProvider protocol
@@ -137,12 +149,12 @@ class TrajectoryRecorderCallback(BaseCallback):
             )
         return env
 
-    def _extract_gate_geometry(self, env: Any) -> tuple[
+    def _extract_gate_geometry(self, env: Any, env_idx: int = 0) -> tuple[
         np.ndarray, np.ndarray, np.ndarray
     ]:
         """Return gate geometry via TrajectoryProvider protocol."""
         raw_env = getattr(env, "env", env)
-        geom = raw_env.get_gate_geometry()
+        geom = raw_env.get_gate_geometry(env_idx=env_idx)
         return geom["positions"], geom["orientations"], geom["half_extents"]
 
     def _extract_state(self, env: Any, idx: int = 0) -> dict[str, np.ndarray]:
@@ -198,6 +210,12 @@ class TrajectoryRecorderCallback(BaseCallback):
             obs, _ = reset_result
         else:
             obs = reset_result
+
+        # Capture gate geometry NOW, before the episode runs.
+        # After done, step() auto-resets and may generate a new track.
+        gate_positions, gate_orientations, gate_half_extents = (
+            self._extract_gate_geometry(env, env_idx=0)
+        )
 
         positions_list: list[np.ndarray] = []
         quaternions_list: list[np.ndarray] = []
@@ -265,10 +283,6 @@ class TrajectoryRecorderCallback(BaseCallback):
                 break
 
         # Build arrays
-        gate_positions, gate_orientations, gate_half_extents = (
-            self._extract_gate_geometry(env)
-        )
-
         gate_events = (
             np.array(gate_events_list, dtype=np.int64)
             if gate_events_list
@@ -319,13 +333,22 @@ class TrajectoryRecorderCallback(BaseCallback):
                 total_ts,
             )
 
-        env = self._make_eval_env()
+        # Record first episode on fixed eval track, rest on random tracks
+        # so recordings show both reproducible and diverse layouts.
+        env = self._make_eval_env(random_track=False)
         try:
-            for ep in range(self.n_viz_episodes):
-                self._rollout_episode(env, ep, out_dir)
+            self._rollout_episode(env, 0, out_dir)
         finally:
             if hasattr(env, "close"):
                 env.close()
+
+        rand_env = self._make_eval_env(random_track=True)
+        try:
+            for ep in range(1, self.n_viz_episodes):
+                self._rollout_episode(rand_env, ep, out_dir)
+        finally:
+            if hasattr(rand_env, "close"):
+                rand_env.close()
 
         if self.verbose >= 1:
             log.info(

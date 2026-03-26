@@ -221,13 +221,13 @@ class TestESCModel:
         np.testing.assert_allclose(omega[0, 0], hover_omega, rtol=1e-6)
 
     def test_prev_action_in_obs_is_normalized(self) -> None:
-        """Previous action in observation [20:24] should be in [-1, 1]."""
+        """Previous action in observation [16:20] should be in [-1, 1]."""
         env = GateRaceEnv(n_envs=1)
         env.reset(seed=42)
         action = np.array([0.5, -0.3, 0.1, 0.8], dtype=np.float32)
         obs, _, _, _, _ = env.step(action)
-        # obs[20:24] should equal the action we just passed
-        np.testing.assert_allclose(obs[20:24], action, atol=1e-6)
+        # obs[16:20] should equal the action we just passed
+        np.testing.assert_allclose(obs[16:20], action, atol=1e-6)
 
 
 class TestHoverEnv:
@@ -433,3 +433,170 @@ class TestGateLapTracking:
 
         # Gate wrapped to 0 = lap complete
         assert env._laps_completed[0] >= 1, "Lap should complete when gate wraps"
+
+
+class TestTRPYMode:
+    """Tests for TRPY action mode in GateRaceEnv."""
+
+    def test_trpy_env_creates(self) -> None:
+        """Create env with action_mode='trpy', verify action_space shape is (4,)."""
+        env = GateRaceEnv(n_envs=1, action_mode="trpy")
+        assert env.action_space.shape == (4,)
+
+    def test_trpy_env_step_hover(self) -> None:
+        """Step with zero action (hover), verify obs shape and no termination."""
+        env = GateRaceEnv(n_envs=1, action_mode="trpy")
+        env.reset(seed=42)
+
+        action = np.zeros(4, dtype=np.float32)
+        obs, reward, terminated, truncated, info = env.step(action)
+
+        assert obs.shape == (OBS_DIM,)
+        term_val = terminated.item() if hasattr(terminated, "item") else terminated
+        trunc_val = truncated.item() if hasattr(truncated, "item") else truncated
+        assert not term_val, "Zero TRPY action should not terminate immediately"
+        assert not trunc_val
+
+    def test_trpy_env_runs_100_steps(self) -> None:
+        """Run 100 steps with zero action, verify no NaN in obs."""
+        env = GateRaceEnv(n_envs=1, action_mode="trpy")
+        env.reset(seed=42)
+
+        action = np.zeros(4, dtype=np.float32)
+        for _ in range(100):
+            obs, reward, terminated, truncated, info = env.step(action)
+            assert np.all(np.isfinite(obs)), f"NaN/inf in obs after step"
+
+    def test_trpy_obs_dim_matches_rpm_mode(self):
+        """TRPY mode obs dim should match motor_rpm mode."""
+        from sim.tracks import build_figure8_track
+        trpy_env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=100,
+            action_mode="trpy",
+        )
+        rpm_env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=100,
+            action_mode="motor_rpm",
+        )
+        assert trpy_env._obs_dim == rpm_env._obs_dim
+
+
+class TestRuntimeRewardUpdates:
+    def test_set_reward_weights(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"gate_passage": 1.5, "gate_progress": 1.0, "crash_penalty": 10.0},
+        )
+        env.set_reward_weights({"gate_passage": 30.0, "gate_progress": 0.0})
+        assert env.reward_weights["gate_passage"] == 30.0
+        assert env.reward_weights["gate_progress"] == 0.0
+        assert env.reward_weights["crash_penalty"] == 10.0
+
+    def test_set_v_max(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+        )
+        env.set_v_max(20.0)
+        assert env.v_max == 20.0
+
+
+class TestSplineRewards:
+    def test_spline_reward_logged_when_enabled(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"spline_proximity": 1.0, "heading_alignment": 0.05,
+                            "gate_progress": 1.0, "gate_passage": 1.5,
+                            "crash_penalty": 10.0},
+        )
+        env.reset()
+        action = np.zeros((1, 4), dtype=np.float32)
+        env.step(action)
+        names, components = env.get_step_reward_components(0)
+        assert "spline_proximity" in names
+        assert "heading_alignment" in names
+
+    def test_spline_reward_zero_when_disabled(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"spline_proximity": 0.0, "heading_alignment": 0.0,
+                            "gate_progress": 1.0, "gate_passage": 1.5,
+                            "crash_penalty": 10.0},
+        )
+        env.reset()
+        action = np.zeros((1, 4), dtype=np.float32)
+        env.step(action)
+        names, components = env.get_step_reward_components(0)
+        spline_idx = names.index("spline_proximity")
+        heading_idx = names.index("heading_alignment")
+        assert components[spline_idx] == 0.0
+        assert components[heading_idx] == 0.0
+
+
+class TestSpeedReward:
+    def test_speed_reward_nonzero_when_moving(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={
+                "speed_bonus": 1.0, "gate_progress": 1.0,
+                "gate_passage": 1.5, "crash_penalty": 10.0,
+            },
+        )
+        env.reset()
+        action = np.array([[0.3, 0.0, 0.1, 0.0]], dtype=np.float32)
+        for _ in range(5):
+            env.step(action)
+        names, components = env.get_step_reward_components(0)
+        assert "speed_bonus" in names
+        speed_idx = names.index("speed_bonus")
+        assert components[speed_idx] > 0.0
+
+    def test_speed_reward_zero_when_disabled(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"speed_bonus": 0.0, "gate_progress": 1.0,
+                            "gate_passage": 1.5, "crash_penalty": 10.0},
+        )
+        env.reset()
+        action = np.array([[0.3, 0.0, 0.1, 0.0]], dtype=np.float32)
+        env.step(action)
+        names, components = env.get_step_reward_components(0)
+        speed_idx = names.index("speed_bonus")
+        assert components[speed_idx] == 0.0
+
+
+class TestBoundaryAndApproachRewards:
+    def test_components_present(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"boundary_penalty": 5.0, "gate_approach": 0.1,
+                            "gate_progress": 1.0, "gate_passage": 1.5, "crash_penalty": 10.0},
+        )
+        env.reset()
+        env.step(np.zeros((1, 4), dtype=np.float32))
+        names, _ = env.get_step_reward_components(0)
+        assert "boundary_penalty" in names
+        assert "gate_approach" in names
+
+
+class TestGateCenteringRewardEnv:
+    def test_centering_component_present(self):
+        from sim.tracks import build_figure8_track
+        env = GateRaceEnv(
+            track=build_figure8_track(), n_envs=1, dt=0.01, max_steps=10,
+            reward_weights={"gate_centering": 3.0, "gate_progress": 1.0,
+                            "gate_passage": 1.5, "crash_penalty": 10.0},
+        )
+        env.reset()
+        env.step(np.zeros((1, 4), dtype=np.float32))
+        names, components = env.get_step_reward_components(0)
+        assert "gate_centering" in names
+        centering_idx = names.index("gate_centering")
+        # Drone starts offset from gate center, so should have nonzero penalty
+        assert components[centering_idx] != 0.0
