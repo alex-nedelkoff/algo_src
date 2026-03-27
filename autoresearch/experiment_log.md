@@ -317,3 +317,36 @@ v_max=10 is a wash on MoE — slight regression overall. The v_max=7.5 version (
 
 **Current best**: MoE+H3 continuation (light-leaf-122) with v_max=7.5 — fitness -10.67
 **Best checkpoint**: `outputs/2026-03-26/09-34-43/final_model.zip`
+
+---
+
+## MoE+Spline Speed 30M (wild-tree-125)
+- **W&B**: `h0j5z26l`
+- **Date**: 2026-03-26
+- **Resume from**: proud-leaf-124 checkpoint (`outputs/2026-03-26/17-00-00/final_model.zip`)
+- **Budget**: 20M additional steps (30M total with spline_speed)
+- **Config**: `configs/experiment/moe_spline_speed.yaml`
+
+### Results
+
+| Metric | Spline 10M | Spline 30M | MoE+H3 30M (baseline) |
+|--------|-----------|-----------|----------------------|
+| Eval gates/ep | 4.045 | **4.56** | 4.295 |
+| Eval success | 80% | 72% | 82.5% |
+| Eval spline_speed | 483 | **644** | n/a |
+| Train avg_speed | 3.32 | **3.52** | 3.74 |
+| Best gates/ep ever | 16 | **19** | 14 |
+| Best laps/ep ever | 4 | 4 | 2 |
+| Best lap time ever | 3.0s | 3.0s | 3.66s |
+| Best ep reward | 4224 | **5591** | 4189 |
+| Total train laps | 917 | **4044** | 1830 |
+
+### Analysis
+- Policy is still improving — eval gates/ep up 13%, spline_speed reward up 33%
+- **19 gates in one episode** (train) = nearly 5 full laps — new all-time record
+- Train speed climbing (3.32 -> 3.52) — the directional reward is teaching variable speed
+- Success dropped to 72% (from 80%) as policy pushes harder — more OOB
+- The spline_speed reward is the correct signal — it's growing and speed follows
+
+### Best checkpoint
+`outputs/2026-03-26/19-10-06/final_model.zip` (wild-tree-125, 30M spline_speed total)
