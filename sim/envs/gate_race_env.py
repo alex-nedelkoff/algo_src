@@ -846,7 +846,6 @@ class GateRaceEnv(gym.Env):
                             self._gate_indices[i] = 0
                             # Rebuild spline for this env
                             positions = np.array([g.position for g in new_track.gates])
-                            from sim.spline import GateSpline
                             self._splines[i] = GateSpline(positions) if len(positions) >= 2 else None
 
                     # Track first gate step
