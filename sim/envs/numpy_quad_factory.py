@@ -72,6 +72,7 @@ class NumpyQuadEnvFactory:
         max_velocity: float = 50.0,
         arena_bounds: float = 20.0,
         track_gen: DictConfig | None = None,
+        golden_set_dir: str | None = None,
         seed: int = 42,
         n_lookahead_gates: int = 1,
         action_mode: str = "motor_rpm",
@@ -91,6 +92,7 @@ class NumpyQuadEnvFactory:
         self.max_velocity = max_velocity
         self.arena_bounds = arena_bounds
         self._track_gen_cfg = track_gen
+        self._golden_set_dir = golden_set_dir
         self._seed = seed
         self._n_lookahead_gates = n_lookahead_gates
         self.action_mode = action_mode
@@ -103,12 +105,33 @@ class NumpyQuadEnvFactory:
     # EnvFactory protocol
     # ------------------------------------------------------------------
 
+    def _load_golden_set_tracks(self) -> list:
+        """Load golden set tracks from .npz files and return as Track list."""
+        from pathlib import Path
+        from benchmark.track_loader import GoldenSetLoader
+
+        loader = GoldenSetLoader(local_dir=Path(self._golden_set_dir))
+        tracks_dict = loader.load_all()
+        tracks = [v["track"] for v in tracks_dict.values()]
+        log.info("Loaded %d golden set tracks for training", len(tracks))
+        return tracks
+
     def make_vec_env(
         self,
         domain_rand_cfg: DictConfig,
         reward_cfg: DictConfig,
     ) -> VecEnvAdapter:
         """Build a training VecEnv with domain randomization."""
+        if self._golden_set_dir:
+            golden_tracks = self._load_golden_set_tracks()
+            # Distribute golden set tracks across envs, cycling
+            tracks = [golden_tracks[i % len(golden_tracks)] for i in range(self.n_envs)]
+            return self._build(
+                n_envs=self.n_envs,
+                domain_rand_cfg=domain_rand_cfg,
+                reward_cfg=reward_cfg,
+                tracks=tracks,
+            )
         track_generator = self._make_track_generator()
         return self._build(
             n_envs=self.n_envs,
@@ -133,7 +156,10 @@ class NumpyQuadEnvFactory:
         # For eval: fixed tracks (no generator), round-robin from
         # 10 pre-generated tracks for reproducibility.
         eval_tracks = None
-        if self._track_gen_cfg is not None:
+        if self._golden_set_dir:
+            golden_tracks = self._load_golden_set_tracks()
+            eval_tracks = [golden_tracks[i % len(golden_tracks)] for i in range(n_envs)]
+        elif self._track_gen_cfg is not None:
             import numpy as np
 
             tg = self._make_track_generator()
@@ -156,9 +182,9 @@ class NumpyQuadEnvFactory:
     def _make_track_generator(self):
         """Construct a track generator from config, or None.
 
-        Supports optional figure-8 mixing via ``figure8`` and ``figure8_ratio``
-        keys in the track_gen config. When present, returns a MixedTrackGenerator
-        that randomly selects between procedural loops and figure-eights.
+        Supports optional figure-8 and zigzag mixing via sub-configs
+        in the track_gen config. When present, returns a MixedTrackGenerator
+        that randomly selects between procedural loops, figure-eights, and zigzags.
         """
         if self._track_gen_cfg is None:
             return None
@@ -166,21 +192,35 @@ class NumpyQuadEnvFactory:
 
         tg_dict = OmegaConf.to_container(self._track_gen_cfg, resolve=True)
 
-        # Extract figure-8 config before passing remainder to ProceduralTrackGenerator
+        # Extract sub-generator configs before passing remainder to ProceduralTrackGenerator
         figure8_cfg = tg_dict.pop("figure8", None)
         figure8_ratio = tg_dict.pop("figure8_ratio", 0.0)
+        zigzag_cfg = tg_dict.pop("zigzag", None)
+        zigzag_ratio = tg_dict.pop("zigzag_ratio", 0.0)
 
         procedural = ProceduralTrackGenerator(
             arena_half_width=self.arena_bounds,
             **tg_dict,
         )
 
-        if figure8_cfg is not None and figure8_ratio > 0:
-            from sim.figure8_tracks import Figure8TrackGenerator
+        if figure8_cfg is not None or zigzag_cfg is not None:
             from sim.procedural_tracks import MixedTrackGenerator
 
-            fig8_gen = Figure8TrackGenerator(**figure8_cfg)
-            return MixedTrackGenerator(procedural, fig8_gen, figure8_ratio)
+            fig8_gen = None
+            if figure8_cfg is not None and figure8_ratio > 0:
+                from sim.figure8_tracks import Figure8TrackGenerator
+                fig8_gen = Figure8TrackGenerator(**figure8_cfg)
+
+            zigzag_gen = None
+            if zigzag_cfg is not None and zigzag_ratio > 0:
+                from sim.zigzag_tracks import ZigzagTrackGenerator
+                zigzag_gen = ZigzagTrackGenerator(**zigzag_cfg)
+
+            return MixedTrackGenerator(
+                procedural, fig8_gen, zigzag_gen,
+                figure8_ratio=figure8_ratio,
+                zigzag_ratio=zigzag_ratio,
+            )
 
         return procedural
 
