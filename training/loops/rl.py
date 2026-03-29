@@ -258,6 +258,11 @@ class RLTrainingLoop:
         resume_path = cfg.get("resume_checkpoint", None)
         if resume_path:
             log.info("Resuming from checkpoint: %s", resume_path)
+            # Build model with current config first, then load weights.
+            # This allows architecture changes (e.g., 4→5 experts) since
+            # load_state_dict(strict=False) tolerates shape mismatches.
+            if ppo._model is None:
+                ppo._model = ppo._create_model(train_env)
             ppo.load(resume_path, env=train_env)
 
         # 6. Setup callbacks

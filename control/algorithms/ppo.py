@@ -252,9 +252,30 @@ class PPO(Algorithm):
         self._model.save(str(path))
 
     def load(self, path: str | Path, env: gym.Env | None = None) -> None:
-        """Load a model checkpoint."""
+        """Load a model checkpoint.
+
+        If the model is already built (self._model is not None), loads only
+        the policy weights with strict=False to allow architecture changes
+        (e.g., expanding from 4 to 5 experts).
+        """
         _check_deps()
-        if self.recurrent:
+        import io
+        import zipfile
+
+        if self._model is not None:
+            # Model already built with current config — load weights only
+            zip_path = str(path) if str(path).endswith(".zip") else str(path) + ".zip"
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                with zf.open("policy.pth") as f:
+                    state_dict = torch.load(io.BytesIO(f.read()), map_location="cpu", weights_only=False)
+            result = self._model.policy.load_state_dict(state_dict, strict=False)
+            if result.missing_keys:
+                import logging
+                logging.getLogger(__name__).warning("Missing keys on load: %s", result.missing_keys)
+            if result.unexpected_keys:
+                import logging
+                logging.getLogger(__name__).warning("Unexpected keys on load: %s", result.unexpected_keys)
+        elif self.recurrent:
             from sb3_contrib import RecurrentPPO as SB3RecurrentPPO
             self._model = SB3RecurrentPPO.load(str(path), env=env)
         else:
