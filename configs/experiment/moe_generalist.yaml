@@ -17,10 +17,10 @@ sim:
   arena_bounds: 10
   gate_passage_radius: 1.0
   gate_collision: true
-  start_vel_std: 2.0
+  start_vel_std: 1.5
 
 total_timesteps: 40_000_000
-resume_checkpoint: outputs/2026-03-29/00-24-04/final_model
+resume_checkpoint: outputs/expanded_5expert/model
 
 track_gen:
   n_gates_min: 4

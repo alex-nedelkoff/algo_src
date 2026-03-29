@@ -1,5 +1,5 @@
 # PPO with Mixture of Experts policy.
-# 4 experts (2x128 each), top-2 router, load balance loss.
+# 5 experts (2x128 each), top-2 router, load balance loss.
 _target_: control.algorithms.ppo.PPO
 learning_rate: 0.0003
 n_steps: 1000
@@ -18,7 +18,7 @@ log_std_init: -1.0         # std=0.37 (literature standard, was 0.0/std=1.0)
 
 # MoE settings
 moe: true
-n_experts: 4
+n_experts: 5
 expert_hidden_dim: 128    # subject to change
 top_k: 2
 balance_coef: 0.01
