@@ -79,14 +79,18 @@ class ProceduralTrackGenerator:
     def _try_generate(self, rng: np.random.Generator) -> Track | None:
         n_gates = int(rng.integers(self.n_gates_min, self.n_gates_max + 1))
 
+        # Randomly flip elevation bias sign so ~50% of tracks descend
+        effective_bias = self.elevation_bias if rng.random() < 0.5 else -self.elevation_bias
+
         margin = self.arena_half_width * 0.3
         x0 = rng.uniform(-margin, margin)
         y0 = rng.uniform(-margin, margin)
-        if self.elevation_bias > 0:
+        if effective_bias > 0:
             # Start lower to leave room for climbing
             z0_max = self.elevation_min + (self.elevation_max - self.elevation_min) * 0.4
             z0 = rng.uniform(self.elevation_min, max(self.elevation_min, z0_max))
-        elif self.elevation_bias < 0:
+        elif effective_bias < 0:
+            # Start higher to leave room for descending
             z0_min = self.elevation_max - (self.elevation_max - self.elevation_min) * 0.4
             z0 = rng.uniform(min(self.elevation_max, z0_min), self.elevation_max)
         else:
@@ -131,7 +135,7 @@ class ProceduralTrackGenerator:
                 return None
 
             prev_z = positions[-1][2]
-            bias = self.elevation_bias * self.elevation_delta_max
+            bias = effective_bias * self.elevation_delta_max
             z_lo = max(self.elevation_min, prev_z - self.elevation_delta_max + bias)
             z_hi = min(self.elevation_max, prev_z + self.elevation_delta_max + bias)
             if z_lo > z_hi:
@@ -183,7 +187,7 @@ class ProceduralTrackGenerator:
                 continue
 
             prev_z = positions[-1][2]
-            bias = self.elevation_bias * self.elevation_delta_max
+            bias = effective_bias * self.elevation_delta_max
             z_lo = max(self.elevation_min, prev_z - self.elevation_delta_max + bias)
             z_hi = min(self.elevation_max, prev_z + self.elevation_delta_max + bias)
             if z_lo > z_hi:
@@ -221,7 +225,7 @@ class ProceduralTrackGenerator:
             if close_turn > self.closure_max_angle_rad:
                 continue
 
-            closure_z_max = self.elevation_delta_max * (1.0 + 2.0 * abs(self.elevation_bias))
+            closure_z_max = self.elevation_delta_max * (1.0 + 2.0 * abs(effective_bias))
             if abs(positions[0][2] - cz) > closure_z_max:
                 continue
 
@@ -257,7 +261,7 @@ class ProceduralTrackGenerator:
         if close_turn > self.closure_max_angle_rad:
             return None
 
-        closure_z_max = self.elevation_delta_max * (1.0 + 2.0 * abs(self.elevation_bias))
+        closure_z_max = self.elevation_delta_max * (1.0 + 2.0 * abs(effective_bias))
         if abs(positions[0][2] - positions[-1][2]) > closure_z_max:
             return None
 
