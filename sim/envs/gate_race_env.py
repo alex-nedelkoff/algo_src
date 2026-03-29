@@ -835,6 +835,19 @@ class GateRaceEnv(gym.Env):
                     # Lap complete when we've passed num_gates gates (full circuit)
                     if self._gates_passed[i] > 0 and self._gates_passed[i] % self._tracks[i].num_gates == 0:
                         self._laps_completed[i] += 1
+                        # Track chaining: spawn fresh segment for chainable tracks
+                        if self._tracks[i].chainable and self._tracks[i].generator is not None:
+                            new_track = self._tracks[i].generator.generate(
+                                self.np_random,
+                                start_pos=self._tracks[i].exit_pos,
+                                start_heading=self._tracks[i].exit_heading,
+                            )
+                            self._tracks[i] = new_track
+                            self._gate_indices[i] = 0
+                            # Rebuild spline for this env
+                            positions = np.array([g.position for g in new_track.gates])
+                            from sim.spline import GateSpline
+                            self._splines[i] = GateSpline(positions) if len(positions) >= 2 else None
 
                     # Track first gate step
                     if self._first_gate_step[i] < 0:
