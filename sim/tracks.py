@@ -14,12 +14,27 @@ class Track:
 
     Pure geometry container. Gate passage tracking is handled per-env
     by GateRaceEnv._gate_indices.
+
+    For chainable tracks (e.g. zigzag), the track stores exit state
+    and a back-reference to the generator for spawning the next segment.
     """
 
-    def __init__(self, gates: list[GateState]) -> None:
+    def __init__(
+        self,
+        gates: list[GateState],
+        *,
+        chainable: bool = False,
+        exit_pos: np.ndarray | None = None,
+        exit_heading: float | None = None,
+        generator: object | None = None,
+    ) -> None:
         if not gates:
             raise ValueError("Track must have at least one gate")
         self.gates = gates
+        self.chainable = chainable
+        self.exit_pos = exit_pos
+        self.exit_heading = exit_heading
+        self.generator = generator
 
     @property
     def num_gates(self) -> int:
