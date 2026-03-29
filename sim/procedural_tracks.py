@@ -33,6 +33,8 @@ class ProceduralTrackGenerator:
         elevation_min: float = 1.0,
         elevation_max: float = 4.0,
         elevation_delta_max: float = 0.8,
+        elevation_bias: float = 0.0,
+        elevation_oscillation: float = 0.0,
         arena_half_width: float = 20.0,
         closure_max_angle: float = 90.0,
         closure_max_retries: int = 50,
@@ -55,6 +57,8 @@ class ProceduralTrackGenerator:
         self.elevation_min = elevation_min
         self.elevation_max = elevation_max
         self.elevation_delta_max = elevation_delta_max
+        self.elevation_bias = elevation_bias
+        self.elevation_oscillation = elevation_oscillation
         self.arena_half_width = arena_half_width
         self.closure_max_angle_rad = math.radians(closure_max_angle)
         self.closure_max_retries = closure_max_retries
@@ -78,7 +82,15 @@ class ProceduralTrackGenerator:
         margin = self.arena_half_width * 0.3
         x0 = rng.uniform(-margin, margin)
         y0 = rng.uniform(-margin, margin)
-        z0 = rng.uniform(self.elevation_min, self.elevation_max)
+        if self.elevation_bias > 0:
+            # Start lower to leave room for climbing
+            z0_max = self.elevation_min + (self.elevation_max - self.elevation_min) * 0.4
+            z0 = rng.uniform(self.elevation_min, max(self.elevation_min, z0_max))
+        elif self.elevation_bias < 0:
+            z0_min = self.elevation_max - (self.elevation_max - self.elevation_min) * 0.4
+            z0 = rng.uniform(min(self.elevation_max, z0_min), self.elevation_max)
+        else:
+            z0 = rng.uniform(self.elevation_min, self.elevation_max)
         heading = rng.uniform(-math.pi, math.pi)
 
         positions = [np.array([x0, y0, z0])]
@@ -119,8 +131,21 @@ class ProceduralTrackGenerator:
                 return None
 
             prev_z = positions[-1][2]
-            z_lo = max(self.elevation_min, prev_z - self.elevation_delta_max)
-            z_hi = min(self.elevation_max, prev_z + self.elevation_delta_max)
+            bias = self.elevation_bias * self.elevation_delta_max
+            z_lo = max(self.elevation_min, prev_z - self.elevation_delta_max + bias)
+            z_hi = min(self.elevation_max, prev_z + self.elevation_delta_max + bias)
+            if z_lo > z_hi:
+                z_lo = z_hi = np.clip(prev_z + bias, self.elevation_min, self.elevation_max)
+            # Elevation oscillation: force alternating direction
+            if self.elevation_oscillation > 0 and len(positions) >= 2:
+                prev_delta = positions[-1][2] - positions[-2][2]
+                if abs(prev_delta) > 0.01 and rng.random() < self.elevation_oscillation:
+                    if prev_delta > 0:  # last went up, force down
+                        z_hi = min(z_hi, prev_z - 0.05)
+                    else:  # last went down, force up
+                        z_lo = max(z_lo, prev_z + 0.05)
+                    if z_lo > z_hi:
+                        z_lo = z_hi = np.clip(prev_z, self.elevation_min, self.elevation_max)
             new_z = rng.uniform(z_lo, z_hi)
 
             new_pos = np.array([new_x, new_y, new_z])
@@ -158,8 +183,21 @@ class ProceduralTrackGenerator:
                 continue
 
             prev_z = positions[-1][2]
-            z_lo = max(self.elevation_min, prev_z - self.elevation_delta_max)
-            z_hi = min(self.elevation_max, prev_z + self.elevation_delta_max)
+            bias = self.elevation_bias * self.elevation_delta_max
+            z_lo = max(self.elevation_min, prev_z - self.elevation_delta_max + bias)
+            z_hi = min(self.elevation_max, prev_z + self.elevation_delta_max + bias)
+            if z_lo > z_hi:
+                z_lo = z_hi = np.clip(prev_z + bias, self.elevation_min, self.elevation_max)
+            # Elevation oscillation: force alternating direction
+            if self.elevation_oscillation > 0 and len(positions) >= 2:
+                prev_delta = positions[-1][2] - positions[-2][2]
+                if abs(prev_delta) > 0.01 and rng.random() < self.elevation_oscillation:
+                    if prev_delta > 0:  # last went up, force down
+                        z_hi = min(z_hi, prev_z - 0.05)
+                    else:  # last went down, force up
+                        z_lo = max(z_lo, prev_z + 0.05)
+                    if z_lo > z_hi:
+                        z_lo = z_hi = np.clip(prev_z, self.elevation_min, self.elevation_max)
             cz = rng.uniform(z_lo, z_hi)
 
             candidate = np.array([cx, cy, cz])
@@ -183,7 +221,8 @@ class ProceduralTrackGenerator:
             if close_turn > self.closure_max_angle_rad:
                 continue
 
-            if abs(positions[0][2] - cz) > self.elevation_delta_max:
+            closure_z_max = self.elevation_delta_max * (1.0 + 2.0 * abs(self.elevation_bias))
+            if abs(positions[0][2] - cz) > closure_z_max:
                 continue
 
             # Check min separation from all non-adjacent gates
@@ -218,7 +257,8 @@ class ProceduralTrackGenerator:
         if close_turn > self.closure_max_angle_rad:
             return None
 
-        if abs(positions[0][2] - positions[-1][2]) > self.elevation_delta_max:
+        closure_z_max = self.elevation_delta_max * (1.0 + 2.0 * abs(self.elevation_bias))
+        if abs(positions[0][2] - positions[-1][2]) > closure_z_max:
             return None
 
         # Min separation between non-consecutive gates
