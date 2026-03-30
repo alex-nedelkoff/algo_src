@@ -177,6 +177,19 @@ def setup_callbacks(
         # train_env should be the ARPOActionWrapper at this point
         callbacks.append(ARPOAlphaCallback(train_env, alpha_sched))
 
+    # Expert warmup (for MoE expansion — freeze existing experts while new one learns)
+    warmup_cfg = cfg.get("expert_warmup")
+    if warmup_cfg is not None and warmup_cfg.get("enabled", False):
+        from training.expert_warmup_callback import ExpertWarmupCallback
+
+        callbacks.append(ExpertWarmupCallback(
+            new_expert_idx=warmup_cfg.get("new_expert_idx", 4),
+            usage_threshold=warmup_cfg.get("usage_threshold", 0.15),
+            check_freq=warmup_cfg.get("check_freq", 1_000_000),
+            max_frozen_steps=warmup_cfg.get("max_frozen_steps", 10_000_000),
+            patience=warmup_cfg.get("patience", 2),
+        ))
+
     return callbacks
 
 

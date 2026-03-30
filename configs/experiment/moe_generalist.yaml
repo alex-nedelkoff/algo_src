@@ -91,6 +91,14 @@ arpo:
   enabled: false
 curriculum: null
 
+expert_warmup:
+  enabled: true
+  new_expert_idx: 4
+  usage_threshold: 0.15
+  check_freq: 1_000_000
+  max_frozen_steps: 10_000_000
+  patience: 2
+
 multi_scene:
   enabled: true
   n_scenes: 10
