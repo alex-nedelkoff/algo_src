@@ -61,15 +61,15 @@ class ExpertWarmupCallback(BaseCallback):
         self._frozen_params: list[str] = []
 
     def _on_training_start(self) -> None:
-        """Freeze all parameters except the new expert and router."""
+        """Freeze all parameters except the new expert (and optionally router)."""
         policy = self.model.policy
 
         self._frozen_params = []
         for name, param in policy.named_parameters():
-            # Keep trainable: new expert, router, log_std
+            # Keep trainable: only the new expert + log_std
+            # Router is FROZEN to prevent takeover (it would learn to
+            # always route to the only trainable expert)
             if f"experts.{self.new_expert_idx}." in name:
-                continue
-            if "router." in name:
                 continue
             if "log_std" in name:
                 continue
@@ -95,37 +95,26 @@ class ExpertWarmupCallback(BaseCallback):
             return True
         self._last_check_step = step
 
-        # Measure router usage of the new expert
+        # Monitor expert 4 divergence from its clone source
         usage = self._measure_expert_usage()
         self._usage_history.append(usage)
 
         log.info(
-            "Expert warmup check at step %d: expert %d usage=%.1f%% "
-            "(threshold=%.1f%%, above_count=%d/%d)",
+            "Expert warmup check at step %d: expert %d usage=%.1f%%, "
+            "frozen_steps=%d/%d",
             step, self.new_expert_idx, usage * 100,
-            self.usage_threshold * 100,
-            self._above_threshold_count, self.patience,
+            step, self.max_frozen_steps,
         )
 
-        if usage >= self.usage_threshold:
-            self._above_threshold_count += 1
-        else:
-            self._above_threshold_count = 0
-
-        # Unfreeze conditions
-        should_unfreeze = (
-            self._above_threshold_count >= self.patience
-            or step >= self.max_frozen_steps
-        )
-
-        if should_unfreeze:
+        # Unfreeze after fixed warmup period
+        # (Router is frozen, so usage-based triggering doesn't apply.
+        # Expert 4 just needs enough steps to diverge from its clone.)
+        if step >= self.max_frozen_steps:
             self._unfreeze()
-            reason = (
-                f"usage above {self.usage_threshold:.0%} for {self.patience} checks"
-                if self._above_threshold_count >= self.patience
-                else f"max frozen steps ({self.max_frozen_steps}) reached"
+            log.info(
+                "Expert warmup: UNFREEZING all parameters after %d warmup steps.",
+                step,
             )
-            log.info("Expert warmup: UNFREEZING all parameters. Reason: %s", reason)
             log.info("Expert %d usage history: %s",
                      self.new_expert_idx,
                      [f"{u:.1%}" for u in self._usage_history])

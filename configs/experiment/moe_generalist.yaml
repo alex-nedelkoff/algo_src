@@ -20,7 +20,7 @@ sim:
   start_vel_std: 1.5
 
 total_timesteps: 40_000_000
-resume_checkpoint: outputs/expanded_5expert/model
+resume_checkpoint: outputs/expanded_5expert_v3/model
 
 track_gen:
   n_gates_min: 4
@@ -96,7 +96,7 @@ expert_warmup:
   new_expert_idx: 4
   usage_threshold: 0.15
   check_freq: 1_000_000
-  max_frozen_steps: 10_000_000
+  max_frozen_steps: 5_000_000
   patience: 2
 
 multi_scene:
