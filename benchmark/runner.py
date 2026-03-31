@@ -160,6 +160,7 @@ def run_single_env(
         gate_collision=sim_kwargs.get("gate_collision", False),
         action_mode=sim_kwargs.get("action_mode", "motor_rpm"),
         n_lookahead_gates=sim_kwargs.get("n_lookahead_gates", 1),
+        n_action_history=sim_kwargs.get("n_action_history", 0),
     )
     try:
         obs, _ = env.reset(options={
@@ -307,6 +308,7 @@ def run_benchmark(
         sim_params_dict["gate_collision"] = bool(sim_cfg.get("gate_collision", False))
         sim_params_dict["action_mode"] = str(sim_cfg.get("action_mode", "motor_rpm"))
         sim_params_dict["n_lookahead_gates"] = int(sim_cfg.get("n_lookahead_gates", 1))
+        sim_params_dict["n_action_history"] = int(sim_cfg.get("n_action_history", 0))
         # Build VehicleParams if present
         if "params" in sim_cfg:
             from sim.dynamics.params import VehicleParams
