@@ -870,6 +870,15 @@ class GateRaceEnv(gym.Env):
                     rewards[i] += passage_weight
                     self._step_reward_components[i, RC_GATE_PASSAGE] = passage_weight
 
+                    # Speed-at-passage penalty (rewards slow, precise gate threading)
+                    gate_speed_penalty_w = (
+                        (self.reward_weights or {}).get("gate_speed_penalty", 0.0)
+                    )
+                    if gate_speed_penalty_w > 0:
+                        speed = float(np.linalg.norm(self._states[i, VEL]))
+                        speed_excess = max(0.0, speed - 2.0)  # no penalty below 2 m/s
+                        rewards[i] -= gate_speed_penalty_w * speed_excess
+
                     # Gate offset penalty (discrete, at passage only)
                     offset_weight = (
                         (self.reward_weights or {}).get("gate_offset", 1.5)
