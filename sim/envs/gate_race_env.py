@@ -63,9 +63,9 @@ from sim.dynamics.params import VehicleParams
 OBS_DIM = 24  # Keep for backwards compat (N=1 default)
 
 
-def _compute_obs_dim(n_lookahead_gates: int) -> int:
-    """Compute observation dimension: 20 base + 4 per lookahead gate."""
-    return 20 + 4 * n_lookahead_gates
+def _compute_obs_dim(n_lookahead_gates: int, n_action_history: int = 0) -> int:
+    """Compute observation dimension: 20 base + 4 per lookahead gate + 4 per history step."""
+    return 20 + 4 * n_lookahead_gates + 4 * n_action_history
 
 # Default termination thresholds
 DEFAULT_CEILING = 10.0
@@ -297,6 +297,7 @@ class GateRaceEnv(gym.Env):
         track_generator: ProceduralTrackGenerator | None = None,
         tracks: list[Track] | None = None,
         n_lookahead_gates: int = 1,
+        n_action_history: int = 0,
         action_mode: ActionMode | str = ActionMode.MOTOR_RPM,
     ) -> None:
         super().__init__()
@@ -308,7 +309,8 @@ class GateRaceEnv(gym.Env):
         if n_lookahead_gates < 1:
             raise ValueError(f"n_lookahead_gates must be >= 1, got {n_lookahead_gates}")
         self._n_lookahead_gates = n_lookahead_gates
-        self._obs_dim = _compute_obs_dim(n_lookahead_gates)
+        self._n_action_history = n_action_history
+        self._obs_dim = _compute_obs_dim(n_lookahead_gates, n_action_history)
 
         self.n_envs = n_envs
         self.dt = dt
@@ -374,6 +376,13 @@ class GateRaceEnv(gym.Env):
         self._prev_actions: NDArray[np.float64] = np.zeros(
             (n_envs, 4), dtype=np.float64
         )
+        # Action history ring buffer for motor delay awareness
+        if self._n_action_history > 0:
+            self._action_history = np.zeros(
+                (n_envs, self._n_action_history, 4), dtype=np.float64
+            )
+        else:
+            self._action_history = None
 
         # Per-episode gate/lap tracking
         self._gates_passed = np.zeros(n_envs, dtype=np.int64)
@@ -896,6 +905,9 @@ class GateRaceEnv(gym.Env):
             self._prev_gate_dists[i] = curr_dist
 
         self._prev_actions = action.copy()
+        if self._action_history is not None:
+            self._action_history[:, 1:, :] = self._action_history[:, :-1, :]
+            self._action_history[:, 0, :] = action[:self.n_envs, :4]
         self._episode_rewards += rewards
         self._episode_reward_components += self._step_reward_components
 
@@ -957,6 +969,8 @@ class GateRaceEnv(gym.Env):
             self._step_counts[done] = 0
             # _gate_indices and _start_gate_indices set by make_reset_states
             self._prev_actions[done] = 0.0
+            if self._action_history is not None:
+                self._action_history[done] = 0.0
             self._gates_passed[done] = 0
             self._laps_completed[done] = 0
             self._episode_rewards[done] = 0.0
@@ -1064,6 +1078,13 @@ class GateRaceEnv(gym.Env):
                 # Yaw delta: lookahead gate yaw - current gate yaw
                 lookahead_yaw = _quat_to_yaw(lookahead_gate.orientation)
                 obs[i, offset + 3] = _wrap_angle(lookahead_yaw - gate_yaw)
+
+            # --- Action history (after lookahead gates) ---
+            if self._action_history is not None:
+                hist_offset = 20 + 4 * self._n_lookahead_gates
+                obs[i, hist_offset:hist_offset + 4 * self._n_action_history] = (
+                    self._action_history[i].flatten()
+                )
 
         return obs
 

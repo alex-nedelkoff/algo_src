@@ -75,6 +75,7 @@ class NumpyQuadEnvFactory:
         golden_set_dir: str | None = None,
         seed: int = 42,
         n_lookahead_gates: int = 1,
+        n_action_history: int = 0,
         action_mode: str = "motor_rpm",
     ) -> None:
         self.n_envs = n_envs
@@ -95,6 +96,7 @@ class NumpyQuadEnvFactory:
         self._golden_set_dir = golden_set_dir
         self._seed = seed
         self._n_lookahead_gates = n_lookahead_gates
+        self._n_action_history = n_action_history
         self.action_mode = action_mode
 
         # Resolve params: accept VehicleParams directly (Hydra recursive
@@ -273,6 +275,7 @@ class NumpyQuadEnvFactory:
             track_generator=track_generator,
             tracks=tracks,
             n_lookahead_gates=self._n_lookahead_gates,
+            n_action_history=self._n_action_history,
             action_mode=self.action_mode,
         )
 
