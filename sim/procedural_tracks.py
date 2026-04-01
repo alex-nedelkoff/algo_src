@@ -291,28 +291,31 @@ def _wrap_angle(angle: float) -> float:
 
 
 class MixedTrackGenerator:
-    """Randomly selects between procedural loop, figure-eight, and zigzag tracks.
+    """Randomly selects between procedural loop, figure-eight, zigzag, and composed tracks."""
 
-    Args:
-        procedural: ProceduralTrackGenerator for closed-loop tracks.
-        figure8: Figure8TrackGenerator for figure-eight tracks (or None).
-        zigzag: ZigzagTrackGenerator for zigzag segments (or None).
-        figure8_ratio: Probability of generating a figure-eight (0.0-1.0).
-        zigzag_ratio: Probability of generating a zigzag (0.0-1.0).
-    """
-
-    def __init__(self, procedural, figure8=None, zigzag=None,
-                 figure8_ratio=0.3, zigzag_ratio=0.0):
+    def __init__(self, procedural, figure8=None, zigzag=None, composed=None,
+                 figure8_ratio=0.3, zigzag_ratio=0.0, composed_ratio=0.0):
         self.procedural = procedural
         self.figure8 = figure8
         self.zigzag = zigzag
+        self.composed = composed
         self.figure8_ratio = figure8_ratio
         self.zigzag_ratio = zigzag_ratio
+        self.composed_ratio = composed_ratio
 
     def generate(self, rng):
         r = rng.random()
-        if self.zigzag is not None and r < self.zigzag_ratio:
-            return self.zigzag.generate(rng)
-        if self.figure8 is not None and r < self.zigzag_ratio + self.figure8_ratio:
-            return self.figure8.generate(rng)
+        threshold = 0.0
+        if self.composed is not None and self.composed_ratio > 0:
+            threshold += self.composed_ratio
+            if r < threshold:
+                return self.composed.generate(rng)
+        if self.zigzag is not None and self.zigzag_ratio > 0:
+            threshold += self.zigzag_ratio
+            if r < threshold:
+                return self.zigzag.generate(rng)
+        if self.figure8 is not None and self.figure8_ratio > 0:
+            threshold += self.figure8_ratio
+            if r < threshold:
+                return self.figure8.generate(rng)
         return self.procedural.generate(rng)

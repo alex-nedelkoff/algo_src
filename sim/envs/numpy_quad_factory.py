@@ -199,13 +199,15 @@ class NumpyQuadEnvFactory:
         figure8_ratio = tg_dict.pop("figure8_ratio", 0.0)
         zigzag_cfg = tg_dict.pop("zigzag", None)
         zigzag_ratio = tg_dict.pop("zigzag_ratio", 0.0)
+        composed_cfg = tg_dict.pop("composed", None)
+        composed_ratio = tg_dict.pop("composed_ratio", 0.0)
 
         procedural = ProceduralTrackGenerator(
             arena_half_width=self.arena_bounds,
             **tg_dict,
         )
 
-        if figure8_cfg is not None or zigzag_cfg is not None:
+        if figure8_cfg is not None or zigzag_cfg is not None or composed_cfg is not None:
             from sim.procedural_tracks import MixedTrackGenerator
 
             fig8_gen = None
@@ -218,10 +220,25 @@ class NumpyQuadEnvFactory:
                 from sim.zigzag_tracks import ZigzagTrackGenerator
                 zigzag_gen = ZigzagTrackGenerator(**zigzag_cfg)
 
+            composed_gen = None
+            if composed_cfg is not None and composed_ratio > 0:
+                from sim.composed_tracks import ComposedTrackGenerator, PerturbationConfig
+                perturb_cfg = composed_cfg.pop("perturbation", None)
+                perturbation = None
+                if perturb_cfg is not None:
+                    perturbation = PerturbationConfig(**perturb_cfg)
+                composed_gen = ComposedTrackGenerator(
+                    arena_half_width=self.arena_bounds,
+                    elevation_min=tg_dict.get("elevation_min", 0.5),
+                    elevation_max=tg_dict.get("elevation_max", 4.0),
+                    **composed_cfg,
+                )
+
             return MixedTrackGenerator(
-                procedural, fig8_gen, zigzag_gen,
+                procedural, fig8_gen, zigzag_gen, composed_gen,
                 figure8_ratio=figure8_ratio,
                 zigzag_ratio=zigzag_ratio,
+                composed_ratio=composed_ratio,
             )
 
         return procedural
