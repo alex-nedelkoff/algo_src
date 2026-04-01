@@ -29,6 +29,8 @@ class GateSpline:
         closed = np.vstack([gate_positions, gate_positions[0:1]])
         diffs = np.diff(closed, axis=0)
         seg_lengths = np.linalg.norm(diffs, axis=1)
+        # Ensure strictly increasing knots — zero-length segments break CubicSpline
+        seg_lengths = np.maximum(seg_lengths, 1e-6)
         t_knots = np.concatenate([[0], np.cumsum(seg_lengths)])
 
         self._spline_x = CubicSpline(t_knots, closed[:, 0], bc_type="periodic")
