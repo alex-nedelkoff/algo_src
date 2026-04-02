@@ -59,13 +59,17 @@ from sim.dynamics.params import VehicleParams
 # Default observation dimension (n_lookahead_gates=1):
 #   gate_rel_pos(3) + vel(3) + roll_pitch(2) + yaw_rel(1) +
 #   body_rates(3) + motor_speeds(4) + prev_action(4) +
-#   lookahead_gates(4 * n_lookahead_gates) = 20 + 4*N
-OBS_DIM = 24  # Keep for backwards compat (N=1 default)
+#   lookahead_gates(6 * n_lookahead_gates) + arena_extent(1) = 21 + 6*N
+OBS_DIM = 27  # Keep for backwards compat (N=1 default)
 
 
 def _compute_obs_dim(n_lookahead_gates: int, n_action_history: int = 0) -> int:
-    """Compute observation dimension: 20 base + 4 per lookahead gate + 4 per history step."""
-    return 20 + 4 * n_lookahead_gates + 4 * n_action_history
+    """Compute observation dimension.
+
+    Layout: 20 base + 6 per lookahead gate (rel_pos(3) + yaw_delta(1) + width(1) + height(1))
+            + 1 arena_extent + 4 per action history step.
+    """
+    return 20 + 6 * n_lookahead_gates + 1 + 4 * n_action_history
 
 # Default termination thresholds
 DEFAULT_CEILING = 10.0
