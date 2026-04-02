@@ -1019,7 +1019,7 @@ class GateRaceEnv(gym.Env):
     def _compute_obs_batched(self) -> NDArray[np.float32]:
         """Compute observation vectors for all environments.
 
-        Observation layout (20 + 4*N dims, where N = n_lookahead_gates):
+        Observation layout (20 + 6*N + 1 dims, where N = n_lookahead_gates):
             [0:3]   position drone -> current gate  (gate-yaw-relative frame)
             [3:6]   velocity                        (gate-yaw-relative frame)
             [6:8]   roll, pitch                     (world-frame Euler angles)
@@ -1027,7 +1027,9 @@ class GateRaceEnv(gym.Env):
             [9:12]  body angular rates (p, q, r)     (body frame)
             [12:16] motor speeds                     (normalized [-1, 1])
             [16:20] previous action                  (normalized [-1, 1])
-            [20:20+4*N] lookahead gates              (4 dims each: rel_pos(3) + yaw_delta(1))
+            [20:20+6*N] lookahead gates              (6 dims each: rel_pos(3) + yaw_delta(1) + width(1) + height(1))
+            [20+6*N]    arena extent                  (arena_half_width / 10.0)
+            [21+6*N:...]  action history              (4 dims per step)
 
         Gate-yaw-relative frame: XY rotated by negative gate yaw, Z unchanged.
 
@@ -1080,21 +1082,31 @@ class GateRaceEnv(gym.Env):
             # --- [16:20] Previous action (normalized [-1, 1]) ---
             obs[i, 16:20] = self._prev_actions[i]
 
-            # --- [20:20+4*N] Lookahead gates ---
+            # --- [20:20+6*N] Lookahead gates (6 dims each) ---
             for k in range(1, self._n_lookahead_gates + 1):
                 lookahead_gate = track.gates[(gate_idx + k) % n_gates]
-                # Relative position: lookahead gate - current gate, in current gate yaw frame
                 dg = lookahead_gate.position - gate.position
-                offset = 20 + 4 * (k - 1)
+                offset = 20 + 6 * (k - 1)
                 obs[i, offset:offset + 2] = _rotate_xy(dg[:2], cos_yaw, sin_yaw)
                 obs[i, offset + 2] = dg[2]
-                # Yaw delta: lookahead gate yaw - current gate yaw
                 lookahead_yaw = _quat_to_yaw(lookahead_gate.orientation)
                 obs[i, offset + 3] = _wrap_angle(lookahead_yaw - gate_yaw)
+                # Gate geometry: width and height
+                if hasattr(lookahead_gate, 'dimensions') and lookahead_gate.dimensions:
+                    dims = lookahead_gate.dimensions
+                    obs[i, offset + 4] = dims.get("width", dims.get("diameter", self.gate_passage_radius * 2))
+                    obs[i, offset + 5] = dims.get("height", dims.get("diameter", self.gate_passage_radius * 2))
+                else:
+                    obs[i, offset + 4] = self.gate_passage_radius * 2
+                    obs[i, offset + 5] = self.gate_passage_radius * 2
 
-            # --- Action history (after lookahead gates) ---
+            # --- [20+6*N] Arena extent (normalized) ---
+            arena_offset = 20 + 6 * self._n_lookahead_gates
+            obs[i, arena_offset] = self.arena_bounds / 10.0
+
+            # --- Action history (after arena extent) ---
             if self._action_history is not None:
-                hist_offset = 20 + 4 * self._n_lookahead_gates
+                hist_offset = 20 + 6 * self._n_lookahead_gates + 1
                 obs[i, hist_offset:hist_offset + 4 * self._n_action_history] = (
                     self._action_history[i].flatten()
                 )
