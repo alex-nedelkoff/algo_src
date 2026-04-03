@@ -1,6 +1,6 @@
 # @package _global_
-# 5-expert MoE with expanded obs (33 dims): gate width/height + arena extent.
-# Resume from checkpoint-surgery-expanded model. 20M fine-tuning steps.
+# 5-expert MoE + GRU (64-dim) for temporal context on multi-maneuver circuits.
+# Train from scratch — GRU changes input topology so checkpoint surgery not viable.
 
 defaults:
   - override /sim: numpy_quad
@@ -19,8 +19,7 @@ sim:
   gate_collision: true
   start_vel_std: 1.5
 
-total_timesteps: 20_000_000
-resume_checkpoint: outputs/expanded_33dim/model
+total_timesteps: 50_000_000
 
 control:
   moe: true
@@ -31,6 +30,7 @@ control:
   ent_coef: 0.005
   learning_rate: 0.0003
   log_std_init: -1.0
+  gru_hidden_dim: 64
 
 track_gen:
   n_gates_min: 4
@@ -122,6 +122,6 @@ autopilot:
   enabled: false
 
 logging:
-  tags: ["trpy", "moe", "5expert", "33dim", "gate-geometry", "arena-extent"]
-  group: moe_33dim
-  notes: "5-expert MoE with 33-dim obs (gate width/height + arena extent). boundary_penalty=5.0. Resume from expanded checkpoint."
+  tags: ["trpy", "moe", "5expert", "33dim", "gru-64", "temporal-context"]
+  group: moe_gru
+  notes: "5-expert MoE + GRU(64) for temporal context. 33-dim obs. From scratch."

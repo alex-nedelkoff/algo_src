@@ -75,6 +75,7 @@ class PPO(Algorithm):
         expert_hidden_dim: int = 128,
         top_k: int = 2,
         balance_coef: float = 0.01,
+        gru_hidden_dim: int = 0,
         **kwargs: Any,
     ) -> None:
         _check_deps()
@@ -87,6 +88,7 @@ class PPO(Algorithm):
         self.expert_hidden_dim = expert_hidden_dim
         self.top_k = top_k
         self.balance_coef = balance_coef
+        self.gru_hidden_dim = gru_hidden_dim
         self.learning_rate = learning_rate
         self.n_steps = n_steps
         self.batch_size = batch_size
@@ -208,6 +210,7 @@ class PPO(Algorithm):
             common_kwargs["policy_kwargs"]["expert_hidden_dim"] = self.expert_hidden_dim
             common_kwargs["policy_kwargs"]["top_k"] = self.top_k
             common_kwargs["policy_kwargs"]["balance_coef"] = self.balance_coef
+            common_kwargs["policy_kwargs"]["gru_hidden_dim"] = self.gru_hidden_dim
             return SB3_PPO(policy=MoEPolicy, **common_kwargs)
 
         return SB3_PPO(policy=self.policy_type, **common_kwargs)
