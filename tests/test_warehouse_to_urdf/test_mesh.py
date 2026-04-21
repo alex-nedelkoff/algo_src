@@ -7,6 +7,8 @@ from scripts.warehouse_to_urdf.mesh import (
     clip_gates_in_sdf,
     extract_mesh_from_sdf,
     simplify_mesh,
+    make_torus_mesh,
+    flip_mesh_ned_to_enu,
 )
 from scripts.warehouse_to_urdf.tsdf import TSDFArtifact
 
@@ -87,3 +89,32 @@ def test_simplify_aborts_if_result_under_100_triangles():
     mesh = extract_mesh_from_sdf(art)
     with pytest.raises(ValueError, match="too few triangles"):
         simplify_mesh(mesh, target_triangles=10)
+
+
+def test_make_torus_mesh_has_expected_topology():
+    mesh = make_torus_mesh(major_radius=0.80, minor_radius=0.05, n_segments=32)
+    # 32 segments × 32 cross-section = 1024 vertices, 2048 triangles
+    assert len(mesh.vertices) == 32 * 32
+    assert len(mesh.triangles) == 32 * 32 * 2
+
+
+def test_make_torus_mesh_bounds_match_inner_outer_radii():
+    mesh = make_torus_mesh(major_radius=0.80, minor_radius=0.05, n_segments=32)
+    verts = np.asarray(mesh.vertices)
+    radial = np.sqrt(verts[:, 0] ** 2 + verts[:, 1] ** 2)
+    # Inner edge ≈ 0.75, outer edge ≈ 0.85, ring axis along Z (so |z| ≤ 0.05).
+    assert abs(radial.min() - 0.75) < 0.01
+    assert abs(radial.max() - 0.85) < 0.01
+    assert abs(verts[:, 2]).max() < 0.06
+
+
+def test_flip_mesh_ned_to_enu_swaps_xy_negates_z():
+    mesh = o3d.geometry.TriangleMesh.create_box(1.0, 2.0, 3.0)
+    # Box created at origin; verts are {0,1}×{0,2}×{0,3}.
+    flipped = flip_mesh_ned_to_enu(mesh)
+    verts_in = np.asarray(mesh.vertices)
+    verts_out = np.asarray(flipped.vertices)
+    # NED→ENU: (x, y, z) → (y, x, -z)
+    np.testing.assert_array_almost_equal(verts_out[:, 0], verts_in[:, 1])
+    np.testing.assert_array_almost_equal(verts_out[:, 1], verts_in[:, 0])
+    np.testing.assert_array_almost_equal(verts_out[:, 2], -verts_in[:, 2])

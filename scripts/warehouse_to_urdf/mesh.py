@@ -110,3 +110,65 @@ def simplify_mesh(mesh, target_triangles: int):
             f"or all-positive."
         )
     return simplified
+
+
+def make_torus_mesh(
+    major_radius: float = 0.80,
+    minor_radius: float = 0.05,
+    n_segments: int = 32,
+):
+    """Procedural torus around the Z axis. Used as the gate ring mesh.
+
+    Outer radius (in ring plane) = major + minor; inner = major − minor.
+    With defaults: outer 0.85, inner 0.75 — matches COR-92 gates.
+    """
+    import open3d as o3d
+
+    # Parametric grid: u around the ring axis, v around the tube cross-section.
+    u = np.linspace(0, 2 * np.pi, n_segments, endpoint=False)
+    v = np.linspace(0, 2 * np.pi, n_segments, endpoint=False)
+    uu, vv = np.meshgrid(u, v, indexing="ij")
+    x = (major_radius + minor_radius * np.cos(vv)) * np.cos(uu)
+    y = (major_radius + minor_radius * np.cos(vv)) * np.sin(uu)
+    z = minor_radius * np.sin(vv)
+    verts = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
+
+    # Triangulate the (n_segments × n_segments) grid as 2 triangles per quad,
+    # wrapping in both directions.
+    n = n_segments
+    faces = []
+    for i in range(n):
+        for j in range(n):
+            a = i * n + j
+            b = ((i + 1) % n) * n + j
+            c = ((i + 1) % n) * n + (j + 1) % n
+            d = i * n + (j + 1) % n
+            faces.append([a, b, c])
+            faces.append([a, c, d])
+    faces = np.asarray(faces, dtype=np.int32)
+
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(verts)
+    mesh.triangles = o3d.utility.Vector3iVector(faces)
+    mesh.compute_vertex_normals()
+    return mesh
+
+
+def flip_mesh_ned_to_enu(mesh):
+    """Return a copy of the mesh with vertices converted NED→ENU.
+
+    (x, y, z) → (y, x, -z). Recomputes normals.
+    """
+    import open3d as o3d
+
+    verts = np.asarray(mesh.vertices)
+    flipped = np.empty_like(verts)
+    flipped[:, 0] = verts[:, 1]
+    flipped[:, 1] = verts[:, 0]
+    flipped[:, 2] = -verts[:, 2]
+
+    out = o3d.geometry.TriangleMesh()
+    out.vertices = o3d.utility.Vector3dVector(flipped)
+    out.triangles = o3d.utility.Vector3iVector(np.asarray(mesh.triangles))
+    out.compute_vertex_normals()
+    return out
