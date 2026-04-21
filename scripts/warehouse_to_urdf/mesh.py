@@ -67,3 +67,46 @@ def clip_gates_in_sdf(
         sdf[i_lo:i_hi, j_lo:j_hi, k_lo:k_hi][mask] = _LARGE_POSITIVE_SDF
 
     return replace(artifact, sdf=sdf)
+
+
+def extract_mesh_from_sdf(artifact: TSDFArtifact):
+    """Extract triangle mesh from SDF via marching cubes (Open3D).
+
+    If the artifact already carries a pre-extracted mesh (e.g. .ply
+    input), return it directly without re-meshing.
+    """
+    import open3d as o3d
+    from skimage import measure
+
+    if artifact.pre_extracted_mesh is not None:
+        return artifact.pre_extracted_mesh
+
+    # skimage's marching_cubes is more reliable than Open3D for raw SDF
+    # arrays; Open3D's MC API expects a VoxelGrid or VolumeIntegration.
+    verts, faces, normals, _ = measure.marching_cubes(
+        artifact.sdf,
+        level=0.0,
+        spacing=(artifact.voxel_size, artifact.voxel_size, artifact.voxel_size),
+    )
+    verts = verts + artifact.origin  # shift into world frame
+
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(verts)
+    mesh.triangles = o3d.utility.Vector3iVector(faces)
+    mesh.vertex_normals = o3d.utility.Vector3dVector(normals)
+    mesh.compute_vertex_normals()
+    return mesh
+
+
+def simplify_mesh(mesh, target_triangles: int):
+    """Quadric-decimation simplify; abort if result is too small."""
+    simplified = mesh.simplify_quadric_decimation(
+        target_number_of_triangles=target_triangles
+    )
+    if len(simplified.triangles) < 100:
+        raise ValueError(
+            f"Simplified mesh has too few triangles "
+            f"({len(simplified.triangles)} < 100). TSDF likely empty "
+            f"or all-positive."
+        )
+    return simplified

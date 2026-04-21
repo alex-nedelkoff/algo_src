@@ -19,6 +19,7 @@ sim = [
     "gymnasium",
     "pybullet",
     "open3d",
+    "scikit-image",
 ]
 control = [
     "torch",
