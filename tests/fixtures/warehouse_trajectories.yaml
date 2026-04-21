@@ -1,0 +1,41 @@
+# Hand-authored kinematic drone trajectories for the D fly-through tests.
+# Each trajectory is a sequence of (x, y, z) ENU waypoints (meters);
+# the test linearly interpolates between consecutive points and steps
+# the drone in PyBullet, asserting expected collision behavior.
+#
+# These coordinates assume the synthetic test asset bundle (one wall,
+# one gate at ENU position (1.5, 1.5, 1.5)). When the real warehouse
+# v1 assets land, this file gets a parallel section keyed by
+# `warehouse_v1` with real waypoints; the test fixture in
+# test_warehouse_collision.py picks the right section.
+
+synthetic:
+  clean_pass_through:
+    waypoints:
+      - [0.0, 1.5, 1.5]
+      - [1.5, 1.5, 1.5]    # passes through Gate_01 center
+      - [3.0, 1.5, 1.5]
+    expected_gate_passages: [Gate_01]
+    expected_warehouse_contacts: 0
+
+  wall_collision:
+    waypoints:
+      - [0.5, 1.5, 1.5]
+      - [0.55, 1.5, 1.5]    # walks straight into the wall at x≈0.6
+      - [0.65, 1.5, 1.5]
+    expected_warehouse_contacts_min: 1
+    expected_first_contact_within_m_of: [0.6, 1.5, 1.5]
+
+  gate_rim_collision:
+    waypoints:
+      - [0.0, 1.5, 2.4]
+      - [1.5, 1.5, 2.35]   # clips top of gate ring (z≈2.35 = 1.5 + 0.85)
+      - [3.0, 1.5, 2.35]
+    expected_gate_rim_contacts: [Gate_01]
+    expected_warehouse_contacts: 0
+
+# When real assets land, append:
+# warehouse_v1:
+#   clean_pass_through:
+#     waypoints: [...]   # passes through Gate_01..Gate_05 centers
+#     ...
