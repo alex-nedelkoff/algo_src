@@ -91,3 +91,58 @@ def test_clean_pass_through_no_warehouse_contact(synthetic_assets, trajectories)
         assert warehouse_contact_count == traj["expected_warehouse_contacts"]
     finally:
         p.disconnect(cid)
+
+
+def test_wall_collision_detected(synthetic_assets, trajectories):
+    cid = p.connect(p.DIRECT)
+    try:
+        scene = WarehouseScene(asset_dir=synthetic_assets)
+        handles = scene.load_into(cid)
+        traj = trajectories["wall_collision"]
+        drone = _spawn_drone(cid, traj["waypoints"][0])
+
+        contacts = []
+        for pt in _interp_waypoints(traj["waypoints"]):
+            p.resetBasePositionAndOrientation(
+                drone, list(pt), [0, 0, 0, 1], physicsClientId=cid,
+            )
+            p.performCollisionDetection(physicsClientId=cid)
+            for ct in p.getContactPoints(drone, handles.warehouse_body_id, physicsClientId=cid):
+                contacts.append(ct)
+
+        assert len(contacts) >= traj["expected_warehouse_contacts_min"]
+        first_contact_pos = np.array(contacts[0][5])
+        expected = np.array(traj["expected_first_contact_within_m_of"])
+        assert np.linalg.norm(first_contact_pos - expected) < 0.10
+    finally:
+        p.disconnect(cid)
+
+
+def test_gate_rim_collision_detected(synthetic_assets, trajectories):
+    cid = p.connect(p.DIRECT)
+    try:
+        scene = WarehouseScene(asset_dir=synthetic_assets)
+        handles = scene.load_into(cid)
+        traj = trajectories["gate_rim_collision"]
+        drone = _spawn_drone(cid, traj["waypoints"][0])
+
+        warehouse_contacts = 0
+        gate_contacts: dict[str, int] = {n: 0 for n in handles.gate_names}
+        for pt in _interp_waypoints(traj["waypoints"]):
+            p.resetBasePositionAndOrientation(
+                drone, list(pt), [0, 0, 0, 1], physicsClientId=cid,
+            )
+            p.performCollisionDetection(physicsClientId=cid)
+            warehouse_contacts += len(
+                p.getContactPoints(drone, handles.warehouse_body_id, physicsClientId=cid)
+            )
+            for name, gid in zip(handles.gate_names, handles.gate_body_ids):
+                gate_contacts[name] += len(
+                    p.getContactPoints(drone, gid, physicsClientId=cid)
+                )
+
+        assert warehouse_contacts == traj["expected_warehouse_contacts"]
+        for expected_name in traj["expected_gate_rim_contacts"]:
+            assert gate_contacts[expected_name] >= 1, gate_contacts
+    finally:
+        p.disconnect(cid)
