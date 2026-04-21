@@ -25,13 +25,13 @@ def synthetic_assets(tmp_path_factory):
 
     n = 24
     sdf = np.ones((n, n, n), dtype=np.float32) * 0.5
-    sdf[5:7, 5:20, 5:20] = -0.1   # wall at x ∈ [0.5, 0.7]
-    np.savez(tsdf, sdf=sdf, voxel_size=np.float32(0.1), origin=np.zeros(3))
+    sdf[5:25, 5:7, 5:25] = -0.1   # wall at NED y ∈ [0.5, 0.7] → ENU x ∈ [0.5, 0.7]
+    np.savez(tsdf, sdf=sdf, voxel_size=np.float32(0.1), origin=np.array([0.0, 0.0, -2.0], dtype=np.float32))
 
     gates.write_text(json.dumps({
         "Gate_01": {
             "position_ned": [1.5, 1.5, -1.5],
-            "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+            "orientation_wxyz": [0.7071067811865476, 0.7071067811865476, 0.0, 0.0],
             "inner_radius_m": 0.75,
             "outer_radius_m": 0.85,
         },
@@ -55,7 +55,7 @@ def trajectories():
 def _spawn_drone(client_id: int, position):
     col = p.createCollisionShape(p.GEOM_SPHERE, radius=0.05, physicsClientId=client_id)
     return p.createMultiBody(
-        baseMass=0.0,
+        baseMass=1.0,  # must be non-zero: PyBullet only populates getContactPoints for dynamic bodies
         baseCollisionShapeIndex=col,
         basePosition=list(position),
         physicsClientId=client_id,

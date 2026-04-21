@@ -13,15 +13,15 @@ def _make_synthetic_tsdf(path: Path) -> None:
     n = 32
     voxel = 0.1
     sdf = np.ones((n, n, n), dtype=np.float32) * 0.5  # outside everywhere
-    # A box "wall" along Y axis.
-    sdf[5:7, 5:25, 5:25] = -0.1
+    # A box "wall" along Y axis (NED frame: x=0.5-2.5, y=0.5-0.7, z=-1.5 to 0.5).
+    sdf[5:25, 5:7, 5:25] = -0.1
     # Another box.
     sdf[25:27, 5:25, 5:25] = -0.1
     np.savez(
         path,
         sdf=sdf,
         voxel_size=np.float32(voxel),
-        origin=np.zeros(3, dtype=np.float32),
+        origin=np.array([0.0, 0.0, -2.0], dtype=np.float32),
     )
 
 
@@ -29,7 +29,7 @@ def _make_one_gate_json(path: Path) -> None:
     data = {
         "Gate_01": {
             "position_ned": [1.5, 1.5, -1.5],
-            "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+            "orientation_wxyz": [0.7071067811865476, 0.7071067811865476, 0.0, 0.0],
             "inner_radius_m": 0.75,
             "outer_radius_m": 0.85,
         },

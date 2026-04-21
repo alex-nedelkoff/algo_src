@@ -12,9 +12,9 @@
 synthetic:
   clean_pass_through:
     waypoints:
-      - [0.0, 1.5, 1.5]
-      - [1.5, 1.5, 1.5]    # passes through Gate_01 center
-      - [3.0, 1.5, 1.5]
+      - [0.0, 1.5, 1.6]
+      - [1.5, 1.5, 1.6]    # passes through Gate_01 interior (z=1.6 is 0.1m above center, well inside inner_radius=0.75)
+      - [3.0, 1.5, 1.6]
     expected_gate_passages: [Gate_01]
     expected_warehouse_contacts: 0
 

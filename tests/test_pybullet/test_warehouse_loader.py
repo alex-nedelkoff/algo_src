@@ -19,13 +19,13 @@ def synthetic_assets(tmp_path_factory):
     # Synthetic TSDF (one wall).
     n = 24
     sdf = np.ones((n, n, n), dtype=np.float32) * 0.5
-    sdf[5:7, 5:20, 5:20] = -0.1
-    np.savez(tsdf, sdf=sdf, voxel_size=np.float32(0.1), origin=np.zeros(3))
+    sdf[5:25, 5:7, 5:25] = -0.1
+    np.savez(tsdf, sdf=sdf, voxel_size=np.float32(0.1), origin=np.array([0.0, 0.0, -2.0], dtype=np.float32))
 
     gates.write_text(json.dumps({
         "Gate_01": {
             "position_ned": [1.5, 1.5, -1.5],
-            "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+            "orientation_wxyz": [0.7071067811865476, 0.7071067811865476, 0.0, 0.0],
             "inner_radius_m": 0.75,
             "outer_radius_m": 0.85,
         },
