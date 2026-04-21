@@ -18,6 +18,7 @@ dependencies = [
 sim = [
     "gymnasium",
     "pybullet",
+    "open3d",
 ]
 control = [
     "torch",
