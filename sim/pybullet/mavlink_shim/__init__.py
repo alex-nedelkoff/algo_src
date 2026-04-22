@@ -4,5 +4,6 @@ from sim.pybullet.mavlink_shim.backend import (
     DroneState,
     ImuSample,
 )
+from sim.pybullet.mavlink_shim.shim import MavlinkShim
 
-__all__ = ["DroneBackend", "DroneState", "ImuSample"]
+__all__ = ["DroneBackend", "DroneState", "ImuSample", "MavlinkShim"]
