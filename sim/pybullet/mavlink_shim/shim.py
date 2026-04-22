@@ -36,6 +36,7 @@ class MavlinkShim:
         "highres_imu": 200.0,
     })
     controller_k_att: float = 6.0
+    controller_k_damp: float = 0.0    # rate damping; 0 = pure-P (backward compat)
 
     _server: MavlinkServer = field(init=False, default=None)
     _controller: AttitudeController = field(init=False, default=None)
@@ -49,7 +50,9 @@ class MavlinkShim:
     _t0_us: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
-        self._controller = AttitudeController(params=self.params, k_att=self.controller_k_att)
+        self._controller = AttitudeController(
+            params=self.params, k_att=self.controller_k_att, k_damp=self.controller_k_damp,
+        )
         tick_hz = max(self.rates_hz.values()) if self.rates_hz else 200.0
         self._scheduler = RateScheduler(rates_hz=dict(self.rates_hz), tick_hz=tick_hz)
         self._last_target_q = np.array([1.0, 0.0, 0.0, 0.0])

@@ -38,9 +38,14 @@ def _quat_inverse_unit(q: NDArray[np.float64]) -> NDArray[np.float64]:
 
 @dataclass
 class AttitudeController:
-    """Quat-error P controller. Outputs motor speeds via TRPYMixer."""
+    """Quat-error PD controller. Outputs motor speeds via TRPYMixer.
+
+    The D term damps current body rates, preventing the overshoot that a
+    pure-P outer loop exhibits in free-running (real-time) mode.
+    """
     params: VehicleParams
     k_att: float = 6.0       # attitude P gain (rad/s per rad of error)
+    k_damp: float = 0.0      # rate damping gain (subtracts k_damp * omega_body from omega_cmd)
 
     def __post_init__(self) -> None:
         self._mixer = TRPYMixer(self.params)
@@ -64,8 +69,12 @@ class AttitudeController:
         # 2. Take the shorter rotation path.
         sign = 1.0 if q_err[0] >= 0.0 else -1.0
 
-        # 3. P controller: ω_desired = k_att * 2 * sign(w) * (xyz components).
-        omega_desired = self.k_att * 2.0 * sign * q_err[1:4]
+        # 3. PD controller: ω_desired = k_att * 2 * sign(w) * (xyz components)
+        #                             − k_damp * omega_current (rate damping)
+        omega_desired = (
+            self.k_att * 2.0 * sign * q_err[1:4]
+            - self.k_damp * omega_current_body
+        )
 
         # 4. Map normalized thrust [0,1] to physical thrust force in Newtons.
         thrust_n = float(np.clip(thrust_normalized, 0.0, 1.0)) * self._max_thrust_n
