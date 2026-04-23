@@ -41,8 +41,8 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def _write_common_assets(out_dir: Path, mesh_enu, gates_ned: dict) -> None:
-    """Write the 5 output files shared by both pipelines."""
+def _write_common_assets(out_dir: Path, mesh_enu, gates_ned: dict) -> Path:
+    """Write the 5 output files shared by both pipelines. Returns warehouse.obj path."""
     obj_path = out_dir / "warehouse.obj"
     o3d.io.write_triangle_mesh(str(obj_path), mesh_enu)
     write_warehouse_urdf(out_dir / "warehouse.urdf", "warehouse.obj")
@@ -87,15 +87,7 @@ def _run_tsdf_pipeline(args) -> int:
     mesh_enu = flip_mesh_ned_to_enu(mesh)
 
     print(f"[7/7] Writing assets to {args.out}")
-    obj_path = args.out / "warehouse.obj"
-    o3d.io.write_triangle_mesh(str(obj_path), mesh_enu)
-    write_warehouse_urdf(args.out / "warehouse.urdf", "warehouse.obj")
-
-    ring = make_torus_mesh()
-    o3d.io.write_triangle_mesh(str(args.out / "gate_ring.obj"), ring)
-    write_gate_urdf(args.out / "gate.urdf", "gate_ring.obj")
-
-    write_gates_enu_json(args.out / "gates_enu.json", gates_ned)
+    obj_path = _write_common_assets(args.out, mesh_enu, gates_ned)
 
     write_manifest(
         args.out / "manifest.yaml",
@@ -164,16 +156,7 @@ def _run_mesh_pipeline(args) -> int:
 
     print("[8/8] NED → ENU flip + writing assets")
     mesh_enu = flip_mesh_ned_to_enu(mesh)
-
-    obj_path = args.out / "warehouse.obj"
-    o3d.io.write_triangle_mesh(str(obj_path), mesh_enu)
-    write_warehouse_urdf(args.out / "warehouse.urdf", "warehouse.obj")
-
-    ring = make_torus_mesh()
-    o3d.io.write_triangle_mesh(str(args.out / "gate_ring.obj"), ring)
-    write_gate_urdf(args.out / "gate.urdf", "gate_ring.obj")
-
-    write_gates_enu_json(args.out / "gates_enu.json", gates_ned)
+    obj_path = _write_common_assets(args.out, mesh_enu, gates_ned)
 
     write_manifest(
         args.out / "manifest.yaml",
