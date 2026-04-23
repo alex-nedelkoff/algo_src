@@ -4,6 +4,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# open3d is an optional (sim-extras) dep; most TSDF tests need it for .ply/.fbx/.obj.
+# Skip the whole module cleanly if it's missing rather than letting individual tests
+# fail with ModuleNotFoundError in CI environments without sim extras installed.
+pytest.importorskip("open3d", reason="open3d not installed (pip install -e '.[sim]')")
+
 from scripts.warehouse_to_urdf.tsdf import TSDFArtifact, load_tsdf
 
 
@@ -24,7 +29,7 @@ def _make_synthetic_npz(tmp_path: Path) -> Path:
 def _make_synthetic_obj(tmp_path: Path, filename: str = "synthetic.obj") -> Path:
     """Write a minimal OBJ with 2 triangles (a single quad split into two)."""
     obj_text = (
-        "# minimal test mesh — 4 vertices, 2 triangles\n"
+        "# minimal test mesh - 4 vertices, 2 triangles\n"
         "v 0.0 0.0 0.0\n"
         "v 1.0 0.0 0.0\n"
         "v 1.0 1.0 0.0\n"
