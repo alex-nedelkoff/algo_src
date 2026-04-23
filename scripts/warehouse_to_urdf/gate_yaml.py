@@ -41,7 +41,10 @@ def convert_ue_yaml_to_ned_json(
     yaml_path = Path(yaml_path)
     out_json_path = Path(out_json_path)
 
-    raw = yaml.safe_load(yaml_path.read_text())
+    # Explicit utf-8 — the YAML may contain non-ASCII comments; Path.read_text
+    # without an encoding falls back to the platform locale (cp1252 on Windows)
+    # and can UnicodeDecodeError on a perfectly valid file.
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
 
     if "playerstart" not in raw:
         raise ValueError(
@@ -88,5 +91,5 @@ def convert_ue_yaml_to_ned_json(
             "outer_radius_m": _OUTER_RADIUS_M,
         }
 
-    out_json_path.write_text(json.dumps(out, indent=2))
+    out_json_path.write_text(json.dumps(out, indent=2), encoding="utf-8")
     return out

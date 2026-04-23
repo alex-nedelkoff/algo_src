@@ -144,7 +144,7 @@ gates:
     yaml_path = _write_yaml(tmp_path, yaml_no_ps)
     out_json = tmp_path / "gates_ned.json"
 
-    with pytest.raises((ValueError, KeyError)):
+    with pytest.raises(ValueError, match="playerstart"):
         convert_ue_yaml_to_ned_json(yaml_path, out_json)
 
 
@@ -165,5 +165,5 @@ gates:
     yaml_path = _write_yaml(tmp_path, yaml_bad_gate)
     out_json = tmp_path / "gates_ned.json"
 
-    with pytest.raises((ValueError, KeyError)):
+    with pytest.raises(ValueError, match="rotation_deg_rpy"):
         convert_ue_yaml_to_ned_json(yaml_path, out_json)
