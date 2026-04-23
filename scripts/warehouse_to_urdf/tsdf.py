@@ -2,11 +2,13 @@
 
 The artifact format from Janahan's reconstruction pipeline is unknown
 until 2026-04-21 evening. The loader dispatches on file extension and
-covers three plausible formats:
+covers five plausible formats:
 
     .npz  — numpy bundle with 'sdf', 'voxel_size', 'origin' keys
     .ply  — pre-extracted Open3D triangle mesh (skip MC, return mesh-only)
     .bin  — Open3D ScalableTSDFVolume serialized format
+    .obj  — Wavefront OBJ triangle mesh (skip MC, return mesh-only)
+    .fbx  — FBX triangle mesh (skip MC, return mesh-only)
 
 When the artifact lands, add the matching adapter here if needed.
 """
@@ -48,10 +50,12 @@ def load_tsdf(path: Path | str) -> TSDFArtifact:
         return _load_ply(path)
     if suffix == ".bin":
         return _load_bin(path)
+    if suffix in {".fbx", ".obj"}:
+        return _load_mesh(path)
 
     raise ValueError(
         f"Unsupported TSDF format: {suffix!r}. "
-        f"Supported: .npz, .ply, .bin. File: {path}"
+        f"Supported: .npz, .ply, .bin, .fbx, .obj. File: {path}"
     )
 
 
@@ -81,4 +85,23 @@ def _load_bin(path: Path) -> TSDFArtifact:
     raise NotImplementedError(
         "Open3D ScalableTSDFVolume .bin loading not yet implemented. "
         "Add adapter here once Janahan confirms format."
+    )
+
+
+def _load_mesh(path: Path) -> TSDFArtifact:
+    """Load an FBX or OBJ triangle mesh via Open3D and return mesh-only artifact.
+
+    No SDF is produced; downstream code (extract_mesh_from_sdf) will detect
+    pre_extracted_mesh and skip marching cubes automatically.
+    """
+    import open3d as o3d
+    mesh = o3d.io.read_triangle_mesh(str(path))
+    if not mesh.has_vertices():
+        raise ValueError(f"{path.suffix.upper()} at {path} has no vertices")
+    # No SDF — provide an empty grid; pipeline will skip MC.
+    return TSDFArtifact(
+        sdf=np.zeros((0, 0, 0), dtype=np.float32),
+        voxel_size=0.0,
+        origin=np.zeros(3),
+        pre_extracted_mesh=mesh,
     )
