@@ -276,6 +276,31 @@ def test_clip_empty_output_is_empty_mesh():
     assert len(clipped.triangles) == 0
 
 
+def test_clip_prunes_unreferenced_vertices():
+    """Vertices not referenced by any surviving triangle must be dropped.
+
+    Prevents output .obj bloat and keeps PyBullet's broad-phase AABB
+    bounded to the clipped region, not the pre-clip extent.
+    """
+    verts = [
+        [0.5, 0.5, 0.5],   # 0: inside, used by surviving face
+        [0.6, 0.5, 0.5],   # 1: inside, used by surviving face
+        [0.5, 0.6, 0.5],   # 2: inside, used by surviving face
+        [50.0, 50.0, 50.0],  # 3: far outside, orphan after clip
+    ]
+    faces = [
+        [0, 1, 2],         # survives
+        [0, 1, 3],         # dropped (v3 outside)
+    ]
+    mesh = _mesh_with_triangles(verts, faces)
+    bbox_min = np.array([0.0, 0.0, 0.0])
+    bbox_max = np.array([1.0, 1.0, 1.0])
+    clipped = clip_mesh_to_bbox(mesh, bbox_min, bbox_max)
+    assert len(clipped.triangles) == 1
+    # v3 should no longer be in the output vertex buffer.
+    assert len(clipped.vertices) == 3
+
+
 # ---------------------------------------------------------------------------
 # compute_default_clip_bbox
 # ---------------------------------------------------------------------------
@@ -307,3 +332,10 @@ def test_default_bbox_margin_applied():
     expected_max = np.array([4.0, 5.0, 6.0]) + margin
     np.testing.assert_array_almost_equal(bbox_min, expected_min)
     np.testing.assert_array_almost_equal(bbox_max, expected_max)
+
+
+def test_default_bbox_empty_raises_clear_error():
+    """Empty gate array raises ValueError with a clear message (not a cryptic numpy error)."""
+    empty = np.zeros((0, 3), dtype=np.float64)
+    with pytest.raises(ValueError, match=r"shape \(N, 3\)"):
+        compute_default_clip_bbox(empty)

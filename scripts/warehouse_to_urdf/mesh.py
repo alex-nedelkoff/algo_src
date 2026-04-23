@@ -268,6 +268,11 @@ def clip_mesh_to_bbox(mesh, bbox_min: np.ndarray, bbox_max: np.ndarray):
     out = o3d.geometry.TriangleMesh()
     out.vertices = o3d.utility.Vector3dVector(verts)
     out.triangles = o3d.utility.Vector3iVector(kept_faces)
+    # Drop vertices that no surviving triangle references — otherwise the
+    # output retains the full pre-clip vertex buffer, which bloats the .obj
+    # and inflates PyBullet's broad-phase AABB back to the pre-clip extent.
+    out.remove_unreferenced_vertices()
+    out.compute_vertex_normals()
     return out
 
 
@@ -280,7 +285,9 @@ def compute_default_clip_bbox(
     Parameters
     ----------
     gate_positions_ned:
-        Array of shape (N, 3) — gate centre positions in NED metres.
+        Array of shape (N, 3) with N >= 1 — gate centre positions, in NED
+        metres. These must already be in NED (i.e. after ``ue_to_ned_mesh``
+        has normalised the warehouse to PlayerStart-origin NED).
     margin_m:
         Extra padding added on every side of the tight gate bbox.
 
@@ -290,6 +297,11 @@ def compute_default_clip_bbox(
         Lower and upper corners of the padded bbox in NED metres.
     """
     pts = np.asarray(gate_positions_ned, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] == 0:
+        raise ValueError(
+            f"gate_positions_ned must have shape (N, 3) with N >= 1, "
+            f"got {pts.shape}."
+        )
     bbox_min = pts.min(axis=0) - margin_m
     bbox_max = pts.max(axis=0) + margin_m
     return bbox_min, bbox_max
