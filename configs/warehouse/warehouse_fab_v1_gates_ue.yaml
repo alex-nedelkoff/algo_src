@@ -1,0 +1,24 @@
+  # UE world-frame transforms for the FAB warehouse gates.
+  # Units: cm for location, degrees for rotation (UE convention: Roll, Pitch, Yaw).
+  # Conversion to NED/meters happens in tools/warehouse_to_urdf.py.
+
+  playerstart:
+    location_cm: [7580, 470, 142]        # ← read from PlayerStart Details panel
+    rotation_deg_rpy: [0, 0, -90]
+
+  gates:
+    Gate_01:
+      location_cm: [7570, 270, 150]         # ← read from Gate_01 Details → Transform → Location
+      rotation_deg_rpy: [0, 0, 90]    # ← read from Gate_01 Details → Transform → Rotation (R, P, Y)
+    Gate_02:
+      location_cm: [7330, -370, 120]
+      rotation_deg_rpy: [0, 0, 0]
+    Gate_03:
+      location_cm: [6680, -370, 170]
+      rotation_deg_rpy: [0, 0, 0]
+    Gate_04:
+      location_cm: [6710, -30, 170]
+      rotation_deg_rpy: [0, 0, 90]
+    Gate_05:
+      location_cm: [6830, 440, 120]
+      rotation_deg_rpy: [0, 0, 60]

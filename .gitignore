@@ -17,6 +17,9 @@ docker-compose.override.yml
 wandb/
 outputs/
 
+# Large exported assets (FBX, point clouds, etc. — reconstruct on demand)
+data/
+
 # Git worktrees
 .claude/worktrees/
 carwelding_depth_left.zip

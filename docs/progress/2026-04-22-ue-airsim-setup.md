@@ -19,9 +19,32 @@ Session log for getting the Cosys-AirSim warehouse binary building on this Windo
 | **Empty UE 5.5 project** | ✅ Created (C++ project, not Blueprint) | `C:\Users\alexj\Documents\Unreal Projects\DroneSim\` |
 | **AirSim plugin copied into project** | ✅ | `DroneSim\Plugins\AirSim\` |
 | **`DroneSim.sln` generated** | ✅ via `Build.bat -projectfiles` | next to `DroneSim.uproject` |
-| **VS 2022 Build Solution** | ❌ **Blocked** — UBA refusing to spawn `cl.exe` due to memory pressure | — |
+| **VS 2022 Build Solution** | ✅ Editor target builds (`UnrealEditor-AirSim.dll` 6.95 MB, 4 min wall) | `DroneSim\Plugins\AirSim\Binaries\Win64\` |
 
-## Current blocker
+## Update — 2026-04-22 17:30 (post-reboot session)
+
+Pagefile change took effect. UBA blocker resolved. But the first build attempt finished suspiciously fast (~30 s) producing only the empty 50 KB `UnrealEditor-DroneSim.dll` — **the AirSim plugin had silently dropped out of the project**:
+
+- `DroneSim\Plugins\AirSim\` directory did not exist (despite earlier log claiming it was copied)
+- `DroneSim.uproject` only listed `ModelingToolsEditorMode` — AirSim was not enabled
+
+Recovery (took ~5 min total):
+
+1. Re-copied `Cosys-AirSim\Unreal\Plugins\AirSim` (711 MB) → `DroneSim\Plugins\AirSim`
+2. Added AirSim to `DroneSim.uproject` Plugins list (Enabled: true)
+3. Regenerated `DroneSim.sln` via `Build.bat -projectfiles ...` (96 s)
+4. Build Solution in VS 2022 → 4 min wall, ParallelExecutor with 2x `cl.exe`, success
+
+Faster than the 10-20 min estimate is plausible — `MaxParallelActions=2` cap + fast SSD + most of AirSim's heavy deps (rpclib, eigen) are header-only or pre-built into `Source/AirLib/deps/` from the earlier `build.cmd` run.
+
+**Verification artifacts:**
+- `DroneSim\Plugins\AirSim\Binaries\Win64\UnrealEditor-AirSim.dll` — 6.95 MB
+- `DroneSim\Plugins\AirSim\Binaries\Win64\UnrealEditor-AirSim.pdb` — 162 MB (proportional to real compilation, not stub)
+- `DroneSim\Plugins\AirSim\Intermediate\Build\Win64\UnrealEditor\` populated
+
+Yellow flag for later: UE 5.5 prefers MSVC `14.38.33130`, we're on `14.44.35225`. Built fine for the editor target; may revisit if packaging hits a C++20 strictness issue.
+
+## Original blocker (resolved)
 
 Windows pagefile is set to **0 bytes**. Physical RAM is 16.8 GB (not 40 GB as earlier winget output suggested — that was virtual/committable). UBA (Unreal Build Accelerator) refuses to spawn compile processes when it can't satisfy committed memory demand, resulting in no `cl.exe` ever starting — build output just shows the UBA memory-pressure notice looping.
 
@@ -118,4 +141,4 @@ Once packaged, the Linux-only constraint on phase 1's B-fixture validation goes 
 
 ## One-line resume prompt for the next session
 
-> "Resuming UE 5.5 + Cosys-AirSim setup per `docs/progress/2026-04-22-ue-airsim-setup.md`. Pagefile was enabled + reboot complete. Ready to build `DroneSim.sln` in VS 2022."
+> "Resuming UE 5.5 + Cosys-AirSim setup per `docs/progress/2026-04-22-ue-airsim-setup.md`. Editor + AirSim plugin built (`UnrealEditor-AirSim.dll` present). Next: launch `DroneSim.uproject`, confirm AirSim plugin loads in Editor → Edit → Plugins, then import the warehouse asset and place 5 gates."
