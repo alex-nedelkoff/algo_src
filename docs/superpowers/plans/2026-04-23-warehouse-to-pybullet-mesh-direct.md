@@ -5,6 +5,33 @@
 **Predecessor plan:** `docs/superpowers/plans/2026-04-21-warehouse-tsdf-to-pybullet.md`
 **Spec:** `docs/superpowers/specs/2026-04-21-warehouse-tsdf-to-pybullet-design.md` (unchanged — same outputs, same validation)
 
+---
+
+## ⚠️ Scope correction (discovered 2026-04-23 during execution)
+
+The predecessor plan was **substantially already implemented** on this branch by earlier work (2026-04-21). Baseline state at session start (commit `38fd378`):
+
+- `scripts/warehouse_to_urdf/` — `tsdf.py`, `mesh.py`, `urdf.py`, `manifest.py`, `__main__.py` all present and working
+- `sim/pybullet/warehouse_loader.py` — present and working
+- `tests/test_warehouse_to_urdf/` + `tests/test_pybullet/` — **33/33 tests green**
+
+**Net effect:** only 5 tasks actually remain in this session:
+
+| Session task | Status |
+|---|---|
+| Task 1: Verify deps | ✅ no-op, PyYAML already transitive |
+| Task 2: UE↔NED coord helpers | ✅ done in commit `fa2ec55` |
+| Tasks 3, 6, 7, 8, 9, 11, 12 | ✅ pre-existing, covered by 33/33 baseline tests |
+| **Task 4: FBX/OBJ adapter in `tsdf.py`** | ⬜ TODO (small extension to existing `load_tsdf` dispatch) |
+| **Task 14 (new): UE→NED mesh transform + spatial bbox clip in `mesh.py`** | ⬜ TODO |
+| **Task 5: UE-YAML → NED-JSON gate converter** | ⬜ TODO (new file, small) |
+| **Task 10: Extend `__main__.py` for mesh-direct flags** | ⬜ TODO (existing CLI, add `--mesh` / `--gates-ue-yaml` branch) |
+| **Task 13: End-to-end run on real FAB inputs + COR-95 update** | ⬜ TODO |
+
+The detailed task sections below still describe the full work as if starting from scratch, but in practice Tasks 3, 6, 7, 8, 9, 11, 12 are already built — TaskList has them marked completed with notes.
+
+---
+
 **Goal:** End-to-end pipeline that turns our exported FAB warehouse FBX + UE-frame gate YAML into a PyBullet scene with floor/walls as collision geometry and 5 gates placed from data, validated by a hand-authored fly-through pytest.
 
 **Scope change vs predecessor:** input is a triangle mesh (`.fbx` or `.obj` exported from UE) + a YAML of UE-frame gate transforms, not a TSDF voxel grid + NED gate JSON. The TSDF code path in `tsdf.py` stays intact for future use when Janahan's COR-91 output lands or when we reconstruct from real competition captures.
