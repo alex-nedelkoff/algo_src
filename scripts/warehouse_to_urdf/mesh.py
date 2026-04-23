@@ -172,3 +172,124 @@ def flip_mesh_ned_to_enu(mesh):
     out.triangles = o3d.utility.Vector3iVector(np.asarray(mesh.triangles))
     out.compute_vertex_normals()
     return out
+
+
+def ue_to_ned_mesh(mesh, playerstart_ue_cm: np.ndarray):
+    """Convert a triangle mesh from UE world frame to NED frame.
+
+    Applies the same basis change as ``sim/pybullet/coords.py::ue_to_ned_position``
+    but vertex-wise on the mesh:
+
+        rel_ned_m = (v_ue_cm[0] - ps[0],
+                     -(v_ue_cm[1] - ps[1]),
+                     -(v_ue_cm[2] - ps[2])) / 100.0
+
+    The UE→NED transform is a left→right handedness flip, so triangle
+    winding is reversed (``[a, b, c]`` → ``[a, c, b]``) to preserve
+    outward-facing normals. Vertex normals are recomputed on the result.
+
+    Parameters
+    ----------
+    mesh:
+        Open3D ``TriangleMesh`` in UE world coordinates (cm, left-handed,
+        Z-up).
+    playerstart_ue_cm:
+        1-D array of shape (3,) — the UE world position of the PlayerStart
+        actor in cm. This becomes the NED origin.
+
+    Returns
+    -------
+    Open3D ``TriangleMesh`` in NED frame (m, right-handed, Z-down).
+    """
+    import open3d as o3d
+
+    ps = np.asarray(playerstart_ue_cm, dtype=np.float64)
+    verts = np.asarray(mesh.vertices, dtype=np.float64)
+
+    rel = verts - ps  # (N, 3)
+    ned = np.empty_like(rel)
+    ned[:, 0] = rel[:, 0]
+    ned[:, 1] = -rel[:, 1]
+    ned[:, 2] = -rel[:, 2]
+    ned /= 100.0
+
+    # Reverse winding to restore correct outward normals after handedness flip.
+    faces = np.asarray(mesh.triangles, dtype=np.int32).copy()
+    faces[:, [1, 2]] = faces[:, [2, 1]]
+
+    out = o3d.geometry.TriangleMesh()
+    out.vertices = o3d.utility.Vector3dVector(ned)
+    out.triangles = o3d.utility.Vector3iVector(faces)
+    out.compute_vertex_normals()
+    return out
+
+
+def clip_mesh_to_bbox(mesh, bbox_min: np.ndarray, bbox_max: np.ndarray):
+    """Return a new mesh containing only triangles fully inside an AABB.
+
+    Conservative: a triangle is kept only when **all three** of its vertices
+    satisfy ``bbox_min <= v <= bbox_max`` on every axis. Triangles that
+    straddle the boundary are dropped. Boundaries are inclusive (a vertex
+    exactly on the boundary counts as inside).
+
+    The input mesh is not mutated.
+
+    Parameters
+    ----------
+    mesh:
+        Open3D ``TriangleMesh``.
+    bbox_min, bbox_max:
+        1-D arrays of shape (3,) defining the axis-aligned bounding box in
+        the same coordinate frame as the mesh vertices.
+
+    Returns
+    -------
+    A new Open3D ``TriangleMesh``. May be empty (0 triangles) if no
+    triangle survives the clip.
+    """
+    import open3d as o3d
+
+    verts = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.triangles, dtype=np.int32)
+
+    bmin = np.asarray(bbox_min, dtype=np.float64)
+    bmax = np.asarray(bbox_max, dtype=np.float64)
+
+    # inside[i] is True when vertex i is inside the bbox on all axes.
+    inside = np.all((verts >= bmin) & (verts <= bmax), axis=1)
+
+    # Keep only faces where every vertex index maps to an inside vertex.
+    if len(faces) > 0:
+        keep = inside[faces[:, 0]] & inside[faces[:, 1]] & inside[faces[:, 2]]
+        kept_faces = faces[keep]
+    else:
+        kept_faces = faces
+
+    out = o3d.geometry.TriangleMesh()
+    out.vertices = o3d.utility.Vector3dVector(verts)
+    out.triangles = o3d.utility.Vector3iVector(kept_faces)
+    return out
+
+
+def compute_default_clip_bbox(
+    gate_positions_ned: np.ndarray,
+    margin_m: float = 5.0,
+):
+    """Compute an axis-aligned bbox that encloses all gate positions with margin.
+
+    Parameters
+    ----------
+    gate_positions_ned:
+        Array of shape (N, 3) — gate centre positions in NED metres.
+    margin_m:
+        Extra padding added on every side of the tight gate bbox.
+
+    Returns
+    -------
+    bbox_min, bbox_max : np.ndarray of shape (3,)
+        Lower and upper corners of the padded bbox in NED metres.
+    """
+    pts = np.asarray(gate_positions_ned, dtype=np.float64)
+    bbox_min = pts.min(axis=0) - margin_m
+    bbox_max = pts.max(axis=0) + margin_m
+    return bbox_min, bbox_max

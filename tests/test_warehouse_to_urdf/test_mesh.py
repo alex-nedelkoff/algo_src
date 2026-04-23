@@ -5,10 +5,13 @@ import open3d as o3d
 
 from scripts.warehouse_to_urdf.mesh import (
     clip_gates_in_sdf,
+    clip_mesh_to_bbox,
+    compute_default_clip_bbox,
     extract_mesh_from_sdf,
-    simplify_mesh,
-    make_torus_mesh,
     flip_mesh_ned_to_enu,
+    make_torus_mesh,
+    simplify_mesh,
+    ue_to_ned_mesh,
 )
 from scripts.warehouse_to_urdf.tsdf import TSDFArtifact
 
@@ -118,3 +121,189 @@ def test_flip_mesh_ned_to_enu_swaps_xy_negates_z():
     np.testing.assert_array_almost_equal(verts_out[:, 0], verts_in[:, 1])
     np.testing.assert_array_almost_equal(verts_out[:, 1], verts_in[:, 0])
     np.testing.assert_array_almost_equal(verts_out[:, 2], -verts_in[:, 2])
+
+
+# ---------------------------------------------------------------------------
+# ue_to_ned_mesh
+# ---------------------------------------------------------------------------
+
+
+def _single_triangle_ue(v0_cm, v1_cm, v2_cm):
+    """Build a minimal Open3D mesh with one triangle from three UE-frame vertices."""
+    verts = np.array([v0_cm, v1_cm, v2_cm], dtype=np.float64)
+    faces = np.array([[0, 1, 2]], dtype=np.int32)
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(verts)
+    mesh.triangles = o3d.utility.Vector3iVector(faces)
+    mesh.compute_vertex_normals()
+    return mesh
+
+
+def test_ue_to_ned_mesh_single_vertex_origin():
+    """PlayerStart at origin, vertex (100, 200, 300) cm → NED (1, -2, -3) m."""
+    mesh = _single_triangle_ue([100.0, 200.0, 300.0], [0.0, 0.0, 0.0], [10.0, 0.0, 0.0])
+    playerstart = np.array([0.0, 0.0, 0.0])
+    out = ue_to_ned_mesh(mesh, playerstart)
+    verts_out = np.asarray(out.vertices)
+    # Vertex 0 is the one we care about.
+    np.testing.assert_array_almost_equal(
+        verts_out[0], [1.0, -2.0, -3.0], decimal=6
+    )
+
+
+def test_ue_to_ned_mesh_playerstart_shift():
+    """PlayerStart (7580, 470, 142) cm, vertex (7570, 270, 150) cm → NED (-0.10, 2.00, -0.08) m."""
+    playerstart = np.array([7580.0, 470.0, 142.0])
+    # Build a triangle where vertex 0 is the gate-01 hand-computed value.
+    mesh = _single_triangle_ue(
+        [7570.0, 270.0, 150.0],
+        [7580.0, 270.0, 150.0],
+        [7570.0, 280.0, 150.0],
+    )
+    out = ue_to_ned_mesh(mesh, playerstart)
+    verts_out = np.asarray(out.vertices)
+    np.testing.assert_array_almost_equal(
+        verts_out[0], [-0.10, 2.00, -0.08], decimal=6
+    )
+
+
+def test_ue_to_ned_mesh_reverses_winding():
+    """Face [a, b, c] in UE should become [a, c, b] in NED output."""
+    mesh = _single_triangle_ue(
+        [0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0]
+    )
+    playerstart = np.array([0.0, 0.0, 0.0])
+    out = ue_to_ned_mesh(mesh, playerstart)
+    faces_out = np.asarray(out.triangles)
+    assert faces_out.shape == (1, 3)
+    # Original face was [0, 1, 2]; winding-reversed should be [0, 2, 1].
+    np.testing.assert_array_equal(faces_out[0], [0, 2, 1])
+
+
+def test_ue_to_ned_mesh_recomputes_normals():
+    """Returned mesh must have finite vertex normals (compute_vertex_normals called)."""
+    mesh = _single_triangle_ue(
+        [0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0]
+    )
+    playerstart = np.array([0.0, 0.0, 0.0])
+    out = ue_to_ned_mesh(mesh, playerstart)
+    normals = np.asarray(out.vertex_normals)
+    assert len(normals) == len(np.asarray(out.vertices))
+    assert np.all(np.isfinite(normals[0]))
+
+
+# ---------------------------------------------------------------------------
+# clip_mesh_to_bbox
+# ---------------------------------------------------------------------------
+
+
+def _mesh_with_triangles(verts, faces):
+    """Build an Open3D TriangleMesh from numpy arrays."""
+    mesh = o3d.geometry.TriangleMesh()
+    mesh.vertices = o3d.utility.Vector3dVector(np.asarray(verts, dtype=np.float64))
+    mesh.triangles = o3d.utility.Vector3iVector(np.asarray(faces, dtype=np.int32))
+    return mesh
+
+
+def test_clip_keeps_interior_triangles():
+    """3 fully-inside, 3 straddling, 4 outside → result has exactly 3 triangles."""
+    # Place vertices at known positions:
+    #   v0=(0.5,0.5,0.5)   — inside bbox [0,1]^3
+    #   v1=(0.6,0.5,0.5)   — inside
+    #   v2=(0.5,0.6,0.5)   — inside
+    #   v3=(1.5,0.5,0.5)   — outside (x > 1)
+    #   v4=(0.5,1.5,0.5)   — outside (y > 1)
+    #   v5=(0.5,0.5,1.5)   — outside (z > 1)
+    #   v6=(-0.5,0.5,0.5)  — outside (x < 0)
+    verts = [
+        [0.5, 0.5, 0.5],  # 0 inside
+        [0.6, 0.5, 0.5],  # 1 inside
+        [0.5, 0.6, 0.5],  # 2 inside
+        [1.5, 0.5, 0.5],  # 3 outside
+        [0.5, 1.5, 0.5],  # 4 outside
+        [0.5, 0.5, 1.5],  # 5 outside
+        [-0.5, 0.5, 0.5], # 6 outside
+    ]
+    # 3 fully inside: all verts from {0,1,2}
+    # 3 straddling: each mixes one inside + one outside vertex
+    # 4 outside: remaining combinations among outside verts
+    faces = [
+        [0, 1, 2],  # fully inside
+        [0, 1, 2],  # fully inside (duplicate for count)
+        [0, 1, 2],  # fully inside (duplicate for count)
+        [0, 1, 3],  # straddling (v3 outside)
+        [0, 2, 4],  # straddling (v4 outside)
+        [1, 2, 5],  # straddling (v5 outside)
+        [3, 4, 5],  # fully outside
+        [3, 4, 6],  # fully outside
+        [3, 5, 6],  # fully outside
+        [4, 5, 6],  # fully outside
+    ]
+    mesh = _mesh_with_triangles(verts, faces)
+    bbox_min = np.array([0.0, 0.0, 0.0])
+    bbox_max = np.array([1.0, 1.0, 1.0])
+    clipped = clip_mesh_to_bbox(mesh, bbox_min, bbox_max)
+    assert len(clipped.triangles) == 3
+
+
+def test_clip_boundary_inclusive():
+    """Triangle with a vertex exactly on the bbox boundary is kept."""
+    verts = [
+        [0.0, 0.0, 0.0],  # exactly on boundary
+        [0.5, 0.5, 0.5],
+        [1.0, 1.0, 1.0],  # exactly on boundary
+    ]
+    faces = [[0, 1, 2]]
+    mesh = _mesh_with_triangles(verts, faces)
+    bbox_min = np.array([0.0, 0.0, 0.0])
+    bbox_max = np.array([1.0, 1.0, 1.0])
+    clipped = clip_mesh_to_bbox(mesh, bbox_min, bbox_max)
+    assert len(clipped.triangles) == 1
+
+
+def test_clip_empty_output_is_empty_mesh():
+    """No triangles survive → return an empty mesh (no error)."""
+    verts = [
+        [5.0, 5.0, 5.0],
+        [6.0, 5.0, 5.0],
+        [5.0, 6.0, 5.0],
+    ]
+    faces = [[0, 1, 2]]
+    mesh = _mesh_with_triangles(verts, faces)
+    bbox_min = np.array([0.0, 0.0, 0.0])
+    bbox_max = np.array([1.0, 1.0, 1.0])
+    clipped = clip_mesh_to_bbox(mesh, bbox_min, bbox_max)
+    assert len(clipped.triangles) == 0
+
+
+# ---------------------------------------------------------------------------
+# compute_default_clip_bbox
+# ---------------------------------------------------------------------------
+
+
+def test_default_bbox_encloses_all_gates():
+    """All gate positions must be strictly inside the returned bbox."""
+    gates_ned = np.array([
+        [-0.10,  2.00, -0.08],
+        [-2.50,  8.40,  0.22],
+        [-9.00,  8.40, -0.28],
+        [-8.70,  5.00, -0.28],
+        [-7.50,  0.30,  0.22],
+    ])
+    bbox_min, bbox_max = compute_default_clip_bbox(gates_ned, margin_m=5.0)
+    assert np.all(gates_ned >= bbox_min)
+    assert np.all(gates_ned <= bbox_max)
+
+
+def test_default_bbox_margin_applied():
+    """bbox_min = gates.min(axis=0) - margin, bbox_max = gates.max(axis=0) + margin."""
+    gates_ned = np.array([
+        [1.0, 2.0, 3.0],
+        [4.0, 5.0, 6.0],
+    ])
+    margin = 2.5
+    bbox_min, bbox_max = compute_default_clip_bbox(gates_ned, margin_m=margin)
+    expected_min = np.array([1.0, 2.0, 3.0]) - margin
+    expected_max = np.array([4.0, 5.0, 6.0]) + margin
+    np.testing.assert_array_almost_equal(bbox_min, expected_min)
+    np.testing.assert_array_almost_equal(bbox_max, expected_max)
