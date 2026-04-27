@@ -38,17 +38,54 @@ _STATE_GROUPS = {
 }
 
 
-def _init_perturbed(p_true: TorchVehicleParams, factor: float, rng: np.random.Generator) -> TorchVehicleParams:
-    """Initialise each learnable scalar at ground_truth * uniform(1/factor, factor)."""
-    init = {name: float(val.detach()) * rng.uniform(1.0 / factor, factor)
-            for name, val in p_true.named_scalars()}
-    return TorchVehicleParams(
+def _init_perturbed(
+    p_true: TorchVehicleParams,
+    factor: float,
+    rng: np.random.Generator,
+    fixed: dict[str, float] | None = None,
+) -> TorchVehicleParams:
+    """Initialise each learnable scalar at ground_truth * uniform(1/factor, factor).
+
+    Any scalars listed in ``fixed`` are pinned to the supplied value (instead
+    of perturbed) and have ``requires_grad`` cleared on their ``_log_*``
+    backing parameter so the optimiser leaves them alone.
+    """
+    fixed = fixed or {}
+    init = {}
+    for name, val in p_true.named_scalars():
+        if name in fixed:
+            init[name] = float(fixed[name])
+        else:
+            init[name] = float(val.detach()) * rng.uniform(1.0 / factor, factor)
+    p = TorchVehicleParams(
         mass=init["mass"],
         Ixx=init["Ixx"], Iyy=init["Iyy"], Izz=init["Izz"],
         k_thrust=init["k_thrust"], k_torque=init["k_torque"],
         arm_length=init["arm_length"], tau_motor=init["tau_motor"],
         max_omega=float(p_true.max_omega),
     )
+    for name in fixed:
+        log_param = getattr(p, f"_log_{name}")
+        log_param.requires_grad_(False)
+    return p
+
+
+def _parse_fixed_args(fix_args: list[str]) -> dict[str, float]:
+    """Parse repeated --fix name=value CLI args into a {name: float} dict."""
+    valid_names = {"mass", "Ixx", "Iyy", "Izz", "k_thrust", "k_torque", "arm_length", "tau_motor"}
+    out: dict[str, float] = {}
+    for raw in fix_args or []:
+        if "=" not in raw:
+            raise ValueError(f"--fix must be name=value, got {raw!r}")
+        name, val = raw.split("=", 1)
+        name = name.strip()
+        if name not in valid_names:
+            raise ValueError(f"Unknown param {name!r} in --fix. Choose from {sorted(valid_names)}.")
+        try:
+            out[name] = float(val)
+        except ValueError as e:
+            raise ValueError(f"Cannot parse {val!r} as float for --fix {name}: {e}") from None
+    return out
 
 
 def _state_stds(states: np.ndarray) -> torch.Tensor:
@@ -88,13 +125,19 @@ def _compute_loss(
     return torch.stack(losses).mean()
 
 
-def _print_param_table(p_fit: TorchVehicleParams, p_true: TorchVehicleParams) -> None:
-    print(f"  {'param':>12}  {'fit':>14}  {'truth':>14}  {'err %':>8}")
+def _print_param_table(
+    p_fit: TorchVehicleParams,
+    p_true: TorchVehicleParams,
+    fixed: dict[str, float] | None = None,
+) -> None:
+    fixed = fixed or {}
+    print(f"  {'param':>12}  {'fit':>14}  {'truth':>14}  {'err %':>8}  fixed?")
     for (name_f, val_f), (_, val_t) in zip(p_fit.named_scalars(), p_true.named_scalars()):
         v_fit = float(val_f.detach())
         v_true = float(val_t.detach())
         err_pct = 100.0 * (v_fit - v_true) / abs(v_true) if v_true != 0 else float("inf")
-        print(f"  {name_f:>12}  {v_fit:>14.6g}  {v_true:>14.6g}  {err_pct:>+8.2f}")
+        tag = "  fixed" if name_f in fixed else ""
+        print(f"  {name_f:>12}  {v_fit:>14.6g}  {v_true:>14.6g}  {err_pct:>+8.2f}{tag}")
 
 
 def main() -> int:
@@ -108,9 +151,13 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--init-perturbation", type=float, default=1.5,
                     help="Initial params drawn at ground_truth * U(1/F, F)")
+    ap.add_argument("--fix", action="append", default=[], metavar="NAME=VALUE",
+                    help="Pin a parameter to a known value (e.g. --fix mass=0.027). "
+                         "Breaks identifiability degeneracies — repeat per param.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log-every", type=int, default=50)
     args = ap.parse_args()
+    fixed = _parse_fixed_args(args.fix)
 
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
@@ -131,11 +178,16 @@ def main() -> int:
     ))
 
     p_true = TorchVehicleParams.from_vehicle_params(ds.params)
-    p_fit = _init_perturbed(p_true, args.init_perturbation, rng)
+    p_fit = _init_perturbed(p_true, args.init_perturbation, rng, fixed=fixed)
+    if fixed:
+        print(f"\nFixed parameters (excluded from optimisation): "
+              + ", ".join(f"{k}={v:g}" for k, v in fixed.items()))
     print("\nInitial parameter values vs ground truth:")
-    _print_param_table(p_fit, p_true)
+    _print_param_table(p_fit, p_true, fixed=fixed)
 
-    optimizer = torch.optim.Adam(p_fit.parameters(), lr=args.lr)
+    # Only learnable params go to the optimiser; fixed ones have requires_grad=False.
+    learnable = [prm for prm in p_fit.parameters() if prm.requires_grad]
+    optimizer = torch.optim.Adam(learnable, lr=args.lr)
 
     # Pre-build sliding-window indices: for each (traj, start_t) pair we'll grab
     # states[start_t : start_t + K + 1] and actions[start_t : start_t + K].
@@ -164,7 +216,7 @@ def main() -> int:
         loss.backward()
         # Modest grad clip — log-space params handle scale issues, but a
         # divergent rollout can still spike gradients.
-        torch.nn.utils.clip_grad_norm_(p_fit.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(learnable, max_norm=1.0)
         optimizer.step()
         # Note: no clamp needed — log-space parameterisation guarantees positivity.
 
@@ -172,13 +224,14 @@ def main() -> int:
             print(f"  epoch {epoch + 1:>4}  loss {loss.item():.4e}")
 
     print("\nFinal parameter values vs ground truth:")
-    _print_param_table(p_fit, p_true)
+    _print_param_table(p_fit, p_true, fixed=fixed)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "params_fit": p_fit.as_dict(),
             "params_true": p_true.as_dict(),
+            "fixed": fixed,
             "config": vars(args),
         },
         args.out,
