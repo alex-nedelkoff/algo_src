@@ -84,7 +84,9 @@ def test_simplify_mesh_reduces_triangle_count():
     n_before = len(mesh.triangles)
     simplified = simplify_mesh(mesh, target_triangles=200)
     assert len(simplified.triangles) < n_before
-    assert len(simplified.triangles) <= 250  # decimation is approximate
+    # Vertex-clustering simplification (replaced quadric_decimation) is a
+    # voxel-grid heuristic; tolerate some over- and under-shoot of the target.
+    assert len(simplified.triangles) <= 600  # within 3x of 200
 
 
 def test_simplify_aborts_if_result_under_100_triangles():
@@ -113,14 +115,14 @@ def test_make_torus_mesh_bounds_match_inner_outer_radii():
 
 def test_flip_mesh_ned_to_enu_swaps_xy_negates_z():
     mesh = o3d.geometry.TriangleMesh.create_box(1.0, 2.0, 3.0)
-    # Box created at origin; verts are {0,1}×{0,2}×{0,3}.
     flipped = flip_mesh_ned_to_enu(mesh)
     verts_in = np.asarray(mesh.vertices)
     verts_out = np.asarray(flipped.vertices)
-    # NED→ENU: (x, y, z) → (y, x, -z)
-    np.testing.assert_array_almost_equal(verts_out[:, 0], verts_in[:, 1])
+    # NED → PyBullet-world: (a, b, c) → (c, a, b) — cyclic permutation,
+    # standard NED→ENU then Ry(-90) to put the mesh's "up" onto world +Z.
+    np.testing.assert_array_almost_equal(verts_out[:, 0], verts_in[:, 2])
     np.testing.assert_array_almost_equal(verts_out[:, 1], verts_in[:, 0])
-    np.testing.assert_array_almost_equal(verts_out[:, 2], -verts_in[:, 2])
+    np.testing.assert_array_almost_equal(verts_out[:, 2], verts_in[:, 1])
 
 
 # ---------------------------------------------------------------------------
@@ -140,21 +142,23 @@ def _single_triangle_ue(v0_cm, v1_cm, v2_cm):
 
 
 def test_ue_to_ned_mesh_single_vertex_origin():
-    """PlayerStart at origin, vertex (100, 200, 300) cm → NED (1, -2, -3) m."""
+    """PlayerStart at origin, vertex (100, 200, 300) cm → NED (1, 2, -3) m.
+
+    True handedness flip negates only Z (det = -1). Earlier broken version
+    also negated Y (det = +1, no actual handedness change).
+    """
     mesh = _single_triangle_ue([100.0, 200.0, 300.0], [0.0, 0.0, 0.0], [10.0, 0.0, 0.0])
     playerstart = np.array([0.0, 0.0, 0.0])
     out = ue_to_ned_mesh(mesh, playerstart)
     verts_out = np.asarray(out.vertices)
-    # Vertex 0 is the one we care about.
     np.testing.assert_array_almost_equal(
-        verts_out[0], [1.0, -2.0, -3.0], decimal=6
+        verts_out[0], [1.0, 2.0, -3.0], decimal=6
     )
 
 
 def test_ue_to_ned_mesh_playerstart_shift():
-    """PlayerStart (7580, 470, 142) cm, vertex (7570, 270, 150) cm → NED (-0.10, 2.00, -0.08) m."""
+    """PlayerStart (7580, 470, 142) cm, vertex (7570, 270, 150) cm → NED (-0.10, -2.00, -0.08) m."""
     playerstart = np.array([7580.0, 470.0, 142.0])
-    # Build a triangle where vertex 0 is the gate-01 hand-computed value.
     mesh = _single_triangle_ue(
         [7570.0, 270.0, 150.0],
         [7580.0, 270.0, 150.0],
@@ -163,7 +167,7 @@ def test_ue_to_ned_mesh_playerstart_shift():
     out = ue_to_ned_mesh(mesh, playerstart)
     verts_out = np.asarray(out.vertices)
     np.testing.assert_array_almost_equal(
-        verts_out[0], [-0.10, 2.00, -0.08], decimal=6
+        verts_out[0], [-0.10, -2.00, -0.08], decimal=6
     )
 
 

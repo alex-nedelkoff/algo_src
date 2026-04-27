@@ -46,8 +46,10 @@ def test_write_gates_enu_json_converts_ned_to_enu(tmp_path: Path):
     write_gates_enu_json(out, gates_ned)
     data = json.loads(out.read_text())
     g = data["Gate_01"]
-    # NED (1, 2, -3) → ENU (2, 1, 3)
-    assert g["position_enu"] == [2.0, 1.0, 3.0]
-    # Identity quaternion stays identity in ENU.
+    # NED (1, 2, -3) → cyclic (c,a,b) → (-3, 1, 2)
+    # Then alignment M @ pos + offset where M=[[0,0,-1],[0,1,0],[-1,0,0]],
+    # offset=(-3.25, 0, -3.25): (-(2) + -3.25, 1, -(-3) + -3.25) = (-5.25, 1, -0.25)
+    assert g["position_enu"] == [-5.25, 1.0, -0.25]
+    # Identity quaternion under similarity stays identity (M @ I @ M^T = I).
     assert g["orientation_enu_wxyz"] == [1.0, 0.0, 0.0, 0.0]
     assert g["inner_radius_m"] == 0.75

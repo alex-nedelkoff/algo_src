@@ -129,13 +129,8 @@ def test_wall_collision_detected(synthetic_assets, trajectories):
         p.disconnect(cid)
 
 
-# XFAIL: gate.urdf now applies rpy="0 1.5708 0" to the procedural torus mesh
-# to make the ring stand upright (axis along +X instead of +Z). The original
-# trajectory clipped the gate's top edge at world z = 1.5 + 0.85 = 2.35, but
-# after the URDF rotation the gate ring is in the YZ plane at the gate's
-# basePosition, not the XY plane. Same follow-up as test_wall_collision.
 @pytest.mark.xfail(
-    reason="trajectory fixture needs update for URDF rpy rotation in gate.urdf",
+    reason="trajectory fixture needs update for ned→world cyclic permutation in coords",
     strict=True,
 )
 def test_gate_rim_collision_detected(synthetic_assets, trajectories):

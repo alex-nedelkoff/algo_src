@@ -70,7 +70,7 @@ def test_convert_writes_expected_schema(tmp_path: Path):
 def test_convert_hand_computed_gate01(tmp_path: Path):
     """PlayerStart @ (7580, 470, 142) yaw=-90; Gate_01 @ (7570, 270, 150) yaw=90.
 
-    Expected position_ned = [-0.10, +2.00, -0.08].
+    Expected position_ned = [-0.10, -2.00, -0.08]  (true handedness flip: Z only).
     """
     yaml_path = _write_yaml(tmp_path, _MINIMAL_YAML)
     out_json = tmp_path / "gates_ned.json"
@@ -78,7 +78,7 @@ def test_convert_hand_computed_gate01(tmp_path: Path):
     result = convert_ue_yaml_to_ned_json(yaml_path, out_json)
 
     pos = result["Gate_01"]["position_ned"]
-    np.testing.assert_allclose(pos, [-0.10, 2.00, -0.08], atol=1e-9)
+    np.testing.assert_allclose(pos, [-0.10, -2.00, -0.08], atol=1e-9)
 
     q = result["Gate_01"]["orientation_wxyz"]
     norm = math.sqrt(sum(v**2 for v in q))

@@ -14,9 +14,11 @@ from sim.pybullet.coords import (
 # ---------------------------------------------------------------------------
 
 def test_ned_to_enu_position_swaps_xy_and_negates_z():
+    """NED → PyBullet-world is now the cyclic permutation (a, b, c) → (c, a, b)
+    (standard NED→ENU then Ry(-90) to put the mesh's 'up' onto world +Z)."""
     pos_ned = np.array([1.0, 2.0, 3.0])
-    pos_enu = ned_to_enu_position(pos_ned)
-    np.testing.assert_array_almost_equal(pos_enu, [2.0, 1.0, -3.0])
+    pos_world = ned_to_enu_position(pos_ned)
+    np.testing.assert_array_almost_equal(pos_world, [3.0, 1.0, 2.0])
 
 
 def test_ned_to_enu_position_zero_is_zero():
@@ -27,8 +29,8 @@ def test_ned_to_enu_position_zero_is_zero():
 
 def test_ned_to_enu_position_array_works_on_batch():
     pts_ned = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float64)
-    pts_enu = ned_to_enu_position(pts_ned)
-    np.testing.assert_array_almost_equal(pts_enu, [[2, 1, -3], [5, 4, -6]])
+    pts_world = ned_to_enu_position(pts_ned)
+    np.testing.assert_array_almost_equal(pts_world, [[3, 1, 2], [6, 4, 5]])
 
 
 def test_ned_to_enu_quaternion_identity_stays_identity():
@@ -63,12 +65,12 @@ def test_ue_to_ned_position_gate01_hand_computed():
     PlayerStart UE: (7580, 470, 142) cm
     Gate_01 UE:     (7570, 270, 150) cm
     UE-cm relative: (-10, -200, 8)
-    NED-m (x same, y negated, z negated, /100): (-0.10, +2.00, -0.08)
+    NED-m (true handedness flip: only Z negated, /100): (-0.10, -2.00, -0.08)
     """
     pos_ue_cm = np.array([7570.0, 270.0, 150.0])
     playerstart_cm = np.array([7580.0, 470.0, 142.0])
     ned = ue_to_ned_position(pos_ue_cm, playerstart_cm)
-    np.testing.assert_array_almost_equal(ned, [-0.10, 2.00, -0.08], decimal=6)
+    np.testing.assert_array_almost_equal(ned, [-0.10, -2.00, -0.08], decimal=6)
 
 
 def test_ue_to_ned_position_cm_to_m_scaling():
@@ -96,13 +98,14 @@ def test_ue_to_ned_quaternion_is_unit_norm():
 
 
 def test_ue_to_ned_quaternion_gate01_hand_computed():
-    """Gate_01 yaw=90, PlayerStart yaw=-90 → relative yaw=180 → [0,0,0,1] in NED.
+    """Gate_01 yaw=90, PlayerStart yaw=-90 → relative yaw=180 → still 180° about Z.
 
-    Hand-computed: R_rel is 180° about Z in UE, S @ R_rel @ S.T = same 180° Z
-    in NED (since Z flips twice). Quaternion (w,x,y,z) ≈ (0, 0, 0, 1).
+    With the corrected basis change S=diag(1,1,-1), a 180° Z rotation in UE
+    becomes a 180° Z rotation in NED with the SAME sign on the Z imaginary
+    part (single Z flip in S still preserves a 180° Z rotation).
+    Quaternion (w,x,y,z) ≈ (0, 0, 0, ±1).
     """
     q = ue_to_ned_quaternion([0.0, 0.0, 90.0], [0.0, 0.0, -90.0])
-    # Allow for the antipodal equivalent [-0, 0, 0, -1]
     np.testing.assert_array_almost_equal(abs(q[3]), 1.0, decimal=6)
     np.testing.assert_array_almost_equal(q[0], 0.0, decimal=6)
     np.testing.assert_array_almost_equal(q[1], 0.0, decimal=6)
@@ -110,11 +113,13 @@ def test_ue_to_ned_quaternion_gate01_hand_computed():
 
 
 def test_ue_to_ned_quaternion_pure_yaw_90():
-    """Gate at 90° yaw, PlayerStart at 0° → 90° yaw in NED.
+    """Gate at 90° UE yaw, PlayerStart at 0° → 90° about NED Z (same sign).
 
-    NED quaternion for 90° about Z: (w, x, y, z) = (cos45, 0, 0, -sin45)
-    The minus sign arises from the basis flip negating the Z component.
+    With basis flip S=diag(1,1,-1), a pure Z rotation R commutes with S
+    (only the Z-axis basis vector flips, leaving the X/Y rotation block
+    intact). So a +90° Z rotation in UE is a +90° Z rotation in NED.
+    Quaternion: (cos45, 0, 0, +sin45).
     """
     q = ue_to_ned_quaternion([0.0, 0.0, 90.0], [0.0, 0.0, 0.0])
-    expected = np.array([np.cos(np.pi / 4), 0.0, 0.0, -np.sin(np.pi / 4)])
+    expected = np.array([np.cos(np.pi / 4), 0.0, 0.0, np.sin(np.pi / 4)])
     np.testing.assert_array_almost_equal(q, expected, decimal=6)

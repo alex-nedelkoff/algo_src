@@ -71,7 +71,9 @@ def test_pipeline_end_to_end_produces_all_outputs(tmp_path: Path):
 
     enu = json.loads((out / "gates_enu.json").read_text())
     assert "Gate_01" in enu
-    # NED (1.5, 1.5, -1.5) → ENU (1.5, 1.5, 1.5)
+    # NED (1.5, 1.5, -1.5) → cyclic (c,a,b) → (-1.5, 1.5, 1.5)
+    # Then alignment: M @ pos + offset = (-(1.5) - 3.25, 1.5, -(-1.5) - 3.25)
+    #                                  = (-4.75, 1.5, -1.75)
     np.testing.assert_array_almost_equal(
-        enu["Gate_01"]["position_enu"], [1.5, 1.5, 1.5]
+        enu["Gate_01"]["position_enu"], [-4.75, 1.5, -1.75]
     )

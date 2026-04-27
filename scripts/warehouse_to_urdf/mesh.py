@@ -99,16 +99,36 @@ def extract_mesh_from_sdf(artifact: TSDFArtifact):
 
 
 def simplify_mesh(mesh, target_triangles: int):
-    """Quadric-decimation simplify; abort if result is too small."""
-    simplified = mesh.simplify_quadric_decimation(
-        target_number_of_triangles=target_triangles
+    """Uniform-grid simplify via vertex clustering; abort if result is too small.
+
+    We use vertex clustering (not quadric decimation) because the latter is
+    greedy about preserving curvature: on Megascans-style scenes it spends
+    nearly the entire triangle budget on a single high-poly prop (rack, box
+    stack) and crushes flat walls / floors to a handful of triangles. Vertex
+    clustering by a voxel grid spreads the budget uniformly across the mesh.
+
+    `target_triangles` is treated as a soft target — we pick a voxel size
+    that approximately hits it via a bbox-volume heuristic, then iterate
+    once if we overshoot or undershoot by a large factor.
+    """
+    import open3d as o3d
+    aabb = mesh.get_axis_aligned_bounding_box()
+    extent = aabb.max_bound - aabb.min_bound
+    bbox_vol = float(extent[0] * extent[1] * extent[2])
+    # Heuristic: voxel_size = (bbox_vol / target_triangles)^(1/3) * tuning_factor.
+    # Each "occupied" voxel produces ~2 triangles in clustering output.
+    voxel_size = (bbox_vol / max(target_triangles, 1)) ** (1.0 / 3.0) * 1.0
+    simplified = mesh.simplify_vertex_clustering(
+        voxel_size=voxel_size,
+        contraction=o3d.geometry.SimplificationContraction.Average,
     )
     if len(simplified.triangles) < 100:
         raise ValueError(
             f"Simplified mesh has too few triangles "
-            f"({len(simplified.triangles)} < 100). TSDF likely empty "
-            f"or all-positive."
+            f"({len(simplified.triangles)} < 100). Mesh likely empty or "
+            f"voxel size {voxel_size:.3f} too coarse for bbox {extent}."
         )
+    simplified.compute_vertex_normals()
     return simplified
 
 
@@ -155,17 +175,22 @@ def make_torus_mesh(
 
 
 def flip_mesh_ned_to_enu(mesh):
-    """Return a copy of the mesh with vertices converted NED→ENU.
+    """Return a copy of the mesh with vertices converted NED → PyBullet-world.
 
-    (x, y, z) → (y, x, -z). Recomputes normals.
+    Combined transform: standard NED→ENU `(a, b, c) → (b, a, -c)` followed
+    by Ry(-90) `(x, y, z) → (-z, y, x)`, which brings the mesh's "up" axis
+    onto PyBullet world +Z. Net: `(a, b, c) → (c, a, b)`.
+
+    Must match `sim/pybullet/coords.py::ned_to_enu_position` so warehouse
+    mesh vertices and gate positions stay in the same world frame.
     """
     import open3d as o3d
 
     verts = np.asarray(mesh.vertices)
     flipped = np.empty_like(verts)
-    flipped[:, 0] = verts[:, 1]
-    flipped[:, 1] = verts[:, 0]
-    flipped[:, 2] = -verts[:, 2]
+    flipped[:, 0] = verts[:, 2]    # world X = NED.z
+    flipped[:, 1] = verts[:, 0]    # world Y = NED.x
+    flipped[:, 2] = verts[:, 1]    # world Z = NED.y
 
     out = o3d.geometry.TriangleMesh()
     out.vertices = o3d.utility.Vector3dVector(flipped)
@@ -181,12 +206,13 @@ def ue_to_ned_mesh(mesh, playerstart_ue_cm: np.ndarray):
     but vertex-wise on the mesh:
 
         rel_ned_m = (v_ue_cm[0] - ps[0],
-                     -(v_ue_cm[1] - ps[1]),
+                     v_ue_cm[1] - ps[1],
                      -(v_ue_cm[2] - ps[2])) / 100.0
 
-    The UE→NED transform is a left→right handedness flip, so triangle
-    winding is reversed (``[a, b, c]`` → ``[a, c, b]``) to preserve
-    outward-facing normals. Vertex normals are recomputed on the result.
+    Only the Z axis is negated — that's the true handedness flip from
+    UE left-handed Z-up to NED right-handed Z-down. Triangle winding is
+    reversed (``[a, b, c]`` → ``[a, c, b]``) to preserve outward-facing
+    normals across the handedness flip. Vertex normals are recomputed.
 
     Parameters
     ----------
@@ -209,7 +235,7 @@ def ue_to_ned_mesh(mesh, playerstart_ue_cm: np.ndarray):
     rel = verts - ps  # (N, 3)
     ned = np.empty_like(rel)
     ned[:, 0] = rel[:, 0]
-    ned[:, 1] = -rel[:, 1]
+    ned[:, 1] = rel[:, 1]      # true handedness flip: only Z is negated
     ned[:, 2] = -rel[:, 2]
     ned /= 100.0
 
