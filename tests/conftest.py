@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+# Windows DLL loading order workaround.
+# On the monorace conda env, torch's fbgemm.dll has a libomp dependency that
+# can't resolve once numpy has already pulled in Intel MKL's libiomp5md.dll.
+# Pre-loading torch (in a try/except — torch is an optional dep for many
+# tests) BEFORE numpy is imported makes the right libomp version stick.
+import os
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+try:
+    import torch  # noqa: F401  -- pre-load before numpy
+except ImportError:
+    pass
+
 import numpy as np
 import pytest
 
