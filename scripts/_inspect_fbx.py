@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-FBX = Path("data/warehouse_fab/warehouse.fbx")
+FBX = Path("data/warehouse_fab/Warehouse_Track_Flat.fbx")
 
 
 def try_open3d():

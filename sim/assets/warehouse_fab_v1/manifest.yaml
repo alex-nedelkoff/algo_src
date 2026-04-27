@@ -1,13 +1,13 @@
 schema_version: 1
 warehouse_version: v1
 build:
-  timestamp: '2026-04-23T22:02:51.560952+00:00'
+  timestamp: '2026-04-27T03:01:14.683885+00:00'
   builder: scripts/warehouse_to_urdf
-  git_sha: aed5f27
+  git_sha: b477b67
 sources:
   mesh:
     path: data\warehouse_fab\warehouse.fbx
-    sha256: 821088671b7569c1dbed7f32b0e31c7c5d7c63e8c0284711f99c6db1773ff7ac
+    sha256: c6e84c0cb02025b4baf69b264038e8c6dca6f09ff2daf0055c1bb4d13f91c166
   gates_ue_yaml:
     path: configs\warehouse\warehouse_fab_v1_gates_ue.yaml
     sha256: 7837d28f83c29e74a0b9d4df2749d94cc83b9d669bb5237b9e927d41e262f012
@@ -16,6 +16,6 @@ build_params:
   ned_to_enu_applied: true
   clip_margin_m: 5.0
 outputs:
-  warehouse_obj_triangles: 146879
-  warehouse_obj_size_bytes: 9200478
+  warehouse_obj_triangles: 227094
+  warehouse_obj_size_bytes: 17431340
   num_gates: 5
