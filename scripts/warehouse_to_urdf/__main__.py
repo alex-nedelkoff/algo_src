@@ -209,8 +209,10 @@ def main() -> int:
     ap.add_argument("--target-triangles", type=int, default=30000)
     ap.add_argument("--gate-clip-radius", type=float, default=1.0,
                     help="SDF gate clip radius in metres (TSDF path only).")
-    ap.add_argument("--clip-margin-m", type=float, default=5.0,
-                    help="Spatial clip bbox margin in metres (mesh-direct path only).")
+    ap.add_argument("--clip-margin-m", type=float, default=15.0,
+                    help="Spatial clip bbox margin in metres (mesh-direct path only). "
+                         "Default 15.0 m — large enough to keep walls/ceiling/floor of a "
+                         "warehouse-sized scene while still dropping far backdrop geometry.")
     args = ap.parse_args()
 
     args.out.mkdir(parents=True, exist_ok=True)

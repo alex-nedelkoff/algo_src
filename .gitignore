@@ -20,6 +20,9 @@ outputs/
 # Large exported assets (FBX, point clouds, etc. — reconstruct on demand)
 data/
 
+# Built warehouse URDF assets (reconstructible from data/ + configs/, see sim/assets/README.md)
+sim/assets/warehouse_fab_v1/
+
 # Git worktrees
 .claude/worktrees/
 carwelding_depth_left.zip
