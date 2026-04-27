@@ -23,6 +23,9 @@ data/
 # Built warehouse URDF assets (reconstructible from data/ + configs/, see sim/assets/README.md)
 sim/assets/warehouse_fab_v1/
 
+# PyBullet GUI runtime tracing dumps
+timings_*.json
+
 # Git worktrees
 .claude/worktrees/
 carwelding_depth_left.zip
