@@ -8,7 +8,7 @@
 
 Three milestones can run **in parallel** because they have no shared dependencies:
 
-- **M1** needs Janahan's exploration output + a sim with localization measurable against ground truth → blocked on Janahan sync.
+- **M1** needs to **stand up a racing-time localization stack** (VIO + map matcher) — Janahan's exploration only produces offline ground-truth poses, so this is on us. Then benchmark its drift in sim.
 - **M2** needs VDA running locally + warehouse RGB samples → independent.
 - **M3** is pure refactor of existing G&CNet inputs → independent.
 
@@ -16,30 +16,36 @@ The decision point at end of week 1: M1 result determines whether M4 builds a "v
 
 ## Goals at end of week 1
 
-1. **Localization fidelity number**: drift in cm over a 30 s race run. Decides architecture's primary/augmentation positioning.
+1. **Racing-time localization stack + fidelity number**: drift in cm over a 30 s race run. Decides architecture's primary/augmentation positioning. (M1 grew because we now own the localization stack outright.)
 2. **VDA inference cost number**: FPS + per-frame latency on host hardware (Jetson benchmarking deferred — sim qualifier runs on dev box, not Jetson). Decides whether VDA is the depth source or DA3 + temporal smoothing.
 3. **Waypoint-tracking G&CNet**: existing policy demonstrably driven by an arbitrary waypoint list, identity-tested against gate-list inputs, off-axis-detour test passes.
 
-## M1: Localization fidelity benchmark (1–2 days)
+## M1: Localization stack + fidelity benchmark (2–3 days)
+
+**Confirmed:** Janahan's exploration only produces offline ground-truth poses; he does not have a racing-time localization stack. We're standing one up.
 
 ### Tasks
 
 | # | Task | Effort | DoD |
 |---|---|---|---|
-| 1.1 | **Sync with Janahan** — what does his exploration output look like? Does it include a localization stack (VIO + map matcher) usable at race time, or only an offline pose? | 30 min | Documented inputs: file format, what's in TSDF dump, pose source during racing |
-| 1.2 | **Instrument the sim** to emit ground-truth pose alongside whatever Janahan's localization emits | half day | New logging: `ground_truth_pose`, `localized_pose`, `timestamp_ns`, `localization_confidence` |
-| 1.3 | **Run a 30 s race** with the current G&CNet using ground-truth pose for gate-relative obs (control of variables — we want to measure *localization* drift, not policy failure) | half day | `.npz` log of both pose streams over 30 s |
-| 1.4 | **Drift analysis script** — `scripts/perception/_localization_drift.py`. Outputs: drift over time plot, mean/p50/p99/max position drift, mean/max yaw drift | 2 hours | One PNG + one JSON summary |
-| 1.5 | **Decision write-up** — short markdown in `docs/superpowers/artifacts/` documenting the drift number and the architecture call (augmentation vs primary) | 30 min | Architecture decision recorded |
+| 1.1 | **Pick the VIO stack** — short eval of OpenVINS, ORB-SLAM3, and rtabmap-style options against monocular + IMU inputs we can produce in AirSim. Document the choice with rationale | 2 hours | Decision logged in `docs/superpowers/specs/` |
+| 1.2 | **Wrap the picked VIO into a Python interface** — input: RGB frame + IMU stream (rate-matched to AirSim's output), output: pose estimate + confidence. Likely a thin wrapper around an existing implementation | 1 day | `perception/localization/<vio>_wrapper.py` running on captured AirSim sequences |
+| 1.3 | **Map-matcher** — fuse VIO pose with the static TSDF / occupancy grid from Janahan's exploration to anchor against the world frame (drift correction). Even a simple ICP between current depth scan and TSDF works for v1 | half day | Pose stream is in world frame (matches gate poses' frame), not VIO-local |
+| 1.4 | **Instrument the sim** to log ground-truth pose alongside the localized pose at every step | 2 hours | New logging: `ground_truth_pose`, `localized_pose`, `timestamp_ns`, `localization_confidence` |
+| 1.5 | **Run a 30 s race** with the current G&CNet using ground-truth pose for gate-relative obs (control of variables — we want to measure *localization* drift, not policy failure) | 2 hours | `.npz` log of both pose streams over 30 s |
+| 1.6 | **Drift analysis script** — `scripts/perception/_localization_drift.py`. Outputs: drift over time plot, mean/p50/p99/max position drift, mean/max yaw drift | 2 hours | One PNG + one JSON summary |
+| 1.7 | **Decision write-up** — short markdown in `docs/superpowers/artifacts/` documenting the drift number and the architecture call (augmentation vs primary) | 30 min | Architecture decision recorded |
 
 ### Success criteria
 
+- Localization stack runs end-to-end in AirSim sim at the policy's control rate.
 - Drift number with known confidence (10+ runs across different seeds / starting poses).
 - Clear recommendation logged: "VIO + map matching is good enough at <X cm drift over 30 s, vision can be augmentation" OR "drift is too loose at >X cm, vision must drive navigation primary".
 
 ### Risks
 
-- **Janahan's localization isn't packaged for racing-time use** (likely — exploration may use offline ground truth). Mitigation: stand up a minimal off-the-shelf VIO (ORB-SLAM3 in monocular-inertial, OpenVINS) ourselves for the benchmark. Adds ~1 day to M1 if needed. Worth doing because we'll need a localization stack regardless.
+- **AirSim's monocular + IMU streams may not match what real VIO libraries expect** (timing, calibration). Mitigation: budget half a day for IMU rate matching and camera intrinsics extraction.
+- **Map matcher fidelity** — depth-based ICP against the TSDF requires the depth source from M2. If M2 reveals VDA/DA3 isn't ready in time, fall back to feature-based map matching against gate detections (gates are visually distinctive landmarks).
 
 ## M2: VDA inference benchmark (1 day)
 
