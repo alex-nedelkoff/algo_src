@@ -4,21 +4,22 @@ Builds a single rerun .rrd that renders all three week-1 milestones in
 one scrubbable timeline:
 
     M3 — WaypointTrack adapter
-        Synthetic gates rendered as 3D rectangles at each waypoint.
-        Off-axis waypoint placement is visible — demonstrates that the
-        adapter correctly handles non-trivial geometry.
+        Synthetic gates rendered as 3D rectangle outlines at each
+        waypoint. Off-axis waypoint placement is visible — demonstrates
+        that the adapter handles non-trivial geometry. Drone passes
+        through openings cleanly (frames, not solid faces).
 
     M1 — Localization drift
         Three "shadow drones" follow the ground-truth trajectory but
-        accumulate drift per the synthetic VIO profiles. The augmentation-
+        accumulate drift per the synthetic VIO profiles. The augmentation
         case (with map matching) sticks tight to GT; the no-map case
         wanders; dead reckoning floats away. Drift over time is in the
         scalar panel.
 
     M2 — Depth source
-        DA V2 Small inference on warehouse renders, shown alongside RGB
-        in the FPV camera view. RGB cycles through the 3 captured renders
-        every 5 s. Demonstrates the model produces sensible depth.
+        DA V2 Small inference on warehouse views *rendered from the
+        drone's actual pose at every step* via PyBullet's TINY
+        renderer. RGB + depth update at 10 Hz throughout the run.
 
 Scrub the timeline to verify behavior. Rotate the 3D view to inspect
 the trajectory + waypoints. The 2D FPV view stays locked to the
@@ -36,10 +37,13 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 import torch  # noqa: E402
 
 import argparse  # noqa: E402
+import io  # noqa: E402
 import math  # noqa: E402
+import time  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import numpy as np  # noqa: E402
+import pybullet as pb  # noqa: E402
 from PIL import Image  # noqa: E402
 
 import rerun as rr  # noqa: E402
@@ -48,79 +52,144 @@ import rerun.blueprint as rrb  # noqa: E402
 from perception.localization.synthetic_vio import (  # noqa: E402
     SyntheticVIO, _quat_yaw,
 )
+from sim.pybullet.warehouse_loader import WarehouseScene  # noqa: E402
 from sim.tracks.waypoint import waypoints_to_track  # noqa: E402
-from scripts.perception.benchmark_localization_drift import (  # noqa: E402
-    parametric_oval_trajectory,
-)
 
 
 # Conventions: world frame is ENU (X right, Y forward, Z up). Drone body is
 # FLU (X forward, Y left, Z up). See reference_rerun_drone_fpv.md for the
 # camera-attachment specifics that work in this codebase.
-APP_ID = "vision_aug_racing_week1_demo_v3"  # bump on blueprint changes
-WAREHOUSE_RENDERS = [
-    "outputs/render/warehouse_top.png",
-    "outputs/render/warehouse_perspective.png",
-    "outputs/render/warehouse_inside.png",
-]
+APP_ID = "vision_aug_racing_week1_demo_v6"  # bump on blueprint changes
+WAREHOUSE_ASSETS = Path("sim/assets/warehouse_fab_v1")
+
+
+# --------------------------------------------------------------------- traj
+
+
+def warehouse_centered_oval(
+    duration_s: float,
+    dt: float,
+    aabb_min: np.ndarray,
+    aabb_max: np.ndarray,
+    margin_m: float = 2.5,
+    altitude_above_floor_m: float = 1.5,
+    speed_mps: float = 3.0,
+    altitude_amplitude_m: float = 0.3,
+) -> np.ndarray:
+    """Generate a parametric oval that stays inside the warehouse AABB.
+
+    Returns:
+        (T, 7) poses [x, y, z, qw, qx, qy, qz].
+    """
+    # Center in xy; altitude = floor + offset (z floor = aabb_min[2]).
+    cx = 0.5 * (aabb_min[0] + aabb_max[0])
+    cy = 0.5 * (aabb_min[1] + aabb_max[1])
+    alt = aabb_min[2] + altitude_above_floor_m
+    rx = 0.5 * (aabb_max[0] - aabb_min[0]) - margin_m
+    ry = 0.5 * (aabb_max[1] - aabb_min[1]) - margin_m
+    rx = max(rx, 1.0)
+    ry = max(ry, 1.0)
+    eff_radius = math.sqrt(0.5 * (rx ** 2 + ry ** 2))
+    omega = speed_mps / eff_radius
+
+    T = int(round(duration_s / dt))
+    poses = np.zeros((T, 7), dtype=np.float64)
+    for i in range(T):
+        t = i * dt
+        theta = omega * t
+        x = cx + rx * math.cos(theta)
+        y = cy + ry * math.sin(theta)
+        z = alt + altitude_amplitude_m * math.sin(2 * math.pi * 0.3 * t)
+
+        vx = -rx * omega * math.sin(theta)
+        vy = ry * omega * math.cos(theta)
+        yaw = math.atan2(vy, vx)
+        # Yaw-only quaternion [w, x, y, z].
+        poses[i, 0:3] = [x, y, z]
+        poses[i, 3:7] = [math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
+    return poses
+
+
+# --------------------------------------------------------------------- waypts
 
 
 def build_off_axis_waypoints(gt_poses: np.ndarray, n_gates: int = 12) -> np.ndarray:
-    """Sample N waypoints from the oval, with deliberate off-axis excursions.
-
-    The first 3 waypoints sit on the oval (clean racing line). Waypoints
-    4-5 are pushed laterally outward by 1.5 m — the synthetic detour
-    that the M3 adapter must represent. The remaining waypoints return
-    to the oval. Visualizes that off-axis waypoints are recognised.
+    """Sample waypoints from the oval, with deliberate off-axis excursions
+    on waypoints 4 and 5 (1.5 m radially outward from the trajectory's
+    center axis). Visualises that off-axis waypoints are recognised by M3.
     """
     T = gt_poses.shape[0]
     sample_indices = np.linspace(0, T - 1, n_gates, dtype=int)
     waypoints = gt_poses[sample_indices, 0:3].copy()
-    # Push waypoints 4 + 5 outward (a synthetic "detour around an obstacle").
+    # Center of mass of the trajectory in xy (used as the radial origin).
+    centroid = gt_poses[:, 0:2].mean(axis=0)
     for k in (4, 5):
-        # Outward radial direction in the XY plane.
-        r = waypoints[k, 0:2]
+        r = waypoints[k, 0:2] - centroid
         if np.linalg.norm(r) > 1e-6:
             r_unit = r / np.linalg.norm(r)
             waypoints[k, 0:2] += 1.5 * r_unit
     return waypoints
 
 
-def run_da_v2_on_renders(image_paths: list[str], resolution=(384, 512)) -> tuple[list[bytes], list[np.ndarray]]:
-    """Compute DA V2 Small depth for each render.
+# --------------------------------------------------------------------- render
 
-    Returns ``(jpeg_bytes_per_render, depth_arrays)``. We pre-encode RGB
-    as JPEG so per-frame logging fits in a few MB instead of 150+ —
-    rerun stores image data once per (entity, time) pair and doesn't
-    dedupe identical blobs across timestamps, so shrinking each blob
-    is the right lever.
 
-    Resolution matches the M2 decision (Small @ 384x512).
+class WarehouseRenderer:
+    """Headless PyBullet TINY renderer of the warehouse from a drone pose.
+
+    The warehouse + ground are loaded once into a DIRECT-mode client; per
+    frame, we just call ``getCameraImage`` with a fresh view matrix.
     """
-    import io
 
-    from transformers import pipeline
+    def __init__(
+        self,
+        assets: Path = WAREHOUSE_ASSETS,
+        width: int = 512,
+        height: int = 384,
+        fov_deg: float = 70.0,
+    ) -> None:
+        self.cid = pb.connect(pb.DIRECT)
+        self.scene = WarehouseScene(asset_dir=assets)
+        self.handles = self.scene.load_into(self.cid)
+        self.width = width
+        self.height = height
+        self.fov_deg = fov_deg
+        self.proj = pb.computeProjectionMatrixFOV(
+            fov=fov_deg, aspect=width / height, nearVal=0.1, farVal=100.0,
+        )
 
-    pipe = pipeline(
-        task="depth-estimation",
-        model="depth-anything/Depth-Anything-V2-Small-hf",
-        device=0 if torch.cuda.is_available() else -1,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-    )
-    rgb_jpegs = []
-    depths = []
-    h, w = resolution
-    for p in image_paths:
-        img = Image.open(p).convert("RGB").resize((w, h), Image.BILINEAR)
-        out = pipe(img)
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        rgb_jpegs.append(buf.getvalue())
-        depths.append(np.asarray(out["depth"], dtype=np.float32))
-    del pipe
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return rgb_jpegs, depths
+    def aabb(self) -> tuple[np.ndarray, np.ndarray]:
+        lo, hi = pb.getAABB(self.handles.warehouse_body_id, physicsClientId=self.cid)
+        return np.asarray(lo, dtype=np.float64), np.asarray(hi, dtype=np.float64)
+
+    def render_from_drone(self, position: np.ndarray, yaw_rad: float) -> np.ndarray:
+        """Return an (H, W, 3) uint8 RGB image looking forward from the drone."""
+        # Look 5 m forward from the drone's position along its yaw direction.
+        forward = np.array([math.cos(yaw_rad), math.sin(yaw_rad), 0.0])
+        eye = position
+        target = position + forward * 5.0
+        up = np.array([0.0, 0.0, 1.0])
+        view = pb.computeViewMatrix(
+            cameraEyePosition=eye.tolist(),
+            cameraTargetPosition=target.tolist(),
+            cameraUpVector=up.tolist(),
+        )
+        # TINY renderer is the only one that works headless on Windows
+        # without EGL set up.
+        _, _, rgba, _, _ = pb.getCameraImage(
+            self.width, self.height,
+            viewMatrix=view, projectionMatrix=self.proj,
+            renderer=pb.ER_TINY_RENDERER,
+            physicsClientId=self.cid,
+        )
+        rgba = np.asarray(rgba, dtype=np.uint8).reshape(self.height, self.width, 4)
+        return rgba[:, :, :3]
+
+    def close(self) -> None:
+        pb.disconnect(self.cid)
+
+
+# --------------------------------------------------------------------- helpers
 
 
 def quat_to_rotmat(q: np.ndarray) -> np.ndarray:
@@ -133,31 +202,46 @@ def quat_to_rotmat(q: np.ndarray) -> np.ndarray:
     ])
 
 
+def rgb_to_jpeg_bytes(rgb: np.ndarray, quality: int = 80) -> bytes:
+    """Encode an HxWx3 uint8 array to JPEG bytes."""
+    buf = io.BytesIO()
+    Image.fromarray(rgb).save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+# --------------------------------------------------------------------- main
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path,
                     default=Path("outputs/perception/week1_demo.rrd"))
     ap.add_argument("--duration-s", type=float, default=30.0)
-    ap.add_argument("--dt", type=float, default=0.033)  # ~30 Hz log rate
-    ap.add_argument("--rgb-cycle-s", type=float, default=5.0,
-                    help="how often to switch RGB+depth view among the 3 renders")
+    ap.add_argument("--dt", type=float, default=0.033,
+                    help="sim time step (3D + scalars logged here)")
+    ap.add_argument("--fpv-step-skip", type=int, default=3,
+                    help="render + DA V2 every N sim-steps (default 3 → 10 Hz)")
     args = ap.parse_args()
-
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
-    print("Generating ground-truth trajectory...")
-    gt_poses, dt = parametric_oval_trajectory(
+    print("Loading warehouse + computing trajectory...")
+    renderer = WarehouseRenderer()
+    aabb_min, aabb_max = renderer.aabb()
+    print(f"  warehouse AABB: min {aabb_min.round(2).tolist()}  max {aabb_max.round(2).tolist()}")
+
+    gt_poses = warehouse_centered_oval(
         duration_s=args.duration_s, dt=args.dt,
+        aabb_min=aabb_min, aabb_max=aabb_max,
     )
     T = gt_poses.shape[0]
-    print(f"  {T} steps @ {dt}s ({args.duration_s}s)")
+    print(f"  {T} steps @ {args.dt}s ({args.duration_s}s); FPV every {args.fpv_step_skip} steps")
 
     print("Building waypoints + WaypointTrack (M3)...")
     waypoints = build_off_axis_waypoints(gt_poses, n_gates=12)
     track = waypoints_to_track(
         waypoints, yaw_lookahead=2, yaw_smoothing_alpha=0.5, closed_loop=True,
     )
-    print(f"  {track.num_gates} synthetic gates (waypoints 4-5 pushed off-axis)")
+    print(f"  {track.num_gates} synthetic gates; waypoints 4-5 pushed off-axis (orange)")
 
     print("Running synthetic VIO across 3 profiles (M1)...")
     profiles = {
@@ -168,45 +252,40 @@ def main() -> int:
     vio_estimates = {}
     for name, (profile_name, _) in profiles.items():
         vio = SyntheticVIO(profile=profile_name, seed=0)
-        vio_estimates[name] = vio.run(gt_poses, dt=dt)
-        final_drift = float(np.linalg.norm(
-            vio_estimates[name][-1, 0:3] - gt_poses[-1, 0:3]
-        ))
-        print(f"  {name:>15s}: final drift {final_drift:.3f} m")
+        vio_estimates[name] = vio.run(gt_poses, dt=args.dt)
+        final = float(np.linalg.norm(vio_estimates[name][-1, 0:3] - gt_poses[-1, 0:3]))
+        print(f"  {name:>15s}: final drift {final:.3f} m")
 
-    print("Running DA V2 Small on warehouse renders (M2)...")
-    rgb_jpegs, depths = run_da_v2_on_renders(WAREHOUSE_RENDERS, resolution=(384, 512))
-    print(f"  {len(rgb_jpegs)} (rgb-jpeg, depth) pairs cached at 384x512")
+    print("Loading DA V2 Small for per-frame depth (M2)...")
+    from transformers import pipeline
+    depth_pipe = pipeline(
+        task="depth-estimation",
+        model="depth-anything/Depth-Anything-V2-Small-hf",
+        device=0 if torch.cuda.is_available() else -1,
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+    )
 
     print(f"\nWriting {args.out}...")
     rr.init(APP_ID, spawn=False)
     rr.save(str(args.out))
 
-    # ---- Static logs (independent of time) -----------------------------------
+    # ---- Static scene ---------------------------------------------------------
 
-    # World coordinate axes for sanity reference.
     rr.log("/world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
 
-    # Synthetic gates (M3): rectangular frame outlines (openings, not filled
-    # walls) so the drone visibly flies *through* the opening rather than
-    # clipping into a solid face. 1.5 m square in the body Y-Z plane (the
-    # gate's "front" is its local +X axis; the opening is perpendicular to it).
-    GATE_HALF = 0.75   # half-side of the 1.5 m opening
-    # Frame corners in gate-local frame (X = forward / passage axis, Y = lateral,
-    # Z = vertical). Frame lies in the Y-Z plane at X=0.
+    # Synthetic gates (M3): rectangle outlines + forward-normal arrows.
+    GATE_HALF = 0.75
     frame_local = np.array([
         [0.0,  GATE_HALF,  GATE_HALF],
         [0.0, -GATE_HALF,  GATE_HALF],
         [0.0, -GATE_HALF, -GATE_HALF],
         [0.0,  GATE_HALF, -GATE_HALF],
-        [0.0,  GATE_HALF,  GATE_HALF],   # close the loop
+        [0.0,  GATE_HALF,  GATE_HALF],
     ])
     for i, gate in enumerate(track.gates):
         rotmat = quat_to_rotmat(gate.orientation)
-        # Off-axis waypoints get a different colour so they stand out.
         is_off_axis = i in (4, 5)
         color = (255, 165, 100) if is_off_axis else (90, 160, 255)
-        # Transform the local frame corners into world coordinates.
         frame_world = (rotmat @ frame_local.T).T + gate.position
         rr.log(
             f"/world/track/gate_{i:02d}",
@@ -218,8 +297,6 @@ def main() -> int:
             ),
             static=True,
         )
-        # Also log the gate's forward normal as a small arrow so the
-        # passage direction is visually unambiguous.
         normal = rotmat @ np.array([0.5, 0.0, 0.0])
         rr.log(
             f"/world/track/gate_{i:02d}_normal",
@@ -232,7 +309,6 @@ def main() -> int:
             static=True,
         )
 
-    # GT trajectory as a single static line for context.
     rr.log(
         "/world/trajectory_gt",
         rr.LineStrips3D(
@@ -243,20 +319,17 @@ def main() -> int:
         static=True,
     )
 
-    # Pinhole camera definition for the FPV view (rooted on the drone).
+    # FPV camera Pinhole + body-to-camera rotation (per ref doc).
     fpv_w, fpv_h = 512, 384
-    fpv_focal = 350.0   # ~70° FOV horizontally; just for visualisation
     rr.log(
         "/world/drone/fpv",
         rr.Pinhole(
-            focal_length=fpv_focal,
-            width=fpv_w,
-            height=fpv_h,
+            focal_length=fpv_w / (2 * math.tan(math.radians(70) / 2)),
+            width=fpv_w, height=fpv_h,
             camera_xyz=rr.ViewCoordinates.RDF,
         ),
         static=True,
     )
-    # Body-to-camera rotation per reference_rerun_drone_fpv.md
     R_body_to_cam = np.array([
         [0.0,  0.0,  1.0],
         [-1.0, 0.0,  0.0],
@@ -268,31 +341,23 @@ def main() -> int:
         static=True,
     )
 
-    # ---- Time-varying logs ---------------------------------------------------
+    # ---- Per-step logs (3D + scalars at full rate, FPV at 10 Hz) -------------
 
-    rgb_steps_per_cycle = max(1, int(round(args.rgb_cycle_s / dt)))
+    print("Rendering + DA V2 inference per FPV frame...")
+    fpv_count = 0
+    t0 = time.perf_counter()
 
     for t in range(T):
-        sim_time_s = t * dt
+        sim_time_s = t * args.dt
         rr.set_time("sim_time", duration=sim_time_s)
 
-        # GT drone pose: parent transform of /world/drone.
         gt_pos = gt_poses[t, 0:3]
         gt_q = gt_poses[t, 3:7]
+        gt_yaw = _quat_yaw(gt_q)
         gt_rotmat = quat_to_rotmat(gt_q)
-        rr.log(
-            "/world/drone",
-            rr.Transform3D(translation=gt_pos.tolist(), mat3x3=gt_rotmat),
-        )
-        rr.log(
-            "/world/drone/body",
-            rr.Points3D(
-                positions=[[0, 0, 0]],
-                colors=[(140, 220, 250)],
-                radii=0.18,
-            ),
-        )
-        # Body-frame axes for orientation sanity.
+        rr.log("/world/drone", rr.Transform3D(translation=gt_pos.tolist(), mat3x3=gt_rotmat))
+        rr.log("/world/drone/body",
+               rr.Points3D(positions=[[0, 0, 0]], colors=[(140, 220, 250)], radii=0.18))
         rr.log(
             "/world/drone/axes",
             rr.Arrows3D(
@@ -303,43 +368,49 @@ def main() -> int:
             ),
         )
 
-        # VIO shadow drones — one Points3D per profile so they show up
-        # even when collapsed.
         for name, (_, hex_color) in profiles.items():
             est = vio_estimates[name][t]
-            est_pos = est[0:3]
             color_rgb = tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
             rr.log(
                 f"/world/vio_{name}",
                 rr.Points3D(
-                    positions=[est_pos.tolist()],
-                    colors=[color_rgb],
-                    radii=0.10,
+                    positions=[est[0:3].tolist()], colors=[color_rgb], radii=0.10,
                 ),
             )
-            # Per-step drift scalar.
-            drift = float(np.linalg.norm(est_pos - gt_pos))
+            drift = float(np.linalg.norm(est[0:3] - gt_pos))
             rr.log(f"/scalars/pos_drift_m/{name}", rr.Scalars(drift))
-
-            # Yaw drift in degrees.
-            yaw_err = abs(_quat_yaw(est[3:7]) - _quat_yaw(gt_q))
+            yaw_err = abs(_quat_yaw(est[3:7]) - gt_yaw)
             yaw_err = (yaw_err + math.pi) % (2 * math.pi) - math.pi
             rr.log(f"/scalars/yaw_drift_deg/{name}",
                    rr.Scalars(math.degrees(abs(yaw_err))))
 
-        # RGB + depth cycle: switch every rgb_cycle_s seconds. Log every
-        # 10th frame (≈3 Hz update rate) — enough that the viewer always
-        # has a recent entity to render even during scrub jumps, while
-        # keeping the float32 depth blobs from blowing up file size.
-        if t % 10 == 0:
-            rgb_idx = (t // rgb_steps_per_cycle) % len(rgb_jpegs)
+        # FPV: render warehouse from drone pose, run DA V2, log both.
+        if t % args.fpv_step_skip == 0:
+            rgb = renderer.render_from_drone(gt_pos, gt_yaw)
+            jpeg_bytes = rgb_to_jpeg_bytes(rgb, quality=78)
+            depth_out = depth_pipe(Image.fromarray(rgb))
+            depth_arr = np.asarray(depth_out["depth"], dtype=np.float32)
+
             rr.log(
                 "/world/drone/fpv/rgb",
-                rr.EncodedImage(contents=rgb_jpegs[rgb_idx], media_type="image/jpeg"),
+                rr.EncodedImage(contents=jpeg_bytes, media_type="image/jpeg"),
             )
-            rr.log("/world/drone/fpv/depth", rr.DepthImage(depths[rgb_idx], meter=1.0))
+            rr.log("/world/drone/fpv/depth", rr.DepthImage(depth_arr, meter=1.0))
+            fpv_count += 1
+            if fpv_count % 30 == 0:
+                elapsed = time.perf_counter() - t0
+                print(f"  FPV frame {fpv_count}: {elapsed:.1f}s elapsed "
+                      f"({fpv_count / elapsed:.1f} fps)")
 
-    # ---- Blueprint: orbital 3D + FPV (locked) + scalars ---------------------
+    total = time.perf_counter() - t0
+    print(f"  done — {fpv_count} FPV frames in {total:.1f}s "
+          f"({fpv_count / total:.1f} fps)")
+    renderer.close()
+    del depth_pipe
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # ---- Blueprint -----------------------------------------------------------
 
     blueprint = rrb.Blueprint(
         rrb.Vertical(
@@ -379,14 +450,6 @@ def main() -> int:
 
     print(f"\n  Demo .rrd → {args.out.resolve()}")
     print(f"  Open with: rerun {args.out}")
-    print()
-    print("What to look for in the viewer:")
-    print("  3D world view (top-left):")
-    print("    - 12 synthetic gates from M3, two pushed laterally outward (orange)")
-    print("    - GT drone (blue sphere + axes) flying the oval")
-    print("    - Three VIO shadows (green=with-map, orange=no-map, red=dead-reckoning)")
-    print("  FPV camera + depth (top-right): cycles through 3 warehouse renders, M2 DA V2")
-    print("  Drift time series (bottom): green stays flat, orange grows, red explodes")
     return 0
 
 
