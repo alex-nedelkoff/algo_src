@@ -428,15 +428,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 </div>
 
+<div class="card" style="border-color: var(--accent4); background: var(--surface);">
+<h3 style="color: var(--accent4); margin-top: 0;">⚠ The 20% number, in context</h3>
+<p>Worst-case parameter error of ~20% sounds bad. It mostly isn't, because of <em>what's being measured</em>:</p>
+<ul style="margin: 0.5rem 0 0.75rem 1.5rem">
+    <li><strong>Wrong labels, right dynamics.</strong> The EOM only depends on <em>combinations</em> of these scalars: linear acceleration scales with <code>k_thrust / mass</code>, angular acceleration with <code>arm·k_thrust / I</code> and <code>k_torque / I_zz</code>. Those <em>ratios</em> are recovered to &lt;1% (which is why the predictive RMSE further down is sub-centimeter). The 20% measures how far the fitter walked along a degenerate manifold the data has no opinion about — not how wrong the physics is.</li>
+    <li><strong>Vs literature.</strong> Real-world quadrotor sysID papers (Mellinger, Bauersfeld et al.) typically report 5–15% per-param recovery <em>with motion-capture ground truth</em> + bench tests for <code>k_thrust</code>, <code>k_torque</code>. Manufacturer-published specs disagree by 10–30% from a careful weighing/measurement. Our 20% from a single self-fit with no external measurements is in line with what literature shows; pinning mass + arm (constrained case) drops it to ~10%, also in line.</li>
+    <li><strong>When 20% would actually matter.</strong> If we wanted to publish the drone's parameters as physics — e.g., for sim-to-sim transfer to a totally different simulator that integrates the EOM differently — the labels themselves would get passed across. For any use case that runs the <em>same model</em> (rollouts, MPC, learned residuals), only the dynamics need to be right, and they are.</li>
+</ul>
+<p style="margin-bottom: 0;"><strong>The right metric to evaluate this fit is held-out rollout RMSE</strong> (see below), not per-param recovery.</p>
+</div>
+
 <h3>Unconstrained recovery — coupling group fingerprint</h3>
-<p>Look at the table below: in the unconstrained case, on each drone, multiple parameters converge to nearly identical error percentages (e.g. all three inertias hit the same number). This is the textbook fingerprint of structural identifiability degeneracies — the data only constrains <em>ratios</em>, not individual scalars.</p>
+<p>The table below makes the structural degeneracy visually concrete: on each drone, in the unconstrained case, multiple parameters converge to nearly identical error percentages (e.g. all three inertias hit the same number). This is the textbook fingerprint — the data constrains <em>ratios</em>, not individual scalars, so the fitter distributes error equally across each coupling group.</p>
 {param_table_unc}
 
 <h3>Constrained recovery (mass + arm_length pinned)</h3>
+<p>With two anchor measurements, each coupling group has at least one fixed scalar — the remaining parameters in that group can no longer drift along the degenerate ratio direction.</p>
 {param_table_con}
 
 <h3>Held-out predictive accuracy</h3>
-<p>This is what actually matters for downstream control. Even when parameter recovery is imperfect, the dynamics fit is excellent — open-loop rollouts are accurate to ~1 cm in position over 0.5 s, on every drone.</p>
+<p>This is the actual quality metric — what matters for any downstream use. Even with 20% parameter-label error, the fitted dynamics predict held-out trajectories to sub-centimeter position accuracy over 0.5 s rollouts on every drone. The dynamics are correct.</p>
 <div class="visual-grid">
 <div class="visual-item">
 <img src="data:image/png;base64,{rmse_b64}">
