@@ -1,0 +1,19 @@
+# CrazyFlie 2.1 with quadratic body drag enabled.
+# Used as the "high-fidelity" data generator in Phase 2: torch_quad has no
+# drag term, so fitting against this preset creates real model mismatch and
+# lets us measure how the fitter compensates.
+#
+# drag_coeff is 10x the numpy_quad default ([0.01, 0.01, 0.005]) to make the
+# signal clearly visible at hover-perturbation velocities. Lateral 2x vertical,
+# matching the typical anisotropy of a quadrotor's frontal area.
+name: cf21_with_drag
+description: CrazyFlie 2.1 with elevated body drag (Phase 2 mismatch demo)
+mass: 0.027
+arm_length: 0.0397
+k_thrust: 2.245e-8
+k_torque: 7.94e-10
+tau_motor: 0.02
+prop_radius: 0.023
+inertia: [1.395e-5, 1.436e-5, 2.173e-5]
+drag_coeff: [0.10, 0.10, 0.05]
+max_rpm: 21702.0

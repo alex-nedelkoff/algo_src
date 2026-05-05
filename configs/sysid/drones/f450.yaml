@@ -1,0 +1,13 @@
+# DJI F450-class photography quadrotor (~1.5 kg, 450 mm wheelbase).
+# 9-10 inch props on 920kV motors. T:W ~ 2.5, hover at ~63% of max.
+name: f450
+description: DJI F450-class photography quadrotor
+mass: 1.500
+arm_length: 0.225
+k_thrust: 1.31e-5
+k_torque: 2.62e-7
+tau_motor: 0.06
+prop_radius: 0.127
+inertia: [0.019, 0.019, 0.027]
+drag_coeff: [0.0, 0.0, 0.0]
+max_rpm: 8000.0

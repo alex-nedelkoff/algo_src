@@ -1,0 +1,14 @@
+# CrazyFlie 2.1 — micro indoor quadrotor (~27 g, 92 mm wheelbase).
+# Reference values from the original CF2.1 sysid; matches the default
+# VehicleParams. T:W ~ 1.75, hover at ~75% of max throttle.
+name: cf21
+description: CrazyFlie 2.1 micro indoor quadrotor
+mass: 0.027
+arm_length: 0.0397
+k_thrust: 2.245e-8
+k_torque: 7.94e-10
+tau_motor: 0.02
+prop_radius: 0.023
+inertia: [1.395e-5, 1.436e-5, 2.173e-5]
+drag_coeff: [0.0, 0.0, 0.0]
+max_rpm: 21702.0

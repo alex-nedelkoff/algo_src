@@ -1,0 +1,14 @@
+# 5" FPV race quad — high T:W (~14), aggressive class.
+# Values from the existing configs/sim/numpy_quad.yaml racing-quad sysid.
+# Hover at ~26% of max throttle (lots of headroom for racing maneuvers).
+name: fpv_racer
+description: 5-inch FPV racing quadrotor
+mass: 0.752
+arm_length: 0.170
+k_thrust: 2.49e-6
+k_torque: 8.80e-8
+tau_motor: 0.04
+prop_radius: 0.0635
+inertia: [0.0025, 0.0025, 0.0045]
+drag_coeff: [0.0, 0.0, 0.0]
+max_rpm: 31470.0
