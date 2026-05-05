@@ -154,30 +154,40 @@ class OccupancyGrid2D5:
         extent: GridExtent,
         altitude_m: float,
         thickness_m: float = 1.0,
+        *,
+        z_top: float | None = None,
+        z_bot: float | None = None,
     ) -> "OccupancyGrid2D5":
-        """Build the grid by ray-testing each cell at altitude ± thickness/2.
+        """Build the grid by ray-testing each cell vertically.
 
-        For each cell centre, we shoot a vertical ray of length
-        ``thickness_m`` centred on ``altitude_m`` and mark the cell
-        occupied if it hits any of ``body_ids``. ``thickness_m`` should
-        be wide enough to catch obstacles whose tops or bottoms straddle
-        the flight altitude.
+        By default, rays span ``altitude_m ± thickness_m / 2`` (a
+        symmetric slab around the flight altitude). Override with
+        ``z_top`` and ``z_bot`` for an asymmetric slab — useful when
+        you need the ray to start above every tall obstacle but stop
+        before hitting the floor.
 
         Args:
             client_id: PyBullet client id with the world already loaded.
-            body_ids: PyBullet body ids whose hits should mark occupancy.
+            body_ids: PyBullet body ids whose hits mark occupancy.
             extent: grid coverage in world frame.
-            altitude_m: nominal flight altitude (centre of vertical ray).
-            thickness_m: height of the slab that gets sampled, centred
-                on ``altitude_m``.
+            altitude_m: nominal flight altitude (stored on the grid).
+            thickness_m: symmetric-slab height around ``altitude_m``.
+                Ignored when both ``z_top`` and ``z_bot`` are provided.
+            z_top: optional explicit ray START z (above obstacles).
+            z_bot: optional explicit ray END z (below altitude but
+                ideally above the floor, so floor-only cells stay free).
         """
         grid = cls(extent, altitude_m)
         body_id_set = set(body_ids)
 
         # Vertical rays at every cell centre.
         n_x, n_y = extent.n_cells_x, extent.n_cells_y
-        z_top = altitude_m + 0.5 * thickness_m
-        z_bot = altitude_m - 0.5 * thickness_m
+        if z_top is None:
+            z_top = altitude_m + 0.5 * thickness_m
+        if z_bot is None:
+            z_bot = altitude_m - 0.5 * thickness_m
+        if z_top <= z_bot:
+            raise ValueError(f"z_top ({z_top}) must be > z_bot ({z_bot})")
 
         # Build batched ray endpoints.
         starts = []
@@ -204,6 +214,144 @@ class OccupancyGrid2D5:
                 if hit_body in body_id_set:
                     grid.grid[i, j] = 1
                 idx += 1
+        return grid
+
+    # ----- alternative construction: probe-sphere closest-points -----
+
+    @classmethod
+    def from_pybullet_probe_sphere(
+        cls,
+        client_id: int,
+        body_ids: Iterable[int],
+        extent: GridExtent,
+        altitude_m: float,
+        probe_radius_m: float | None = None,
+    ) -> "OccupancyGrid2D5":
+        """Build the grid by closest-points queries against a probe sphere.
+
+        For each cell, place a small sphere at the cell centre + altitude
+        and ask PyBullet's narrowphase for the closest point between
+        the sphere and each target body. Distance ≤ 0 → the cell is
+        occupied.
+
+        This is the most reliable method because:
+        - Uses exact mesh geometry (not broadphase AABBs).
+        - Sees obstacles regardless of vertical extent (no
+          ``rayTest`` "both endpoints inside object" blind spot).
+        - Doesn't false-positive on floor or ceiling cells when those
+          are far from the drone's altitude.
+
+        Cost: O(cells × target_bodies) closest-points calls. Each
+        narrowphase contact query is fast — for typical warehouse
+        sizes (5–10 k cells × few bodies) it completes in seconds.
+
+        Args:
+            client_id: PyBullet client id.
+            body_ids: bodies whose contact with the probe marks occupancy.
+            extent: grid coverage.
+            altitude_m: drone flight altitude.
+            probe_radius_m: probe sphere radius. Defaults to
+                ``cell_size/2`` so each cell is "covered" by the probe.
+        """
+        grid = cls(extent, altitude_m)
+        body_id_set = set(body_ids)
+        cs = extent.cell_size_m
+        if probe_radius_m is None:
+            probe_radius_m = cs / 2.0
+
+        # Create the probe — a static sphere body we'll move to each cell.
+        probe_col = pb.createCollisionShape(
+            pb.GEOM_SPHERE, radius=probe_radius_m, physicsClientId=client_id,
+        )
+        probe_body = pb.createMultiBody(
+            baseMass=0.0,
+            baseCollisionShapeIndex=probe_col,
+            basePosition=[0.0, 0.0, altitude_m],
+            physicsClientId=client_id,
+        )
+        try:
+            for i in range(extent.n_cells_x):
+                for j in range(extent.n_cells_y):
+                    cell_xy = grid.grid_to_world((i, j))
+                    pb.resetBasePositionAndOrientation(
+                        probe_body,
+                        [float(cell_xy[0]), float(cell_xy[1]), altitude_m],
+                        [0.0, 0.0, 0.0, 1.0],
+                        physicsClientId=client_id,
+                    )
+                    occupied = False
+                    for target_id in body_id_set:
+                        contacts = pb.getClosestPoints(
+                            probe_body, target_id, distance=0.0,
+                            physicsClientId=client_id,
+                        )
+                        if contacts:   # non-empty → contact at distance ≤ 0
+                            occupied = True
+                            break
+                    if occupied:
+                        grid.grid[i, j] = 1
+        finally:
+            pb.removeBody(probe_body, physicsClientId=client_id)
+        return grid
+
+    # ----- alternative construction: per-cell AABB overlap query -----
+
+    @classmethod
+    def from_pybullet_aabb_overlap(
+        cls,
+        client_id: int,
+        body_ids: Iterable[int],
+        extent: GridExtent,
+        altitude_m: float,
+        slab_half_height_m: float = 0.5,
+    ) -> "OccupancyGrid2D5":
+        """Build the grid by AABB-overlap queries — robust to mesh quirks.
+
+        For each cell, query PyBullet for any body whose AABB overlaps a
+        small box at the drone's altitude, of size ``cell × cell ×
+        2·slab_half_height``. If any of ``body_ids`` is in the result,
+        the cell is occupied.
+
+        More reliable than raycasting:
+        - No "both endpoints inside object" rayTest blind spot.
+        - Doesn't false-positive on floor / ceiling cells where the ray
+          had no choice but to hit something.
+        - Marks exactly the cells where an obstacle sits at the drone's
+          flight altitude — what the planner actually needs.
+
+        Trade-off: AABB overlap is conservative (uses broadphase AABBs,
+        not exact mesh geometry), so concave meshes can flag cells the
+        drone could squeeze through. Acceptable for v1 — drone-radius
+        dilation absorbs most of the slack.
+        """
+        grid = cls(extent, altitude_m)
+        body_id_set = set(body_ids)
+        cs = extent.cell_size_m
+        z_lo = altitude_m - slab_half_height_m
+        z_hi = altitude_m + slab_half_height_m
+
+        for i in range(extent.n_cells_x):
+            for j in range(extent.n_cells_y):
+                cell_xy = grid.grid_to_world((i, j))
+                aabb_min = [
+                    float(cell_xy[0] - cs / 2),
+                    float(cell_xy[1] - cs / 2),
+                    z_lo,
+                ]
+                aabb_max = [
+                    float(cell_xy[0] + cs / 2),
+                    float(cell_xy[1] + cs / 2),
+                    z_hi,
+                ]
+                overlapping = pb.getOverlappingObjects(
+                    aabb_min, aabb_max, physicsClientId=client_id,
+                )
+                if overlapping is None:
+                    continue
+                for body_unique_id, _link_index in overlapping:
+                    if body_unique_id in body_id_set:
+                        grid.grid[i, j] = 1
+                        break
         return grid
 
     # ----- visualisation -----

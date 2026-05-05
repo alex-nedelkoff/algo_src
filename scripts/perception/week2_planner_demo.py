@@ -54,7 +54,7 @@ from scripts.perception.week1_demo import (  # noqa: E402
 )
 
 
-APP_ID = "vision_aug_racing_week2_planner_demo_v4"
+APP_ID = "vision_aug_racing_week2_planner_demo_v6"
 DRONE_RADIUS_M = 0.25
 OBSTACLE_RADIUS_M = 1.0
 SPEED_MPS = 3.0
@@ -209,10 +209,21 @@ def main() -> int:
     )
     print(f"  extent: {extent.n_cells_x} x {extent.n_cells_y} cells "
           f"@ {extent.cell_size_m} m → {extent.n_cells_x * extent.n_cells_y} rays")
-    occ_raw = OccupancyGrid2D5.from_pybullet_scene(
+    # Probe-sphere closest-points against the OBSTACLE only — the
+    # warehouse is the known arena (gates were placed in safe locations
+    # during exploration), and treating its mesh as occupancy double-
+    # counts: the off-axis gates 4-5 push toward warehouse internal
+    # structure that the planner should trust the gate-placement to
+    # have cleared. Race-time avoidance is for dynamic / unmapped
+    # obstacles, not the static map. Real M5 deployment will pull
+    # warehouse occupancy from Janahan's TSDF (which is sparse — only
+    # surfaces, not interior volume) and merge with detected dynamic
+    # obstacles.
+    occ_raw = OccupancyGrid2D5.from_pybullet_probe_sphere(
         client_id=renderer.cid,
-        body_ids=[renderer.handles.warehouse_body_id, obstacle_body_id],
-        extent=extent, altitude_m=altitude_m, thickness_m=2.0,
+        body_ids=[obstacle_body_id],
+        extent=extent, altitude_m=altitude_m,
+        probe_radius_m=args.cell_size_m / 2.0,
     )
     print(f"  raw occupancy: {int(occ_raw.grid.sum())} cells "
           f"({100 * occ_raw.grid.sum() / occ_raw.grid.size:.1f} %)")
