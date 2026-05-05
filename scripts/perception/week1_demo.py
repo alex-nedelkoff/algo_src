@@ -86,13 +86,19 @@ def build_off_axis_waypoints(gt_poses: np.ndarray, n_gates: int = 12) -> np.ndar
     return waypoints
 
 
-def run_da_v2_on_renders(image_paths: list[str], resolution=(384, 512)) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    """Compute DA V2 Small depth for each render. Returns (rgb_arrays, depths).
+def run_da_v2_on_renders(image_paths: list[str], resolution=(384, 512)) -> tuple[list[bytes], list[np.ndarray]]:
+    """Compute DA V2 Small depth for each render.
 
-    Resolution matches the M2 decision (Small @ 384x512). Depth maps are
-    scaled into a 0-255 turbo colormap for visualisation; we also keep
-    the raw float32 depth in case the user wants the metric values.
+    Returns ``(jpeg_bytes_per_render, depth_arrays)``. We pre-encode RGB
+    as JPEG so per-frame logging fits in a few MB instead of 150+ —
+    rerun stores image data once per (entity, time) pair and doesn't
+    dedupe identical blobs across timestamps, so shrinking each blob
+    is the right lever.
+
+    Resolution matches the M2 decision (Small @ 384x512).
     """
+    import io
+
     from transformers import pipeline
 
     pipe = pipeline(
@@ -101,18 +107,20 @@ def run_da_v2_on_renders(image_paths: list[str], resolution=(384, 512)) -> tuple
         device=0 if torch.cuda.is_available() else -1,
         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
     )
-    rgbs = []
+    rgb_jpegs = []
     depths = []
     h, w = resolution
     for p in image_paths:
         img = Image.open(p).convert("RGB").resize((w, h), Image.BILINEAR)
         out = pipe(img)
-        rgbs.append(np.asarray(img))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        rgb_jpegs.append(buf.getvalue())
         depths.append(np.asarray(out["depth"], dtype=np.float32))
     del pipe
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return rgbs, depths
+    return rgb_jpegs, depths
 
 
 def quat_to_rotmat(q: np.ndarray) -> np.ndarray:
@@ -167,8 +175,8 @@ def main() -> int:
         print(f"  {name:>15s}: final drift {final_drift:.3f} m")
 
     print("Running DA V2 Small on warehouse renders (M2)...")
-    rgbs, depths = run_da_v2_on_renders(WAREHOUSE_RENDERS, resolution=(384, 512))
-    print(f"  {len(rgbs)} (rgb, depth) pairs cached at 384x512")
+    rgb_jpegs, depths = run_da_v2_on_renders(WAREHOUSE_RENDERS, resolution=(384, 512))
+    print(f"  {len(rgb_jpegs)} (rgb-jpeg, depth) pairs cached at 384x512")
 
     print(f"\nWriting {args.out}...")
     rr.init(APP_ID, spawn=False)
@@ -179,22 +187,48 @@ def main() -> int:
     # World coordinate axes for sanity reference.
     rr.log("/world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
 
-    # Synthetic gates (M3): one box per gate, oriented by the synthetic yaw.
-    GATE_SIZE = np.array([0.05, 1.5, 1.5])  # thin in forward direction, 1.5m square opening
+    # Synthetic gates (M3): rectangular frame outlines (openings, not filled
+    # walls) so the drone visibly flies *through* the opening rather than
+    # clipping into a solid face. 1.5 m square in the body Y-Z plane (the
+    # gate's "front" is its local +X axis; the opening is perpendicular to it).
+    GATE_HALF = 0.75   # half-side of the 1.5 m opening
+    # Frame corners in gate-local frame (X = forward / passage axis, Y = lateral,
+    # Z = vertical). Frame lies in the Y-Z plane at X=0.
+    frame_local = np.array([
+        [0.0,  GATE_HALF,  GATE_HALF],
+        [0.0, -GATE_HALF,  GATE_HALF],
+        [0.0, -GATE_HALF, -GATE_HALF],
+        [0.0,  GATE_HALF, -GATE_HALF],
+        [0.0,  GATE_HALF,  GATE_HALF],   # close the loop
+    ])
     for i, gate in enumerate(track.gates):
         rotmat = quat_to_rotmat(gate.orientation)
         # Off-axis waypoints get a different colour so they stand out.
         is_off_axis = i in (4, 5)
         color = (255, 165, 100) if is_off_axis else (90, 160, 255)
+        # Transform the local frame corners into world coordinates.
+        frame_world = (rotmat @ frame_local.T).T + gate.position
         rr.log(
             f"/world/track/gate_{i:02d}",
-            rr.Boxes3D(
-                centers=[gate.position.tolist()],
-                half_sizes=[(GATE_SIZE / 2).tolist()],
+            rr.LineStrips3D(
+                strips=[frame_world.tolist()],
                 colors=[color],
+                radii=0.025,
                 labels=[f"wp{i}{' (off-axis)' if is_off_axis else ''}"],
             ),
-            rr.Transform3D(translation=gate.position, mat3x3=rotmat),
+            static=True,
+        )
+        # Also log the gate's forward normal as a small arrow so the
+        # passage direction is visually unambiguous.
+        normal = rotmat @ np.array([0.5, 0.0, 0.0])
+        rr.log(
+            f"/world/track/gate_{i:02d}_normal",
+            rr.Arrows3D(
+                origins=[gate.position.tolist()],
+                vectors=[normal.tolist()],
+                colors=[color],
+                radii=0.012,
+            ),
             static=True,
         )
 
@@ -237,7 +271,6 @@ def main() -> int:
     # ---- Time-varying logs ---------------------------------------------------
 
     rgb_steps_per_cycle = max(1, int(round(args.rgb_cycle_s / dt)))
-    last_logged_rgb_idx = -1   # only re-log when the index changes
 
     for t in range(T):
         sim_time_s = t * dt
@@ -294,15 +327,17 @@ def main() -> int:
             rr.log(f"/scalars/yaw_drift_deg/{name}",
                    rr.Scalars(math.degrees(abs(yaw_err))))
 
-        # RGB + depth cycle: switch every rgb_cycle_s seconds. Only re-log
-        # when the active render changes — without this guard, 909 frames
-        # × 3 image variants becomes ~150 MB of duplicate image bytes in
-        # the .rrd. With the guard it's ~6 logs total (one per cycle edge).
-        rgb_idx = (t // rgb_steps_per_cycle) % len(rgbs)
-        if rgb_idx != last_logged_rgb_idx:
-            rr.log("/world/drone/fpv/rgb", rr.Image(rgbs[rgb_idx]))
+        # RGB + depth cycle: switch every rgb_cycle_s seconds. Log every
+        # 10th frame (≈3 Hz update rate) — enough that the viewer always
+        # has a recent entity to render even during scrub jumps, while
+        # keeping the float32 depth blobs from blowing up file size.
+        if t % 10 == 0:
+            rgb_idx = (t // rgb_steps_per_cycle) % len(rgb_jpegs)
+            rr.log(
+                "/world/drone/fpv/rgb",
+                rr.EncodedImage(contents=rgb_jpegs[rgb_idx], media_type="image/jpeg"),
+            )
             rr.log("/world/drone/fpv/depth", rr.DepthImage(depths[rgb_idx], meter=1.0))
-            last_logged_rgb_idx = rgb_idx
 
     # ---- Blueprint: orbital 3D + FPV (locked) + scalars ---------------------
 
