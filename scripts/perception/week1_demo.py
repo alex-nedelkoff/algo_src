@@ -162,6 +162,38 @@ class WarehouseRenderer:
         lo, hi = pb.getAABB(self.handles.warehouse_body_id, physicsClientId=self.cid)
         return np.asarray(lo, dtype=np.float64), np.asarray(hi, dtype=np.float64)
 
+    def spawn_cylinder(
+        self,
+        center_xy: np.ndarray,
+        radius_m: float,
+        height_m: float,
+        z_center: float,
+        rgba: tuple[float, float, float, float] = (0.85, 0.25, 0.25, 1.0),
+    ) -> int:
+        """Spawn a static cylinder into the scene. Returns the PyBullet body id.
+
+        Used to materialise synthetic obstacles so they show up in
+        ``render_from_drone`` and in raycast-based occupancy. The cylinder
+        is fixed in place (mass=0) and aligned with the world Z axis.
+        """
+        col_shape = pb.createCollisionShape(
+            pb.GEOM_CYLINDER, radius=radius_m, height=height_m,
+            physicsClientId=self.cid,
+        )
+        vis_shape = pb.createVisualShape(
+            pb.GEOM_CYLINDER, radius=radius_m, length=height_m,
+            rgbaColor=rgba, physicsClientId=self.cid,
+        )
+        body_id = pb.createMultiBody(
+            baseMass=0.0,
+            baseCollisionShapeIndex=col_shape,
+            baseVisualShapeIndex=vis_shape,
+            basePosition=[float(center_xy[0]), float(center_xy[1]), z_center],
+            baseOrientation=[0.0, 0.0, 0.0, 1.0],
+            physicsClientId=self.cid,
+        )
+        return body_id
+
     def render_from_drone(self, position: np.ndarray, yaw_rad: float) -> np.ndarray:
         """Return an (H, W, 3) uint8 RGB image looking forward from the drone."""
         # Look 5 m forward from the drone's position along its yaw direction.

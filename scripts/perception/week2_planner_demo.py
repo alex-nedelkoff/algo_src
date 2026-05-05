@@ -54,7 +54,7 @@ from scripts.perception.week1_demo import (  # noqa: E402
 )
 
 
-APP_ID = "vision_aug_racing_week2_planner_demo_v3"
+APP_ID = "vision_aug_racing_week2_planner_demo_v4"
 DRONE_RADIUS_M = 0.25
 OBSTACLE_RADIUS_M = 1.0
 SPEED_MPS = 3.0
@@ -170,23 +170,7 @@ def main() -> int:
     print(f"  warehouse AABB: min {aabb_min.round(2).tolist()}  max {aabb_max.round(2).tolist()}")
     print(f"  flight altitude: {altitude_m:.2f} m")
 
-    print("Building 2.5D occupancy grid by raycasting warehouse mesh...")
-    extent = GridExtent(
-        x_min=float(aabb_min[0]) - 1.0, x_max=float(aabb_max[0]) + 1.0,
-        y_min=float(aabb_min[1]) - 1.0, y_max=float(aabb_max[1]) + 1.0,
-        cell_size_m=args.cell_size_m,
-    )
-    print(f"  extent: {extent.n_cells_x} x {extent.n_cells_y} cells "
-          f"@ {extent.cell_size_m} m → {extent.n_cells_x * extent.n_cells_y} rays")
-    occ_raw = OccupancyGrid2D5.from_pybullet_scene(
-        client_id=renderer.cid,
-        body_ids=[renderer.handles.warehouse_body_id],
-        extent=extent, altitude_m=altitude_m, thickness_m=2.0,
-    )
-    print(f"  warehouse occupancy: {int(occ_raw.grid.sum())} cells out of "
-          f"{occ_raw.grid.size} ({100 * occ_raw.grid.sum() / occ_raw.grid.size:.1f} %)")
-
-    # ---- Gates + obstacle ----------------------------------------------------
+    # ---- Gates first (we need them to know where to put the obstacle) -------
 
     print("Building gates from warehouse-centered oval (M3 reuse)...")
     seed_traj = warehouse_centered_oval(
@@ -196,11 +180,42 @@ def main() -> int:
     gates_xyz = build_off_axis_waypoints(seed_traj, n_gates=12)
     print(f"  {gates_xyz.shape[0]} gates")
 
-    # Drop a synthetic obstacle between gates 4 and 5.
+    # ---- Spawn a real cylinder body in PyBullet so it shows up in
+    #      RGB / depth / raycast occupancy alike. The previous version
+    #      only painted occupancy cells, so the obstacle was invisible
+    #      in the rendered FPV view — misleading for verification.
+
     obstacle_xy = 0.5 * (gates_xyz[4, 0:2] + gates_xyz[5, 0:2])
-    print(f"Injecting cylinder obstacle: center {obstacle_xy.round(2).tolist()}, "
-          f"radius {OBSTACLE_RADIUS_M} m")
-    occ_raw.add_cylinder(obstacle_xy, OBSTACLE_RADIUS_M)
+    obstacle_height_m = 4.0
+    obstacle_z_center = float(aabb_min[2]) + obstacle_height_m / 2.0
+    print(f"Spawning cylinder body: center xy {obstacle_xy.round(2).tolist()}, "
+          f"radius {OBSTACLE_RADIUS_M} m, height {obstacle_height_m} m")
+    obstacle_body_id = renderer.spawn_cylinder(
+        center_xy=obstacle_xy,
+        radius_m=OBSTACLE_RADIUS_M,
+        height_m=obstacle_height_m,
+        z_center=obstacle_z_center,
+        rgba=(0.85, 0.25, 0.25, 1.0),
+    )
+
+    # ---- Occupancy: raycast against warehouse + cylinder so the planner
+    #      sees what the renderer renders.
+
+    print("Building 2.5D occupancy grid by raycasting warehouse + obstacle...")
+    extent = GridExtent(
+        x_min=float(aabb_min[0]) - 1.0, x_max=float(aabb_max[0]) + 1.0,
+        y_min=float(aabb_min[1]) - 1.0, y_max=float(aabb_max[1]) + 1.0,
+        cell_size_m=args.cell_size_m,
+    )
+    print(f"  extent: {extent.n_cells_x} x {extent.n_cells_y} cells "
+          f"@ {extent.cell_size_m} m → {extent.n_cells_x * extent.n_cells_y} rays")
+    occ_raw = OccupancyGrid2D5.from_pybullet_scene(
+        client_id=renderer.cid,
+        body_ids=[renderer.handles.warehouse_body_id, obstacle_body_id],
+        extent=extent, altitude_m=altitude_m, thickness_m=2.0,
+    )
+    print(f"  raw occupancy: {int(occ_raw.grid.sum())} cells "
+          f"({100 * occ_raw.grid.sum() / occ_raw.grid.size:.1f} %)")
 
     # Dilate by drone radius.
     occ = occ_raw.dilate(DRONE_RADIUS_M)
@@ -273,24 +288,31 @@ def main() -> int:
             static=True,
         )
 
-    # Cylinder obstacle: render as a stack of thin rings.
-    obstacle_z = altitude_m
+    # Cylinder obstacle: now a real PyBullet body, so we draw it as a
+    # solid 3D representation (stack of rings spanning the height) — what
+    # the rerun view shows is the same physical thing the renderer sees.
     n_ring_pts = 32
-    ring_world = []
-    for k in range(n_ring_pts + 1):
-        ang = 2 * math.pi * k / n_ring_pts
-        ring_world.append([
-            float(obstacle_xy[0]) + OBSTACLE_RADIUS_M * math.cos(ang),
-            float(obstacle_xy[1]) + OBSTACLE_RADIUS_M * math.sin(ang),
-            obstacle_z,
-        ])
+    obstacle_z_min = float(aabb_min[2])
+    obstacle_z_max = obstacle_z_min + obstacle_height_m
+    z_levels = np.linspace(obstacle_z_min, obstacle_z_max, 5)
+    rings = []
+    for z in z_levels:
+        ring = []
+        for k in range(n_ring_pts + 1):
+            ang = 2 * math.pi * k / n_ring_pts
+            ring.append([
+                float(obstacle_xy[0]) + OBSTACLE_RADIUS_M * math.cos(ang),
+                float(obstacle_xy[1]) + OBSTACLE_RADIUS_M * math.sin(ang),
+                float(z),
+            ])
+        rings.append(ring)
     rr.log(
         "/world/obstacle",
         rr.LineStrips3D(
-            strips=[ring_world],
-            colors=[(255, 80, 80)],
-            radii=0.05,
-            labels=["1 m cylinder"],
+            strips=rings,
+            colors=[(255, 80, 80)] * len(rings),
+            radii=0.04,
+            labels=[f"{OBSTACLE_RADIUS_M} m × {obstacle_height_m} m cylinder"] + [""] * (len(rings) - 1),
         ),
         static=True,
     )
