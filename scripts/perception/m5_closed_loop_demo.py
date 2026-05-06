@@ -67,7 +67,7 @@ from scripts.perception.week2_planner_demo import (  # noqa: E402
 )
 
 
-APP_ID = "vision_aug_racing_m5_closed_loop_demo_v1"
+APP_ID = "vision_aug_racing_m5_closed_loop_demo_v2"
 CHECKPOINT = Path("C:/Users/alexj/Documents/algo_src/outputs/expanded_5expert_v3/model.zip")
 ALTITUDE_OFFSET = 6.0  # lift everything so env's z<=0 ground-check doesn't fire
 
@@ -122,7 +122,7 @@ def slice_obs_33_to_28(obs_33: np.ndarray) -> np.ndarray:
 
 
 def build_planner_path(
-    obstacle_xy: np.ndarray,
+    obstacles: list[tuple[np.ndarray, float]],
     gates_xyz: np.ndarray,
     arena_aabb_min: np.ndarray,
     arena_aabb_max: np.ndarray,
@@ -132,27 +132,34 @@ def build_planner_path(
     smooth_globally: bool = True,
     target_spacing_m: float = 4.0,
 ) -> np.ndarray:
-    """Spawn cylinder, build occupancy, plan A*. Returns lap waypoints.
+    """Spawn cylinders, build occupancy, plan A*. Returns lap waypoints.
+
+    Args:
+        obstacles: list of (xy_position (2,), radius_m) tuples.
+            Each spawns a 4 m tall cylinder at the given xy at the
+            drone's altitude.
+        ... (other args unchanged)
 
     When ``smooth_globally=True`` (recommended): per-segment A* outputs
     are concatenated raw, then resampled with a single global cubic
     B-spline arc-length pass. This produces continuous tangents
     (and therefore continuous synthetic yaws) through segment joins,
-    not just within segments. Without it, the joint-points produce
-    sharp yaw discontinuities that the trained policy struggles with —
-    M5 stalled at ~5 gates because of this.
+    not just within segments.
     """
     cid = pb.connect(pb.DIRECT)
     try:
-        col = pb.createCollisionShape(
-            pb.GEOM_CYLINDER, radius=OBSTACLE_RADIUS_M, height=4.0,
-            physicsClientId=cid,
-        )
-        body = pb.createMultiBody(
-            baseMass=0.0, baseCollisionShapeIndex=col,
-            basePosition=[float(obstacle_xy[0]), float(obstacle_xy[1]), altitude_m],
-            physicsClientId=cid,
-        )
+        body_ids = []
+        for xy, radius in obstacles:
+            col = pb.createCollisionShape(
+                pb.GEOM_CYLINDER, radius=radius, height=4.0,
+                physicsClientId=cid,
+            )
+            body = pb.createMultiBody(
+                baseMass=0.0, baseCollisionShapeIndex=col,
+                basePosition=[float(xy[0]), float(xy[1]), altitude_m],
+                physicsClientId=cid,
+            )
+            body_ids.append(body)
 
         extent = GridExtent(
             x_min=float(arena_aabb_min[0]) - 1.0, x_max=float(arena_aabb_max[0]) + 1.0,
@@ -160,20 +167,14 @@ def build_planner_path(
             cell_size_m=cell_size_m,
         )
         occ_raw = OccupancyGrid2D5.from_pybullet_probe_sphere(
-            client_id=cid, body_ids=[body],
+            client_id=cid, body_ids=body_ids,
             extent=extent, altitude_m=altitude_m,
             probe_radius_m=cell_size_m / 2.0,
         )
         occ = occ_raw.dilate(DRONE_RADIUS_M)
 
         if smooth_globally:
-            # Get raw A* output (no per-segment resampling — that's where
-            # the per-segment-end tangent discontinuities came from).
             full_path = plan_full_lap(occ, gates_xyz, target_spacing_m=None)
-            # plan_full_lap already returns a closed loop (last cell == gate 0
-            # == first cell), so DON'T re-close it inside the resampler —
-            # that would put two consecutive duplicate points and splprep
-            # rejects with "Invalid inputs".
             from sim.tracks.waypoint import resample_waypoints
             full_path = resample_waypoints(
                 full_path, target_spacing=target_spacing_m,
@@ -324,10 +325,17 @@ def main() -> int:
     ]
     print(f"  gate spacings (m): {[round(s, 2) for s in seg_lens]}")
 
-    # Inject a cylinder midway between gates 2 and 3 — forces the planner
-    # to detour outward from the racing line.
-    obstacle_xy = 0.5 * (gates_env[2, 0:2] + gates_env[3, 0:2])
-    print(f"Cylinder obstacle at xy={obstacle_xy.round(2).tolist()}, radius={OBSTACLE_RADIUS_M} m")
+    # Multiple cylinder obstacles at varying gate-pair midpoints + sizes.
+    # Tests how the policy handles a more crowded course; planner has to
+    # weave through detours on both sides of the oval.
+    obstacles = [
+        (0.5 * (gates_env[2, 0:2] + gates_env[3, 0:2]), 0.8),  # top-left detour
+        (0.5 * (gates_env[5, 0:2] + gates_env[6, 0:2]), 0.6),  # bottom-left detour
+        (0.5 * (gates_env[0, 0:2] + gates_env[1, 0:2]), 0.5),  # top-right detour
+    ]
+    print(f"Obstacles ({len(obstacles)}):")
+    for i, (xy, r) in enumerate(obstacles):
+        print(f"  #{i}: xy={xy.round(2).tolist()}, radius={r} m")
 
     # Define an arena AABB around the gates for the occupancy grid.
     aabb_min_env = np.array([gates_env[:, 0].min() - 1.0,
@@ -343,9 +351,9 @@ def main() -> int:
     # convention), no extra EMA yaw smoothing (the spline is already smooth).
     # This combo took the closed-loop policy from 5 gates → 154 gates / 7 laps
     # on the same scene — comparable to the clean-oval baseline (129 / 16).
-    print("Planning A* path around the obstacle (cubic-spline smoothed @ 1m spacing)...")
+    print("Planning A* path around all obstacles (cubic-spline smoothed @ 1m spacing)...")
     full_path_env = build_planner_path(
-        obstacle_xy, gates_env, aabb_min_env, aabb_max_env,
+        obstacles, gates_env, aabb_min_env, aabb_max_env,
         cell_size_m=args.cell_size_m, altitude_m=altitude_env,
         smooth_globally=True, target_spacing_m=1.0,
     )
@@ -398,27 +406,32 @@ def main() -> int:
     def _to_warehouse(arr: np.ndarray, dim_xyz_slice: slice = slice(0, 3)) -> np.ndarray:
         return arr.copy()
 
-    # Cylinder obstacle (visualised as a stack of rings at z=0..4).
+    # Cylinder obstacles (visualised as stacks of rings at z=0..4).
     obstacle_z_min = 0.0
     obstacle_z_max = 4.0
     n_ring_pts = 32
-    rings = []
-    for z in np.linspace(obstacle_z_min, obstacle_z_max, 5):
-        ring = []
-        for k in range(n_ring_pts + 1):
-            ang = 2 * math.pi * k / n_ring_pts
-            ring.append([
-                float(obstacle_xy[0]) + OBSTACLE_RADIUS_M * math.cos(ang),
-                float(obstacle_xy[1]) + OBSTACLE_RADIUS_M * math.sin(ang),
-                float(z),
-            ])
-        rings.append(ring)
-    rr.log(
-        "/world/obstacle",
-        rr.LineStrips3D(strips=rings, colors=[(255, 80, 80)] * len(rings),
-                        radii=0.04),
-        static=True,
-    )
+    for obs_idx, (obs_xy, obs_r) in enumerate(obstacles):
+        rings = []
+        for z in np.linspace(obstacle_z_min, obstacle_z_max, 5):
+            ring = []
+            for k in range(n_ring_pts + 1):
+                ang = 2 * math.pi * k / n_ring_pts
+                ring.append([
+                    float(obs_xy[0]) + obs_r * math.cos(ang),
+                    float(obs_xy[1]) + obs_r * math.sin(ang),
+                    float(z),
+                ])
+            rings.append(ring)
+        rr.log(
+            f"/world/obstacles/cyl_{obs_idx:02d}",
+            rr.LineStrips3D(
+                strips=rings,
+                colors=[(255, 80, 80)] * len(rings),
+                radii=0.04,
+                labels=[f"{obs_r}m cyl"] + [""] * (len(rings) - 1),
+            ),
+            static=True,
+        )
 
     # Gates (in warehouse frame).
     GATE_HALF = 0.75
