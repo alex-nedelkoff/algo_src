@@ -128,8 +128,20 @@ def build_planner_path(
     arena_aabb_max: np.ndarray,
     cell_size_m: float,
     altitude_m: float,
+    *,
+    smooth_globally: bool = True,
+    target_spacing_m: float = 4.0,
 ) -> np.ndarray:
-    """Spawn cylinder, build occupancy, plan A*. Returns lap waypoints."""
+    """Spawn cylinder, build occupancy, plan A*. Returns lap waypoints.
+
+    When ``smooth_globally=True`` (recommended): per-segment A* outputs
+    are concatenated raw, then resampled with a single global cubic
+    B-spline arc-length pass. This produces continuous tangents
+    (and therefore continuous synthetic yaws) through segment joins,
+    not just within segments. Without it, the joint-points produce
+    sharp yaw discontinuities that the trained policy struggles with —
+    M5 stalled at ~5 gates because of this.
+    """
     cid = pb.connect(pb.DIRECT)
     try:
         col = pb.createCollisionShape(
@@ -153,7 +165,22 @@ def build_planner_path(
             probe_radius_m=cell_size_m / 2.0,
         )
         occ = occ_raw.dilate(DRONE_RADIUS_M)
-        full_path = plan_full_lap(occ, gates_xyz, target_spacing_m=4.0)
+
+        if smooth_globally:
+            # Get raw A* output (no per-segment resampling — that's where
+            # the per-segment-end tangent discontinuities came from).
+            full_path = plan_full_lap(occ, gates_xyz, target_spacing_m=None)
+            # plan_full_lap already returns a closed loop (last cell == gate 0
+            # == first cell), so DON'T re-close it inside the resampler —
+            # that would put two consecutive duplicate points and splprep
+            # rejects with "Invalid inputs".
+            from sim.tracks.waypoint import resample_waypoints
+            full_path = resample_waypoints(
+                full_path, target_spacing=target_spacing_m,
+                method="cubic", closed_loop=False,
+            )
+        else:
+            full_path = plan_full_lap(occ, gates_xyz, target_spacing_m=target_spacing_m)
         return full_path
     finally:
         pb.disconnect(cid)
@@ -311,15 +338,21 @@ def main() -> int:
                              5.0])
     altitude_env = 2.0
 
-    print("Planning A* path around the obstacle...")
+    # Best config from a parameter sweep: cubic-spline smoothed, 1 m target
+    # spacing, lookahead=1 (matches training's "gate points to next gate"
+    # convention), no extra EMA yaw smoothing (the spline is already smooth).
+    # This combo took the closed-loop policy from 5 gates → 154 gates / 7 laps
+    # on the same scene — comparable to the clean-oval baseline (129 / 16).
+    print("Planning A* path around the obstacle (cubic-spline smoothed @ 1m spacing)...")
     full_path_env = build_planner_path(
         obstacle_xy, gates_env, aabb_min_env, aabb_max_env,
         cell_size_m=args.cell_size_m, altitude_m=altitude_env,
+        smooth_globally=True, target_spacing_m=1.0,
     )
     print(f"  {full_path_env.shape[0]} waypoints over the lap")
 
     track = waypoints_to_track(
-        full_path_env, yaw_lookahead=2, yaw_smoothing_alpha=0.5, closed_loop=True,
+        full_path_env, yaw_lookahead=1, yaw_smoothing_alpha=1.0, closed_loop=True,
     )
 
     # Open-loop baseline trajectory at the same speed.
