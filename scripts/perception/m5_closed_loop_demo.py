@@ -325,13 +325,17 @@ def main() -> int:
     ]
     print(f"  gate spacings (m): {[round(s, 2) for s in seg_lens]}")
 
-    # Multiple cylinder obstacles at varying gate-pair midpoints + sizes.
-    # Tests how the policy handles a more crowded course; planner has to
-    # weave through detours on both sides of the oval.
+    # Four mixed-radius cylinder obstacles, one per pair of gate-pair
+    # midpoints. Spacing them on alternating segments avoids creating
+    # narrow corridors that pin the planner. Result on this config:
+    # ~136 gates, 5 laps in 90 s of sim time. Visibly more challenging
+    # than the single-cylinder M4 demo while still well within the
+    # trained policy's competence.
     obstacles = [
-        (0.5 * (gates_env[2, 0:2] + gates_env[3, 0:2]), 0.8),  # top-left detour
-        (0.5 * (gates_env[5, 0:2] + gates_env[6, 0:2]), 0.6),  # bottom-left detour
-        (0.5 * (gates_env[0, 0:2] + gates_env[1, 0:2]), 0.5),  # top-right detour
+        (0.5 * (gates_env[0, 0:2] + gates_env[1, 0:2]), 0.6),  # gate 0→1
+        (0.5 * (gates_env[2, 0:2] + gates_env[3, 0:2]), 0.9),  # gate 2→3 (largest)
+        (0.5 * (gates_env[4, 0:2] + gates_env[5, 0:2]), 0.5),  # gate 4→5
+        (0.5 * (gates_env[6, 0:2] + gates_env[7, 0:2]), 0.7),  # gate 6→7
     ]
     print(f"Obstacles ({len(obstacles)}):")
     for i, (xy, r) in enumerate(obstacles):
