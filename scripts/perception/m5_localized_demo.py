@@ -67,7 +67,16 @@ from scripts.perception.week2_planner_demo import OBSTACLE_RADIUS_M  # noqa: E40
 from scripts.perception.week1_demo import quat_to_rotmat  # noqa: E402
 
 
-APP_ID = "vision_aug_racing_m5_localized_demo_v1"
+APP_ID = "vision_aug_racing_m5_localized_demo_v2"
+# Drone & gates live in env-frame (z lifted to keep z>0 → no ground-check
+# false termination). Warehouse renders in its native frame (basePosition
+# (0,0,0)) and the map cloud is the mesh as-is, no translation. We
+# convert env z → warehouse z by subtracting ALTITUDE_OFFSET when
+# rendering / running ICP, then convert back. xy is shared between
+# frames (the oval's xy center is set to the warehouse's xy center).
+ALTITUDE_OFFSET = 6.0
+WAREHOUSE_CENTER_XY = (1.01, -5.6)
+WAREHOUSE_FLOOR_Z = -5.7
 CHECKPOINT = Path("C:/Users/alexj/Documents/algo_src/outputs/expanded_5expert_v3/model.zip")
 WAREHOUSE_ASSETS = Path("sim/assets/warehouse_fab_v1")
 MESH_PATH = WAREHOUSE_ASSETS / "warehouse.obj"
@@ -128,14 +137,19 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     # ---- Scene ---------------------------------------------------------------
-
-    print("Building scene (clean oval @ z=2.0)...")
+    # Place the oval at the warehouse xy center, env-frame z lifted by
+    # ALTITUDE_OFFSET so env's z>0 ground-check stays happy. The drone
+    # flies at env z ≈ 1.8 which corresponds to warehouse z ≈ -4.2 m,
+    # i.e. ~1.5 m above the warehouse floor.
+    print("Building scene (oval at warehouse xy center, env frame)...")
+    altitude_warehouse = WAREHOUSE_FLOOR_Z + 1.5    # 1.5 m above floor in native coords
+    altitude_env = altitude_warehouse + ALTITUDE_OFFSET   # = 1.8 in env frame
     n_gates = 8
     theta = np.linspace(0, 2 * np.pi, n_gates, endpoint=False)
     gates_env = np.stack([
-        3.0 * np.cos(theta),
-        2.5 * np.sin(theta),
-        np.full(n_gates, 2.0),
+        WAREHOUSE_CENTER_XY[0] + 3.0 * np.cos(theta),
+        WAREHOUSE_CENTER_XY[1] + 2.5 * np.sin(theta),
+        np.full(n_gates, altitude_env),
     ], axis=1)
     obstacles = [
         (0.5 * (gates_env[0, 0:2] + gates_env[1, 0:2]), 0.6),
@@ -147,7 +161,6 @@ def main() -> int:
                              gates_env[:, 1].min() - 1.0, 0.0])
     aabb_max_env = np.array([gates_env[:, 0].max() + 1.0,
                              gates_env[:, 1].max() + 1.0, 5.0])
-    altitude_env = 2.0
 
     print("Planning A* path around obstacles (cubic-spline @ 1m spacing)...")
     full_path_env = build_planner_path(
@@ -163,24 +176,19 @@ def main() -> int:
 
     # ---- Localization map ---------------------------------------------------
 
-    # PyBullet client for live depth rendering. Spawn the warehouse
-    # mesh shifted so its xy-center is at world origin and its floor is
-    # at z=0 — fits the oval's clean coordinate frame.
+    # PyBullet client for live depth rendering. Warehouse stays at its
+    # native pose (basePosition=(0,0,0)) — the only frame conversion
+    # is a z-only offset between env (lifted) and warehouse (native).
     cid = pb.connect(pb.DIRECT)
     pb.setAdditionalSearchPath(str(WAREHOUSE_ASSETS), physicsClientId=cid)
-    # Original warehouse AABB: (-7.5, -13.31, -5.7) to (9.52, 2.11, 1.49).
-    # Shift to center xy on origin, floor at 0.
-    wh_center = np.array([1.01, -5.6, -5.7])  # original AABB center xy + min z
-    wh_shift = -wh_center                       # to put center at origin / floor at 0
-    print(f"\nSpawning warehouse mesh shifted by {wh_shift.round(2).tolist()}")
+    print("\nSpawning warehouse mesh at native (0,0,0) pose")
     warehouse_id = pb.loadURDF(
         str(WAREHOUSE_ASSETS / "warehouse.urdf"),
-        basePosition=wh_shift.tolist(),
+        basePosition=[0.0, 0.0, 0.0],
         useFixedBase=True, physicsClientId=cid,
     )
 
-    # Spawn the cylinder obstacles in the same client (so depth rendering
-    # sees them too).
+    # Cylinder obstacles in warehouse frame (z = altitude_warehouse).
     print("Spawning cylinder obstacles...")
     obstacle_ids = []
     for xy, r in obstacles:
@@ -191,38 +199,34 @@ def main() -> int:
                                    physicsClientId=cid)
         bid = pb.createMultiBody(
             baseMass=0.0, baseCollisionShapeIndex=col, baseVisualShapeIndex=vis,
-            basePosition=[float(xy[0]), float(xy[1]), altitude_env],
+            basePosition=[float(xy[0]), float(xy[1]), altitude_warehouse],
             physicsClientId=cid,
         )
         obstacle_ids.append(bid)
 
-    # Build the map point cloud: warehouse surface (shifted) + cylinder
-    # surfaces, sampled with normals.
-    print("Building static map point cloud...")
+    # Map cloud in NATIVE warehouse coords (no translation). This was
+    # the working setup in test_icp_localizer (6 mm position error).
+    print("Building static map point cloud (native warehouse coords)...")
     t0 = time.perf_counter()
     map_pcd = sample_mesh_surface(MESH_PATH, n_points=40_000)
-    map_pcd.translate(wh_shift)
-    # Add cylinder surface samples (uniform around the cylinder, sampled
-    # heights — open3d doesn't have GEOM_CYLINDER sampling directly, so
-    # do it manually).
+    # Cylinder samples at warehouse-frame altitude.
     rng = np.random.default_rng(0)
-    cyl_pts = []
-    cyl_normals = []
+    cyl_pts, cyl_normals = [], []
     for xy, r in obstacles:
-        n_pts = max(200, int(2 * math.pi * r * 4.0 * 100))   # ~100 pts/m²
+        n_pts = max(200, int(2 * math.pi * r * 4.0 * 100))
         thetas = rng.uniform(0, 2 * math.pi, size=n_pts)
-        zs = rng.uniform(altitude_env - 2.0, altitude_env + 2.0, size=n_pts)
+        zs = rng.uniform(altitude_warehouse - 2.0, altitude_warehouse + 2.0, size=n_pts)
         for t_, z in zip(thetas, zs):
-            x = float(xy[0]) + r * math.cos(t_)
-            y = float(xy[1]) + r * math.sin(t_)
-            cyl_pts.append([x, y, float(z)])
+            cyl_pts.append([
+                float(xy[0]) + r * math.cos(t_),
+                float(xy[1]) + r * math.sin(t_),
+                float(z),
+            ])
             cyl_normals.append([math.cos(t_), math.sin(t_), 0.0])
     if cyl_pts:
-        cyl_arr = np.asarray(cyl_pts)
-        cyl_norm = np.asarray(cyl_normals)
         cyl_pcd = o3d.geometry.PointCloud()
-        cyl_pcd.points = o3d.utility.Vector3dVector(cyl_arr)
-        cyl_pcd.normals = o3d.utility.Vector3dVector(cyl_norm)
+        cyl_pcd.points = o3d.utility.Vector3dVector(np.asarray(cyl_pts))
+        cyl_pcd.normals = o3d.utility.Vector3dVector(np.asarray(cyl_normals))
         map_pcd += cyl_pcd
     print(f"  map cloud: {len(map_pcd.points)} points "
           f"({time.perf_counter() - t0:.1f} s)")
@@ -284,30 +288,34 @@ def main() -> int:
         gt_trajectory[t] = true_state[0:3]
 
         # Use the env's true orientation as the IMU-attitude proxy
-        # (sub-degree accurate in real flight); only POSITION is refined
-        # by ICP. The ICP initial guess uses the IMU attitude + the
-        # previous step's estimated position for a clean "rotation
-        # known, translation noisy" setup.
+        # (sub-degree accurate in real flight). Only POSITION is refined
+        # by ICP.
         imu_quat = true_state[6:10].copy()
-        estimated_quat = imu_quat   # for downstream uses
+        estimated_quat = imu_quat
 
         if t % icp_period == 0:
-            depth = render_depth_from_state(cid, true_state, width, height, vfov)
+            # Render depth from the WAREHOUSE-frame pose (subtract the
+            # env-frame z lift). map_pcd is in warehouse coords, so ICP
+            # operates entirely in warehouse frame.
+            true_state_warehouse = true_state.copy()
+            true_state_warehouse[2] -= ALTITUDE_OFFSET
+            depth = render_depth_from_state(cid, true_state_warehouse, width, height, vfov)
+            est_pos_warehouse = estimated_pos.copy()
+            est_pos_warehouse[2] -= ALTITUDE_OFFSET
             t_icp = time.perf_counter()
-            T_init = world_pose_to_matrix(estimated_pos, imu_quat)
+            T_init = world_pose_to_matrix(est_pos_warehouse, imu_quat)
             result = localizer.localize(depth, T_init,
                                         is_zbuffer=True, near=0.1, far=100.0)
             last_icp_ms = (time.perf_counter() - t_icp) * 1000.0
             if result.success:
-                # Take the refined position; keep IMU attitude.
-                refined_pos, _ = matrix_to_pose(result.refined_T_world_body)
-                estimated_pos = refined_pos
+                refined_pos_warehouse, _ = matrix_to_pose(result.refined_T_world_body)
+                # Convert back to env frame.
+                estimated_pos = refined_pos_warehouse.copy()
+                estimated_pos[2] += ALTITUDE_OFFSET
                 icp_fitness_per_step[t] = result.fitness
             else:
                 icp_fitness_per_step[t] = 0.0
         else:
-            # Between ICP frames: integrate true velocity (VIO proxy) onto
-            # estimated position.
             estimated_pos = estimated_pos + true_state[3:6] * args.dt
             icp_fitness_per_step[t] = icp_fitness_per_step[t - 1] if t > 0 else 0.0
 
