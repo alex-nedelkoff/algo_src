@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VIO vs MASt3R-SLAM — Localization Approaches Compared</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #1c2333; --border: #30363d;
+    --text: #c9d1d9; --text-dim: #8b949e;
+    --accent: #58a6ff; --accent2: #7ee787; --accent3: #d2a8ff; --accent4: #ffa657; --accent5: #ff7b72;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.7;
+    max-width: 1200px; margin: 0 auto; padding: 2rem 1.5rem; }
+  h1 { font-size: 2.2rem; color: #fff; margin-bottom: 0.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: 1.6rem; color: var(--accent); margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.2rem; color: var(--accent3); margin: 1.5rem 0 0.75rem; }
+  p { margin-bottom: 1rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { background: var(--surface2); color: var(--accent3); padding: 0.1em 0.4em; border-radius: 4px; font-size: 0.9em; }
+  pre { background: var(--surface2); color: var(--text); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; margin: 1rem 0; }
+  ul { margin: 0.5rem 0 1rem 1.5rem; }
+  ul li { margin-bottom: 0.3rem; }
+  .meta { color: var(--text-dim); font-size: 0.9rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem 2rem; margin: 1.25rem 0; }
+  .compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin: 1.5rem 0; }
+  .compare-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; }
+  .compare-card.vio { border-left: 4px solid var(--accent4); }
+  .compare-card.mast3r { border-left: 4px solid var(--accent2); }
+  .compare-card h3 { margin-top: 0; }
+  .data-table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.92rem; }
+  .data-table th { background: var(--surface2); color: var(--accent); padding: 0.6rem 0.75rem; text-align: left; border-bottom: 2px solid var(--border); font-weight: 600; }
+  .data-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .data-table tbody tr:hover { background: var(--surface); }
+  .data-table .axis { color: var(--accent3); font-weight: 600; }
+  .data-table .vio-cell { color: var(--accent4); }
+  .data-table .mast-cell { color: var(--accent2); }
+  .pill { display: inline-block; padding: 0.15em 0.6em; border-radius: 999px; font-size: 0.78em; font-weight: 600; margin-right: 0.4em; }
+  .pill-vio { background: rgba(255, 166, 87, 0.15); color: var(--accent4); border: 1px solid rgba(255, 166, 87, 0.3); }
+  .pill-mast { background: rgba(126, 231, 135, 0.15); color: var(--accent2); border: 1px solid rgba(126, 231, 135, 0.3); }
+  .pill-pick { background: var(--accent); color: var(--bg); }
+</style>
+</head>
+<body>
+
+<h1>VIO vs MASt3R-SLAM — TL;DR + side-by-side</h1>
+<p class="meta">Two fundamentally different approaches to "where am I in the world" for a racing drone. VIO is the 30-year classical recipe; MASt3R-SLAM is a 2024 foundation-model approach. Picking between them depends on what you optimize for.</p>
+
+<h2>30-second TL;DR</h2>
+
+<div class="card">
+<p><strong>VIO (Visual-Inertial Odometry)</strong> = "track sparse image features + integrate IMU + optimize the chain."
+A camera sees corners / blobs in the scene; the IMU integrates motion at 200 Hz; an EKF or factor graph fuses the two, outputting 6-DoF pose at 100+ Hz. <span class="pill pill-vio">classical</span> <span class="pill pill-vio">CPU</span> <span class="pill pill-vio">100 Hz</span> <span class="pill pill-vio">drifts on bad textures</span></p>
+<p><strong>MASt3R-SLAM</strong> = "feed two images into a transformer, get dense pixel correspondences + 3D points in a unified frame, run SLAM on top." The transformer (MASt3R, 2024) replaces the entire feature-matching front-end with one foundation-model pass. <span class="pill pill-mast">2024</span> <span class="pill pill-mast">GPU</span> <span class="pill pill-mast">~15 Hz</span> <span class="pill pill-mast">handles textureless scenes</span></p>
+<p><strong>Both produce 6-DoF pose</strong> as the primary output. MASt3R-SLAM also produces a dense 3D map as a free side effect (because the foundation model already predicts 3D points). VIO usually outputs a sparse landmark map — useful for loop closure, not for cost-map planning.</p>
+</div>
+
+<h2>Side by side</h2>
+
+<div class="compare-grid">
+
+<div class="compare-card vio">
+<h3>VIO — what it is</h3>
+<p>30+ years of accumulated engineering. The recipe:</p>
+<ul>
+  <li>Detect sparse image features (FAST, ORB, SuperPoint).</li>
+  <li>Match them across frames with descriptor distance.</li>
+  <li>Triangulate 3-D landmarks; track them.</li>
+  <li>Integrate accelerometer + gyro between camera frames (IMU pre-integration).</li>
+  <li>Solve a factor graph or EKF that minimizes reprojection error + IMU consistency.</li>
+  <li>Output: drone pose at every IMU update (200+ Hz typically).</li>
+</ul>
+<p><strong>Best-in-class implementations:</strong> ORB-SLAM3 (visual-inertial), VINS-Fusion, OpenVINS, MSCKF.</p>
+<p><strong>Failure mode:</strong> textureless walls, repetitive patterns (warehouse rack labels!), rapid motion blur. Sparse features run out of distinctive matches.</p>
+</div>
+
+<div class="compare-card mast3r">
+<h3>MASt3R-SLAM — what it is</h3>
+<p>A 2024 paper (Murai et al.) that wraps a foundation model into a SLAM system. The recipe:</p>
+<ul>
+  <li>Take two RGB frames; pass them through MASt3R (a ViT-based transformer).</li>
+  <li>The model outputs <em>dense</em> per-pixel correspondences AND per-pixel 3-D points in a shared frame — feed-forward, no iterative matching.</li>
+  <li>Aggregate per-frame predictions into a global map; estimate pose by aligning new frames to the map.</li>
+  <li>Loop closure and relocalization fall out of the same matcher.</li>
+</ul>
+<p><strong>Best-in-class:</strong> MASt3R-SLAM is itself the leading example. DUSt3R (the predecessor) is what you'd compare against.</p>
+<p><strong>Failure mode:</strong> compute. The MASt3R forward pass is ~50–100 ms on a recent GPU; SLAM rate is bounded by that. Not real-time on Jetson without quantization. Camera-only; ignores IMU (some forks add it).</p>
+</div>
+
+</div>
+
+<h2>Comparison axes</h2>
+
+<table class="data-table">
+<thead>
+<tr><th>Axis</th><th class="vio-cell">VIO (e.g. ORB-SLAM3 VI)</th><th class="mast-cell">MASt3R-SLAM</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td class="axis">Sensors required</td>
+  <td class="vio-cell">RGB + IMU (mandatory)</td>
+  <td class="mast-cell">RGB only (mandatory). IMU optional in forks.</td>
+</tr>
+<tr>
+  <td class="axis">Front-end</td>
+  <td class="vio-cell">Sparse feature detector (ORB / SuperPoint), descriptor matching, RANSAC pose</td>
+  <td class="mast-cell">Single transformer pass (MASt3R) producing dense per-pixel correspondences + 3-D points</td>
+</tr>
+<tr>
+  <td class="axis">Output rate (typical)</td>
+  <td class="vio-cell">100–200 Hz (IMU-driven)</td>
+  <td class="mast-cell">10–20 Hz (transformer-bound)</td>
+</tr>
+<tr>
+  <td class="axis">Compute</td>
+  <td class="vio-cell">~10–30 ms CPU per frame; runs on Jetson without GPU</td>
+  <td class="mast-cell">~50–100 ms GPU per frame; needs CUDA-class compute</td>
+</tr>
+<tr>
+  <td class="axis">Map output</td>
+  <td class="vio-cell">Sparse landmark cloud (hundreds–thousands of 3-D points)</td>
+  <td class="mast-cell">Dense 3-D point cloud (per-pixel) — a free byproduct of the foundation model</td>
+</tr>
+<tr>
+  <td class="axis">Texture-poor robustness</td>
+  <td class="vio-cell">Weak. Long blank walls = lost tracking.</td>
+  <td class="mast-cell">Strong. Foundation model leverages global appearance, not just local corners.</td>
+</tr>
+<tr>
+  <td class="axis">Repetitive-pattern robustness</td>
+  <td class="vio-cell">Weak. Identical features confuse matching.</td>
+  <td class="mast-cell">Strong. Transformer's context window resolves ambiguity globally.</td>
+</tr>
+<tr>
+  <td class="axis">Map-relative localization</td>
+  <td class="vio-cell">Yes (atlas / relocalization mode); needs vocab tree or place recognition</td>
+  <td class="mast-cell">Yes — feed the map's reference images into the matcher; pose comes back directly</td>
+</tr>
+<tr>
+  <td class="axis">Drift bound</td>
+  <td class="vio-cell">~1 % per second (without loop closure); seconds-to-minutes-stable</td>
+  <td class="mast-cell">Bounded by the foundation model's intrinsic accuracy; less drift accumulation per se</td>
+</tr>
+<tr>
+  <td class="axis">Maturity / deployment hours</td>
+  <td class="vio-cell">Massive. Real flight on real drones for &gt;15 years.</td>
+  <td class="mast-cell">Small. 2024 paper. Limited flight-deployment experience reported.</td>
+</tr>
+<tr>
+  <td class="axis">Windows install pain</td>
+  <td class="vio-cell">High. C++ + Pangolin + OpenCV + custom CMake builds.</td>
+  <td class="mast-cell">Medium. Mostly Python deps + CUDA extensions for the Gaussian-splatting backend (optional).</td>
+</tr>
+<tr>
+  <td class="axis">Failure recovery</td>
+  <td class="vio-cell">Tracking-loss → reinitialise from vocab tree; can take 100–500 ms</td>
+  <td class="mast-cell">Re-feed any frame into the matcher; pose comes back within one inference window</td>
+</tr>
+</tbody>
+</table>
+
+<h2>For our racing drone, why MASt3R-SLAM</h2>
+
+<div class="card">
+<p>Three things about our setup push toward MASt3R-SLAM specifically:</p>
+<ol style="margin: 0.5rem 0 0 1.5rem">
+  <li><strong>Static map known from exploration phase.</strong> We don't need to build the map online — we already have it (Janahan's TSDF / mesh). MASt3R-SLAM's "register a new frame against a known map" mode is a single transformer pass, no incremental SLAM optimization needed.</li>
+  <li><strong>Warehouse interior is texture-poor and repetitive.</strong> Long bare walls, identical shelving, similar columns. Classical VIO front-ends (corner detectors) struggle here. The MASt3R transformer is much more robust to these conditions.</li>
+  <li><strong>The architecture call from M1 is "ICP at 1 Hz against the static map."</strong> MASt3R-SLAM literally is "transformer-based ICP at 10–20 Hz against the static map." Same architectural slot, much stronger frontend. Slots into the existing M5 closed-loop demo as a drop-in replacement for our open3d ICP.</li>
+</ol>
+<p style="margin-top: 1rem"><strong>The cost we're accepting:</strong> 50–100 ms / frame compute, GPU-only inference, ~1.5–2 hr install. The qualifier sim runs on the dev box (RTX-class GPU available), so the compute cost is fine — we're not yet on Jetson.</p>
+</div>
+
+<h2>What we lose by not using VIO</h2>
+
+<div class="card">
+<p>Two things to be honest about:</p>
+<ul>
+  <li><strong>No IMU integration in MASt3R-SLAM.</strong> Pose update rate is 10–20 Hz, not 100 Hz. We'd interpolate between MASt3R updates with IMU integration if we want 100 Hz pose for the policy. (The policy runs at 100 Hz; the planner at 5–10 Hz; if we feed the policy IMU-only between vision updates, M1's drift numbers say we're fine within 0.1 s windows.)</li>
+  <li><strong>Less mature.</strong> If MASt3R-SLAM hits an edge case in our simulator we haven't tested (e.g., the synthetic warehouse mesh produces depth gradients the foundation model wasn't trained on), recovery is harder than for a 15-year-mature ORB-SLAM3.</li>
+</ul>
+<p>Mitigation: we keep our open3d ICP as a fallback. If MASt3R-SLAM doesn't work cleanly within the install + integration budget, fall back to ICP + improved initial-guess strategy (predict-then-correct, translation-only refinement).</p>
+</div>
+
+<h2>Install plan in flight</h2>
+
+<div class="card">
+<ol style="margin: 0 0 0 1.5rem">
+  <li>Clone repo + submodules into <code>external_packages/MASt3R-SLAM</code></li>
+  <li>Install Python deps in the existing <code>monorace</code> conda env</li>
+  <li>Download MASt3R model checkpoints (~1 GB)</li>
+  <li>Build CUDA extensions for the Gaussian-splatting backend if needed (we can run pose-only and skip this if it gives Windows trouble)</li>
+  <li>Smoke-test: feed a single warehouse frame to MASt3R, verify the pose output looks sane</li>
+  <li>Wire into the M5 closed-loop demo as a drop-in replacement for <code>IcpLocalizer</code></li>
+</ol>
+<p style="margin-top: 1rem"><strong>Realistic budget:</strong> 1.5–2 hr if smooth, up to 3 hr if Windows quirks. Each step's logs land in <code>outputs/perception/mast3r_install.log</code> so if anything breaks we know exactly which dep choked.</p>
+</div>
+
+<p class="meta" style="margin-top: 3rem">Document generated 2026-05-06. Cross-references: <code>docs/superpowers/artifacts/2026-05-05-m1-localization-decision.md</code> (the architecture call this slots into), <code>perception/localization/icp_localizer.py</code> (the open3d-based fallback), <code>scripts/perception/m5_localized_demo.py</code> (the demo that needs the upgraded localizer).</p>
+
+</body>
+</html>
