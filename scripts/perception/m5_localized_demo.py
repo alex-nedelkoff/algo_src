@@ -235,13 +235,19 @@ def main() -> int:
 
     width, height, vfov = 512, 384, 70.0
     intrinsics = CameraIntrinsics.from_vfov(vfov, width, height)
+    # Tight max_correspondence_distance: with IMU-truth attitude + prior
+    # estimated position close to truth, body→world predictions should
+    # be within 10-20 cm of correct correspondences. Loose tolerance lets
+    # ICP rotate the body cloud away from IMU truth (since open3d ICP is
+    # full 6-DoF, not translation-only) and end up with a refined transform
+    # whose translation doesn't match the drone's actual position.
     localizer = IcpLocalizer(
         map_pcd=map_pcd,
         intrinsics=intrinsics,
         R_body_to_cam=R_BODY_TO_CAM,
         max_iterations=30,
-        max_correspondence_distance_m=0.5,
-        min_inlier_fraction=0.30,
+        max_correspondence_distance_m=0.15,
+        min_inlier_fraction=0.20,
         body_cloud_voxel_size_m=0.05,
         depth_stride=2,
     )
