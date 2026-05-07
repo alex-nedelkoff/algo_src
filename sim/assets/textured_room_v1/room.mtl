@@ -1,0 +1,33 @@
+# Procedurally generated MTL
+
+newmtl wood_floor
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.1 0.1 0.1
+Ns 10.0
+illum 2
+map_Kd textures/wood_floor.jpg
+
+newmtl concrete_wall
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.1 0.1 0.1
+Ns 10.0
+illum 2
+map_Kd textures/concrete_wall_006.jpg
+
+newmtl brick_wall
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.1 0.1 0.1
+Ns 10.0
+illum 2
+map_Kd textures/brick_wall_006.jpg
+
+newmtl metal_plate
+Ka 1.0 1.0 1.0
+Kd 1.0 1.0 1.0
+Ks 0.1 0.1 0.1
+Ns 10.0
+illum 2
+map_Kd textures/metal_plate.jpg

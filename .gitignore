@@ -29,3 +29,7 @@ timings_*.json
 # Git worktrees
 .claude/worktrees/
 carwelding_depth_left.zip
+
+# External packages cloned at bootstrap (MASt3R-SLAM checkpoint is 2.75 GB,
+# code is ~500 MB). See scripts/cloud/bootstrap.sh for clone instructions.
+external_packages/

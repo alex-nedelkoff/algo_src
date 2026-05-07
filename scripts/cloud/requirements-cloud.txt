@@ -1,0 +1,24 @@
+# Cloud-side Python deps for the Phase 1 MASt3R-SLAM smoke test.
+# Pinned to versions verified against PyTorch 2.5.1 + CUDA 12.1.
+# Assumes the RunPod template "PyTorch 2.5.1 + CUDA 12.1" already has
+# torch installed; we only add what's missing.
+
+# Sim + visualization
+pybullet>=3.2.6
+open3d>=0.18.0
+rerun-sdk>=0.30,<0.31
+
+# Numerics + tooling
+numpy>=2,<3
+scipy>=1.13
+pillow>=10
+pyyaml>=6
+tqdm>=4
+
+# MASt3R-SLAM has its own setup.py with its requirements; bootstrap.sh
+# installs it editable. The deps below pin compatible versions of the
+# foundation-model side (matched against torch 2.5.1+cu121).
+torchvision==0.20.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+
+# Build tooling
+ninja
