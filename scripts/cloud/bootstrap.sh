@@ -60,6 +60,36 @@ PYTHON=${PYTHON:-python}
 $PYTHON -m pip install --upgrade pip
 $PYTHON -m pip install -r scripts/cloud/requirements-cloud.txt
 
+# torchvision must match whatever torch the host image has. Detect torch
+# version + CUDA tag and install a compatible torchvision wheel from
+# the PyTorch index. Skipped if torchvision is already there.
+echo "[bootstrap]   matching torchvision to host torch"
+$PYTHON - <<'PY'
+import subprocess, sys
+import torch
+torch_ver = torch.__version__.split('+')[0]
+cuda_tag = ('cu' + torch.version.cuda.replace('.', '')
+            if torch.version.cuda else 'cpu')
+mm = '.'.join(torch_ver.split('.')[:2])
+# torchvision pairs by minor: torch 2.X.Y → torchvision 0.(X+15).Y, e.g.
+# 2.4 → 0.19, 2.5 → 0.20, 2.6 → 0.21, 2.7 → 0.22.
+table = {
+    '2.1': '0.16', '2.2': '0.17', '2.3': '0.18',
+    '2.4': '0.19', '2.5': '0.20', '2.6': '0.21',
+    '2.7': '0.22', '2.8': '0.23',
+}
+tv = table.get(mm)
+if tv is None:
+    print(f"  WARN: unknown torch {torch_ver}, will pip install bare torchvision")
+    pkg = "torchvision"
+    idx = []
+else:
+    pkg = f"torchvision=={tv}.0+{cuda_tag}" if cuda_tag != 'cpu' else f"torchvision=={tv}.0"
+    idx = ["--index-url", f"https://download.pytorch.org/whl/{cuda_tag}"]
+print(f"  torch {torch_ver} ({cuda_tag}) → {pkg}")
+subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-deps", pkg, *idx])
+PY
+
 # Install MASt3R-SLAM (builds mast3r_slam_backends.so + curope.so).
 # --no-build-isolation: use the host torch we already have.
 echo "[bootstrap]   building MASt3R-SLAM (compiles CUDA extensions, ~5 min)"

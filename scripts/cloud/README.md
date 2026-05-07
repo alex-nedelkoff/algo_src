@@ -6,7 +6,11 @@ End-to-end: spin up a pod, clone repo, bootstrap, run the smoke test, view resul
 
 On [runpod.io](https://runpod.io):
 
-- **Template**: *RunPod PyTorch 2.5.1* (CUDA 12.1, Ubuntu 22.04, Python 3.11)
+- **Template**: any *RunPod PyTorch 2.x* image with **CUDA 12.x** is fine. As of writing
+  the menu offers PyTorch 2.4, 2.6, 2.7, 2.8 — the bootstrap detects whichever you pick
+  and installs a matching torchvision wheel. If you have a choice, prefer 2.5 or 2.6
+  (closest to the version we exercised locally). Avoid CUDA 11.x images — curope's
+  build expects 12.x headers.
 - **GPU**: RTX 3090 24GB (about $0.40/hr secure cloud, $0.20–0.30/hr community)
 - **Container disk**: 30 GB minimum
 - **Volume disk**: 30 GB persistent (so the MASt3R checkpoint survives stops)

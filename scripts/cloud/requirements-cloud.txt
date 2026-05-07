@@ -16,9 +16,8 @@ pyyaml>=6
 tqdm>=4
 
 # MASt3R-SLAM has its own setup.py with its requirements; bootstrap.sh
-# installs it editable. The deps below pin compatible versions of the
-# foundation-model side (matched against torch 2.5.1+cu121).
-torchvision==0.20.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+# installs it editable. torchvision is installed separately by bootstrap.sh
+# because the version must match whatever torch is on the host image.
 
 # Build tooling
 ninja
