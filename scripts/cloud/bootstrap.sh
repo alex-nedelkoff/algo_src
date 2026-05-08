@@ -90,23 +90,24 @@ print(f"  torch {torch_ver} ({cuda_tag}) → {pkg}")
 subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-deps", pkg, *idx])
 PY
 
-# Install MASt3R-SLAM and its thirdparty packages. Despite all being in
-# one repo, MASt3R-SLAM expects you to pip-install-editable EACH one
-# separately so their site-packages entries register their respective
-# packages. Just installing the root only registers `mast3r_slam`, and
-# downstream imports of `mast3r`, `dust3r`, `curope` etc. fail.
+# Install MASt3R-SLAM and its thirdparty packages.
+#
+# Three real Python packages here, in dependency order:
+#   - thirdparty/mast3r  — auto-installs asmk + curope (CUDA RoPE2D)
+#                          via its install_requires path-deps
+#   - thirdparty/in3d    — separate package
+#   - root MASt3R-SLAM   — builds mast3r_slam_backends.so
+#
+# dust3r is NOT a pip package — it has no setup.py. mast3r's path-helper
+# `mast3r.utils.path_to_dust3r` adds dust3r/ to sys.path at import time;
+# that's the supported pattern (see mast3r_slam/mast3r_utils.py). The
+# import smoke test below mirrors that pattern.
+#
 # --no-build-isolation: use the host torch we already have.
 echo "[bootstrap]   building MASt3R-SLAM stack (compiles CUDA extensions, ~5 min)"
 PIP_FLAGS="--no-build-isolation"
 $PYTHON -m pip install $PIP_FLAGS -e external_packages/MASt3R-SLAM/thirdparty/mast3r
-$PYTHON -m pip install $PIP_FLAGS -e external_packages/MASt3R-SLAM/thirdparty/mast3r/dust3r
 $PYTHON -m pip install $PIP_FLAGS -e external_packages/MASt3R-SLAM/thirdparty/in3d
-$PYTHON -m pip install $PIP_FLAGS -e external_packages/MASt3R-SLAM/thirdparty/asmk
-# curope is the CUDA RoPE2D extension. Builds against host nvcc; on
-# Linux this is the standard path, MASt3R uses Python fallback if it
-# can't find this module.
-$PYTHON -m pip install $PIP_FLAGS -e external_packages/MASt3R-SLAM/thirdparty/mast3r/dust3r/croco/models/curope
-# Root MASt3R-SLAM (builds mast3r_slam_backends.so).
 $PYTHON -m pip install $PIP_FLAGS -e external_packages/MASt3R-SLAM
 
 # ---------------------------------------------------------------------------
@@ -141,6 +142,9 @@ print(f'torch {torch.__version__} cuda={torch.cuda.is_available()} '
 import lietorch, lietorch_extras
 import mast3r_slam, mast3r_slam_backends
 print('  lietorch + mast3r_slam_backends OK')
+import mast3r.utils.path_to_dust3r  # noqa: F401  — adds dust3r/ to sys.path
+import mast3r, dust3r
+print('  mast3r + dust3r OK')
 try:
     from dust3r.croco.models.curope import cuRoPE2D
     print('  curope CUDA extension OK')
