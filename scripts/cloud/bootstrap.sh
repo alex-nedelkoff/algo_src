@@ -103,6 +103,16 @@ PY
 # that's the supported pattern (see mast3r_slam/mast3r_utils.py). The
 # import smoke test below mirrors that pattern.
 #
+# in3d's setup.py bundles the pyimgui C++ source as a path dep. That
+# build is fragile (Windows MSVC + Linux compiler quirks). Patch in3d
+# to use the PyPI imgui wheel instead — the GUI features in3d wraps
+# aren't used by our headless smoke test or by mast3r_slam's tracker.
+IN3D_SETUP=external_packages/MASt3R-SLAM/thirdparty/in3d/setup.py
+if grep -q 'f"imgui @ {pyimgui_path}"' "$IN3D_SETUP"; then
+    echo "[bootstrap]   patching in3d to use PyPI imgui instead of pyimgui submodule"
+    sed -i 's|f"imgui @ {pyimgui_path}"|"imgui"|' "$IN3D_SETUP"
+fi
+
 # --no-build-isolation: use the host torch we already have.
 echo "[bootstrap]   building MASt3R-SLAM stack (compiles CUDA extensions, ~5 min)"
 PIP_FLAGS="--no-build-isolation"
