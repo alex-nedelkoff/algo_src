@@ -114,11 +114,14 @@ def build_obj() -> str:
         nx, ny, nz = normal
         lines.append(f"vn {nx} {ny} {nz}")
         lines.append(f"usemtl {mat}")
-        # Face: 4 verts, all sharing the single normal we just emitted.
-        face = "f " + " ".join(
-            f"{v_idx + k}/{vt_idx + k}/{vn_idx}" for k in range(4)
-        )
-        lines.append(face)
+        # Two triangles per quad. open3d's read_triangle_mesh silently
+        # skips quad faces (logs them as "non-triangle primitive type
+        # 8"), leaving the mesh empty. Fan-triangulate around vertex 0;
+        # works for any convex quad and our six wall quads are all that.
+        def _vert(k: int) -> str:
+            return f"{v_idx + k}/{vt_idx + k}/{vn_idx}"
+        lines.append(f"f {_vert(0)} {_vert(1)} {_vert(2)}")
+        lines.append(f"f {_vert(0)} {_vert(2)} {_vert(3)}")
         v_idx += 4
         vt_idx += 4
         vn_idx += 1

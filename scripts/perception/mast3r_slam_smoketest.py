@@ -125,12 +125,15 @@ def setup_pybullet_scene(use_egl: bool) -> int:
     """
     cid = pb.connect(pb.DIRECT)
     if use_egl:
-        try:
-            pb.loadPlugin("eglRendererPlugin", physicsClientId=cid)
-            print("[scene] EGL renderer plugin loaded (headless OpenGL)")
-        except Exception as e:
-            print(f"[scene] WARNING: failed to load EGL plugin ({e}); "
-                  f"OpenGL render may fall back to software")
+        plugin_id = pb.loadPlugin("eglRendererPlugin", physicsClientId=cid)
+        if plugin_id < 0:
+            print("[scene] WARNING: EGL plugin failed to load — PyBullet will "
+                  "fall back to its software TINY_RENDERER (no hardware GL). "
+                  "Texture quality may be reduced. To enable EGL: "
+                  "apt-get install libegl1-mesa libnvidia-gl-<driver-major>")
+        else:
+            print(f"[scene] EGL renderer plugin loaded (id={plugin_id}, "
+                  "headless hardware OpenGL)")
     pb.setAdditionalSearchPath(str(ROOM_DIR), physicsClientId=cid)
     pb.loadURDF(str(ROOM_URDF),
                 basePosition=[0, 0, 0], useFixedBase=True,
