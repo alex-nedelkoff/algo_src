@@ -32,9 +32,27 @@ defined — only that the caller hands us ``T_env_body0`` at reset.
 MASt3R-SLAM's optimizer is parameterised on ``lietorch.Sim3`` (7-DoF
 similarity), so the output transform has a free scale. With
 ``use_calib=True`` and a known intrinsic matrix K, the projection
-constraint pins scale near 1, and the resulting 4×4 ``T_S_C.matrix()``
-is effectively SE(3). We extract it directly. If the scale were free
+constraint pins scale near 1 *iff the underlying point cloud is
+metric-correct*, and the resulting 4×4 ``T_S_C.matrix()`` is
+effectively SE(3). We extract it directly. If the scale were free
 (no calib) we'd need to track it as a one-shot calibration constant.
+
+## Caveat: foundation-model depth must be in-distribution
+
+The "scale pins near 1" property only holds when MASt3R's predicted
+metric depth is correct. On out-of-distribution inputs (e.g.,
+PyBullet's procedurally-textured renders — see COR-106 Phase 1), the
+metric depth head can compress its output dramatically (we observed a
+GT-true 2.4–10 m range collapse to a 1.9–3.6 m band), and the Sim(3)
+scale will then drift to absorb the residual ambiguity, producing
+translation under-estimates of 25–50 % over short trajectories.
+
+Diagnostic: ``mast3r_inference_mono``'s output Z range should span
+metres-to-tens-of-metres on a typical indoor scene. If it's compressed
+to < 2 m of variation, you're OOD and should switch depth source
+(real camera, photoreal rendering, or anchored depth). The kept
+diagnostic scripts in ``scripts/perception/debug_mast3r_*.py`` cover
+the standard regression checks.
 """
 from __future__ import annotations
 
