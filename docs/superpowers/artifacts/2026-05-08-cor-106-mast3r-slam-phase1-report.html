@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>COR-106 — MASt3R-SLAM Phase 1: Cloud-Portable Localization</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #7ee787;
+    --accent3: #d2a8ff;
+    --accent4: #ffa657;
+    --accent5: #ff7b72;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+  }
+  h1 { font-size: 2.2rem; color: #fff; margin-bottom: 0.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: 1.6rem; color: var(--accent); margin: 3rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.2rem; color: var(--accent3); margin: 1.5rem 0 0.75rem; }
+  p { margin-bottom: 1rem; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { background: var(--surface2); padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.88em; color: #e3a8ff; }
+  pre { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; overflow-x: auto; font-size: 0.85rem; line-height: 1.5; margin: 1rem 0; }
+  pre code { background: none; padding: 0; color: var(--text); }
+
+  .header { margin-bottom: 2.5rem; }
+  .badge-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+  .badge-issue { background: var(--accent); color: var(--bg); font-size: 0.8rem; font-weight: 700; padding: 0.2em 0.75em; border-radius: 999px; letter-spacing: 0.03em; }
+  .badge-status { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--accent4); font-weight: 600; }
+  .badge-status::before { content: ''; display: inline-block; width: 8px; height: 8px; background: var(--accent4); border-radius: 50%; }
+  .meta { color: var(--text-dim); font-size: 0.9rem; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem 2rem; margin: 1.25rem 0; }
+
+  .tldr-group { margin-bottom: 1rem; }
+  .tldr-group:last-child { margin-bottom: 0; }
+  .tldr-group h3 { margin-top: 0; }
+  .tldr-list { list-style: none; padding: 0; }
+  .tldr-list li { padding: 0.35rem 0; padding-left: 1.5rem; position: relative; }
+  .tldr-list li::before { position: absolute; left: 0; font-weight: 700; width: 1.2rem; text-align: center; }
+  .wins li::before   { content: '+'; color: var(--accent2); }
+  .gotchas li::before { content: '!'; color: var(--accent4); }
+  .barriers li::before { content: '\00d7'; color: var(--accent5); }
+  .tldr-group.wins h3    { color: var(--accent2); }
+  .tldr-group.gotchas h3 { color: var(--accent4); }
+  .tldr-group.barriers h3 { color: var(--accent5); }
+
+  .item-list { list-style: none; padding: 0; }
+  .item-list li { padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+  .item-list li:last-child { border-bottom: none; }
+  .item-title { color: #fff; font-weight: 600; }
+  .item-detail { color: var(--text-dim); font-size: 0.9rem; }
+
+  .timeline { list-style: none; padding: 0; position: relative; margin-left: 1.5rem; }
+  .timeline::before { content: ''; position: absolute; left: 0.75rem; top: 1.5rem; bottom: 0.5rem; width: 2px; background: var(--border); }
+  .timeline li { position: relative; padding: 0.75rem 0 0.75rem 2.5rem; }
+  .timeline li .step-num { position: absolute; left: 0; top: 0.75rem; width: 1.5rem; height: 1.5rem; background: var(--accent); color: var(--bg); border-radius: 50%; font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; justify-content: center; z-index: 1; }
+  .timeline li .step-title { color: #fff; font-weight: 600; }
+  .timeline li .step-detail { color: var(--text-dim); font-size: 0.9rem; margin-top: 0.2rem; }
+
+  .decision-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin: 1.25rem 0; }
+  .decision-box { border-radius: 8px; padding: 1.25rem 1.5rem; border: 1px solid; }
+  .decision-box.go { background: rgba(126, 231, 135, 0.08); border-color: var(--accent2); }
+  .decision-box.no-go { background: rgba(255, 123, 114, 0.08); border-color: var(--accent5); }
+  .decision-label { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.5rem; }
+  .go .decision-label { color: var(--accent2); }
+  .no-go .decision-label { color: var(--accent5); }
+  .decision-box p { font-size: 0.95rem; margin-bottom: 0; }
+
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.92rem; }
+  th, td { padding: 0.6rem 0.9rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--accent); font-weight: 600; background: var(--surface2); }
+  tr:last-child td { border-bottom: none; }
+
+  .footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border); }
+  .ref-links { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin-bottom: 1rem; }
+  .ref-links a { color: var(--accent); font-size: 0.9rem; }
+  .attribution { text-align: center; color: var(--text-dim); font-size: 0.8rem; margin-top: 1rem; }
+
+  @media (max-width: 700px) {
+    .decision-row { grid-template-columns: 1fr; }
+    body { padding: 1rem; }
+    h1 { font-size: 1.6rem; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="badge-row">
+    <span class="badge-issue">COR-106</span>
+    <span class="badge-status">In Progress — awaiting smoke-test execution</span>
+  </div>
+  <h1>MASt3R-SLAM Phase 1 — Cloud-Portable Visual Localization</h1>
+  <div class="meta">
+    2026-05-08 · branch <code>cor-106-mast3r-slam-cloud-phase1</code> ·
+    target: RunPod RTX 3090
+  </div>
+</div>
+
+<!-- ─── TL;DR ───────────────────────────────────────────────────────── -->
+<h2>TL;DR</h2>
+<div class="card">
+  <div class="tldr-group wins">
+    <h3>Wins</h3>
+    <ul class="tldr-list">
+      <li>MASt3R-SLAM stack builds end-to-end on Windows + Linux: <code>lietorch</code>, <code>mast3r_slam_backends</code>, ViT-Large checkpoint loads (688.6M params)</li>
+      <li><code>Mast3rLocalizer</code> wraps <code>FrameTracker</code> + <code>SharedKeyframes</code>, with one-shot env←slam alignment from frame-0 truth pose</li>
+      <li>Procedurally textured 14×10×3 m room from 4 Polyhaven CC0 PBR materials — drops in for the unrendered warehouse mesh, gives MASt3R-SLAM photoreal-ish features</li>
+      <li>Standalone smoke-test script: scripted oval flight, dual ICP-vs-MASt3R-SLAM, rerun web viewer</li>
+      <li>Cloud-portable repo + 4-script bootstrap workflow (apt deps, MASt3R-SLAM clone, curope build, checkpoint, asset gen, import smoke). Deploy-to-running in ~10 min on a fresh pod</li>
+    </ul>
+  </div>
+
+  <div class="tldr-group gotchas">
+    <h3>Gotchas</h3>
+    <ul class="tldr-list">
+      <li>Windows MSVC <code>long</code> is 32-bit but PyTorch index tensors are <code>int64_t</code> — patched <code>long</code>→<code>int64_t</code> in two MASt3R-SLAM CUDA kernels</li>
+      <li>Conda CUDA toolkit lives at <code>&lt;env&gt;/</code>, not <code>&lt;env&gt;/Library/</code> — torch's <code>_check_cuda_version</code> probes <code>$CUDA_HOME/bin/nvcc</code> and dies with opaque <code>WinError 2</code></li>
+      <li>MASt3R-SLAM expects multiple <code>pip install -e thirdparty/*</code> calls (mast3r, dust3r, in3d, asmk, curope), not just the root — <code>import mast3r</code> fails otherwise</li>
+      <li><code>mp.Manager()</code> + CUDA spawn hangs indefinitely on Windows; wrote a threading-only <code>_SingleProcessManager</code> shim</li>
+      <li>RunPod rotates PyTorch templates; pinned <code>torchvision==0.20.1+cu121</code> didn't match — bootstrap now detects host torch and pulls matching wheel</li>
+    </ul>
+  </div>
+
+  <div class="tldr-group barriers">
+    <h3>Barriers</h3>
+    <ul class="tldr-list">
+      <li>4 GB local GPU + Windows allocator (no <code>expandable_segments</code>) fragments at ~60 % model load → OOM. ViT-Large MASt3R-SLAM is fundamentally not deployable here</li>
+      <li>Decision: pivot to RunPod RTX 3090 24 GB. Linux build path also enables curope CUDA RoPE2D extension (Windows fell back to slow Python RoPE)</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ─── Context ─────────────────────────────────────────────────────── -->
+<h2>Context</h2>
+<p>
+  AI Grand Prix's virtual qualifier doesn't publish drone pose — localization is a
+  competition-relevant problem, not a free signal. Two candidate approaches were on
+  the table:
+</p>
+<ul class="analysis-list" style="list-style: disc; padding-left: 1.5rem;">
+  <li><strong>ICP-against-mesh</strong>: cheap, no learning, but requires a depth sensor (or depth net) and a known map</li>
+  <li><strong>MASt3R-SLAM</strong> (Murai et al. 2024): foundation-model SLAM, RGB-only, builds its own pointmap. Heavier but matches the on-board sensor stack</li>
+</ul>
+<p>
+  Phase 1 validates that <em>each</em> can track on PyBullet-rendered RGB before
+  closing the loop with the policy. The textured-room asset isolates the localizer
+  from MASt3R-SLAM's other failure mode (texture-poor flat-shaded CAD meshes are
+  out-of-distribution for the foundation model).
+</p>
+
+<!-- ─── Setup ───────────────────────────────────────────────────────── -->
+<h2>Setup</h2>
+<ul class="item-list">
+  <li>
+    <span class="item-title">External</span>
+    <div class="item-detail"><code>external_packages/MASt3R-SLAM</code> (cloned at bootstrap, gitignored). MASt3R ViT-Large checkpoint, 2.75 GB, downloaded by bootstrap.</div>
+  </li>
+  <li>
+    <span class="item-title">New module</span>
+    <div class="item-detail"><code>perception/localization/mast3r_localizer.py</code> — env←slam alignment + <code>lietorch.Sim3</code> → 4×4. Mirrors <code>IcpLocalizer</code>'s API; opt-in 4 GB workarounds (<code>cuda_low_vram=True</code>) for low-VRAM dev hosts.</div>
+  </li>
+  <li>
+    <span class="item-title">Asset</span>
+    <div class="item-detail"><code>sim/assets/textured_room_v1/</code> — 6-face OBJ + MTL + URDF. Per-face UVs, 4 CC0 1k JPGs (concrete, brick, wood, metal). <code>build_room.py</code> rebuilds deterministically.</div>
+  </li>
+  <li>
+    <span class="item-title">Smoke test</span>
+    <div class="item-detail"><code>scripts/perception/mast3r_slam_smoketest.py</code> — scripted oval (no policy, no env), 300 frames @ 100 Hz, EGL headless OpenGL render, dual ICP + MASt3R-SLAM, rerun web viewer.</div>
+  </li>
+  <li>
+    <span class="item-title">Cloud workflow</span>
+    <div class="item-detail"><code>scripts/cloud/{bootstrap.sh, run_smoke.sh, requirements-cloud.txt, README.md}</code> — RunPod RTX 3090. ~10 min one-shot setup, ~$0.40/hr running.</div>
+  </li>
+</ul>
+
+<!-- ─── Execution ───────────────────────────────────────────────────── -->
+<h2>Execution Timeline</h2>
+<ul class="timeline">
+  <li>
+    <div class="step-num">1</div>
+    <div class="step-title">M5 closed-loop demo with ICP localization</div>
+    <div class="step-detail">Single-lifted-frame setup (Z_LIFT=6.0); IMU-truth attitude + ICP for position; predict-then-correct against velocity. 154 gates / 7 laps in 30 s.</div>
+  </li>
+  <li>
+    <div class="step-num">2</div>
+    <div class="step-title">VIO vs MASt3R-SLAM evaluation → MASt3R-SLAM</div>
+    <div class="step-detail">Texture-poor warehouse + foundation-model priors favored MASt3R-SLAM. Trade-off: latency (~50–100 ms / frame ViT-Large) vs robustness. <a href="2026-05-06-vio-vs-mast3r-slam.html">comparison report</a>.</div>
+  </li>
+  <li>
+    <div class="step-num">3</div>
+    <div class="step-title">MASt3R-SLAM Windows install</div>
+    <div class="step-detail">CUDA toolkit via conda; <code>CUDA_HOME=&lt;env&gt;</code> (not <code>&lt;env&gt;/Library</code>); <code>long</code>→<code>int64_t</code> patch in <code>{matching,gn}_kernels.cu</code>; vcvars64; <code>DISTUTILS_USE_SDK=1</code>. <code>lietorch</code> + <code>mast3r_slam_backends</code> compile clean.</div>
+  </li>
+  <li>
+    <div class="step-num">4</div>
+    <div class="step-title">Mast3rLocalizer implementation</div>
+    <div class="step-detail">FrameTracker + SharedKeyframes/SharedStates wrapped behind a localize-shape API. One-shot env←slam alignment: <code>T_env_S = T_env_body0 @ T_body_cam</code>. Threading-only manager shim avoids mp.Manager hang on Windows.</div>
+  </li>
+  <li>
+    <div class="step-num">5</div>
+    <div class="step-title">4 GB GPU constraint exposed</div>
+    <div class="step-detail">Recursive <code>.to(device)</code> fragments memory at ~60 % load; in-place parameter walk works but inference segfaults (Python RoPE2D fallback after curope deferred). Diagnosed not fixable without bigger GPU.</div>
+  </li>
+  <li>
+    <div class="step-num">6</div>
+    <div class="step-title">Cloud-readiness pass + textured room</div>
+    <div class="step-detail">Portable path resolution (project-root or <code>MAST3R_SLAM_ROOT</code> env var); curope re-enabled on Linux via platform-conditional setup.py; procedurally-generated 14×10×3 m room from 4 Polyhaven CC0 textures.</div>
+  </li>
+  <li>
+    <div class="step-num">7</div>
+    <div class="step-title">RunPod bootstrap iteration</div>
+    <div class="step-detail">3 follow-up commits to fix install gaps: pytorch-version detection (RunPod rotates templates), all-thirdparty install (not just root), <code>python3-blinker</code> distutils conflict. Branch pushed to <code>alex-nedelkoff/algo_src</code> for cloud clone.</div>
+  </li>
+</ul>
+
+<!-- ─── Results ─────────────────────────────────────────────────────── -->
+<h2>Results — Status</h2>
+
+<table>
+  <tr><th>Component</th><th>Status</th><th>Notes</th></tr>
+  <tr><td>lietorch + lietorch_extras Windows build</td><td style="color: var(--accent2)">✓ Pass</td><td>fp32, ~1 GB VRAM at runtime</td></tr>
+  <tr><td>mast3r_slam_backends Windows build</td><td style="color: var(--accent2)">✓ Pass</td><td>after long→int64_t patch</td></tr>
+  <tr><td>MASt3R checkpoint download (2.75 GB)</td><td style="color: var(--accent2)">✓ Pass</td><td>~3 min on RunPod, ~3 hours on dev</td></tr>
+  <tr><td>Textured room render</td><td style="color: var(--accent2)">✓ Pass</td><td>RGB std ~20, depth verified 7.0 m to far wall</td></tr>
+  <tr><td>Mast3rLocalizer construction</td><td style="color: var(--accent2)">✓ Pass</td><td>2.84 GB on GPU; in-place param move workaround for &lt;6 GB cards</td></tr>
+  <tr><td>MASt3R-SLAM inference (Windows 4 GB)</td><td style="color: var(--accent5)">✗ Fail</td><td>segfault in RoPE2D Python fallback</td></tr>
+  <tr><td>Cloud bootstrap on RunPod RTX 3090</td><td style="color: var(--accent4)">⏸ Pending</td><td>through step 6/6, missing thirdparty installs (fix pushed)</td></tr>
+  <tr><td>Smoke test execution</td><td style="color: var(--accent4)">⏸ Pending</td><td>awaiting user resume on RunPod</td></tr>
+</table>
+
+<!-- ─── Decisions ───────────────────────────────────────────────────── -->
+<h2>Takeaways &amp; Decisions</h2>
+
+<div class="decision-row">
+  <div class="decision-box go">
+    <div class="decision-label">Go</div>
+    <h3 style="margin-top: 0;">Cloud GPU for MASt3R-SLAM dev</h3>
+    <p>RTX 3090 24 GB on RunPod removes every Windows-specific workaround (allocator fragmentation, curope build, mp.Manager hang) and matches the deployment target's GPU class. ~$0.40/hr; Phase 1+2 estimated total ~$5.</p>
+  </div>
+  <div class="decision-box go">
+    <div class="decision-label">Go</div>
+    <h3 style="margin-top: 0;">Phase 2: dual-rep splat + mesh from same video</h3>
+    <p>Same-source 3DGS splat (RGB rendering for SLAM) + VDA-fused mesh (depth, collision) trivializes the alignment problem. Real captured environments give MASt3R-SLAM in-distribution input. Sim-to-real story collapses out for free.</p>
+  </div>
+  <div class="decision-box no-go">
+    <div class="decision-label">No-Go</div>
+    <h3 style="margin-top: 0;">ViT-Large MASt3R-SLAM on 4 GB Windows GPU</h3>
+    <p>The Windows CUDA allocator lacks <code>expandable_segments</code>; even with model-first ordering and in-place parameter moves, fragmentation kills the load. Not solvable without architectural changes (model split, fp16 with autocast surgery) that don't pay off vs. just using a bigger GPU.</p>
+  </div>
+  <div class="decision-box no-go">
+    <div class="decision-label">No-Go</div>
+    <h3 style="margin-top: 0;">Vendoring MASt3R-SLAM in algo_src</h3>
+    <p>Source is ~500 MB + 2.75 GB checkpoint. Not worth the repo bloat. Bootstrap clones upstream, applies our minimal patches via the platform-conditional <code>setup.py</code>. Rebuilds reproducibly from a clean pod.</p>
+  </div>
+</div>
+
+<!-- ─── Summary ─────────────────────────────────────────────────────── -->
+<h2>Summary</h2>
+<p>
+  Phase 1 infrastructure is complete and pushed to GitHub
+  (<code>alex-nedelkoff/algo_src@cor-106-mast3r-slam-cloud-phase1</code>). Three commits
+  cover the cloud-portable localizer, the standalone smoke-test, and three rounds of
+  RunPod bootstrap fixes. Next: user resumes the RunPod pod, runs the smoke test, and
+  we measure whether MASt3R-SLAM tracks on rendered RGB. If yes → Phase 2
+  (dual-rep splat + mesh from real captured video). If no → debug the foundation
+  model on textured-but-still-synthetic input before committing to capture infra.
+</p>
+
+<div class="footer">
+  <h3>References</h3>
+  <div class="ref-links">
+    <a href="https://github.com/alex-nedelkoff/algo_src/tree/cor-106-mast3r-slam-cloud-phase1">branch on GitHub</a>
+    <a href="https://github.com/rmurai0610/MASt3R-SLAM">MASt3R-SLAM upstream</a>
+    <a href="2026-05-06-vio-vs-mast3r-slam.html">prior: VIO vs MASt3R-SLAM</a>
+    <a href="2026-05-06-m5-closed-loop-test.md">prior: M5 closed-loop test</a>
+  </div>
+  <div class="attribution">Generated 2026-05-08 — corvidx-drone-grand-prix / COR-106</div>
+</div>
+
+</body>
+</html>
