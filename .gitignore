@@ -23,6 +23,11 @@ data/
 # Built warehouse URDF assets (reconstructible from data/ + configs/, see sim/assets/README.md)
 sim/assets/warehouse_fab_v1/
 
+# 3DGS scenes (large, downloaded from HF) and ETH3D real-camera benchmark
+# (downloaded from eth3d.net). See debug_mast3r_3dgs_*.py / debug_mast3r_eth3d_slam.py
+sim/assets/3dgs/
+sim/assets/eth3d/
+
 # PyBullet GUI runtime tracing dumps
 timings_*.json
 
