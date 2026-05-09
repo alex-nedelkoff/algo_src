@@ -58,6 +58,12 @@ fi
 echo "[bootstrap] step 3/6 — pip installs"
 PYTHON=${PYTHON:-python}
 $PYTHON -m pip install --upgrade pip
+
+# RunPod's Ubuntu base ships python3-blinker (distutils-installed). pip can't
+# safely uninstall distutils packages, so dash's blinker upgrade aborts the
+# whole install. Drop it before pip touches it.
+$SUDO rm -rf /usr/lib/python3/dist-packages/blinker /usr/lib/python3/dist-packages/blinker-*.egg-info
+
 $PYTHON -m pip install -r scripts/cloud/requirements-cloud.txt
 
 # torchvision must match whatever torch the host image has. Detect torch
