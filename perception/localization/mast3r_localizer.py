@@ -40,19 +40,36 @@ effectively SE(3). We extract it directly. If the scale were free
 ## Caveat: foundation-model depth must be in-distribution
 
 The "scale pins near 1" property only holds when MASt3R's predicted
-metric depth is correct. On out-of-distribution inputs (e.g.,
-PyBullet's procedurally-textured renders — see COR-106 Phase 1), the
-metric depth head can compress its output dramatically (we observed a
-GT-true 2.4–10 m range collapse to a 1.9–3.6 m band), and the Sim(3)
-scale will then drift to absorb the residual ambiguity, producing
-translation under-estimates of 25–50 % over short trajectories.
+metric depth is correct. **Any synthetic rendering pipeline tested so
+far is out-of-distribution for the metric depth head**, including:
+
+  - PyBullet's procedurally-textured room (range 2.4–10 m → predicted
+    1.9–3.6 m, ~25–50 % translation under-scale on short trajectories)
+  - 3D Gaussian Splatting renders of MipNeRF 360 'room' (range ~9 m →
+    predicted ~3 m, ~57 % translation under-scale on a 30-frame
+    interpolation of training cameras)
+
+Both MASt3R and Depth-Anything-V2 Metric Indoor produce the same
+biased prediction on 3DGS renders (median 2.764 vs 2.767 m), confirming
+the issue is the rendered-image domain shift, not the model. **Real-
+camera input works**: on ETH3D's `sofa_1` (laser-GT-pose monocular
+benchmark), this same wrapper achieves 11.6 cm mean / 32.4 cm max
+pose error over 100 frames with no global BA — comparable to
+published mono-SLAM-no-loop-closure literature.
 
 Diagnostic: ``mast3r_inference_mono``'s output Z range should span
 metres-to-tens-of-metres on a typical indoor scene. If it's compressed
-to < 2 m of variation, you're OOD and should switch depth source
-(real camera, photoreal rendering, or anchored depth). The kept
-diagnostic scripts in ``scripts/perception/debug_mast3r_*.py`` cover
-the standard regression checks.
+to < ~5 m of variation, you're OOD and should either:
+  - switch depth source (anchored GT depth, real camera, or RGB-D
+    sensor — see ``debug_mast3r_depth_anchor.py``)
+  - use real-camera input directly (ETH3D / TUM RGB-D / your own
+    walkthrough video — see ``_phase2_eth3d_slam.py``)
+  - accept that the SLAM stack can't be validated on synthetic data
+    and use VIO + ICP-against-TSDF instead
+
+See ``scripts/perception/debug_mast3r_*.py`` and ``_phase2_*.py`` for
+the regression harnesses; COR-106 Phase 1 + Phase 2 for the full
+investigation.
 """
 from __future__ import annotations
 
