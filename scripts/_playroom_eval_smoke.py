@@ -18,8 +18,26 @@ import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
 from control.algorithms.ppo import PPO as CorvidxPPO  # noqa: E402
+from sim.dynamics.params import VehicleParams  # noqa: E402
 from sim.envs.warehouse_race_env import WarehouseRaceEnv  # noqa: E402
 from sim.types import ActionMode  # noqa: E402
+
+
+def _training_racing_params() -> VehicleParams:
+    """5" racing quad params the MoE was trained against (per m5_closed_loop_demo).
+
+    The default GateRaceEnv params are CrazyFlie-scale (~250 g) — running the
+    MoE on those puts the policy OOD via the TRPY mixer's action mapping and
+    it stalls / never reaches training-altitude. See `_training_racing_params`
+    in scripts/perception/m5_closed_loop_demo.py for the canonical comment.
+    """
+    return VehicleParams(
+        mass=0.752, arm_length=0.170,
+        k_thrust=2.49e-6, k_torque=8.80e-8, tau_motor=0.04,
+        inertia=np.diag([0.0025, 0.0025, 0.0045]),
+        drag_coeff=np.array([0.01, 0.01, 0.005]),
+        max_rpm=31470.0,
+    )
 
 CHECKPOINT = r"C:\Users\alexj\Documents\algo_src\outputs\expanded_33dim\model.zip"
 CONFIG = "configs/sim/playroom_v1.yaml"
@@ -40,6 +58,10 @@ def main() -> None:
         arena_bounds=cfg["arena_bounds"],
         gate_passage_radius=cfg["gate_passage_radius"],
         gate_collision=cfg["gate_collision"],
+        # Match training vehicle dynamics — the MoE was trained on a 5" racing
+        # quad (~752 g). Falling back to GateRaceEnv's default (CrazyFlie,
+        # ~250 g) is the documented OOD-stall cause in m5_closed_loop_demo.py.
+        params=_training_racing_params(),
     )
     # Optional overrides for n_lookahead_gates / n_action_history (needed
     # when legacy_obs_v1=false to target a specific obs dim).

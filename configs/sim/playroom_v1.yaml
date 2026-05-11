@@ -48,8 +48,10 @@ arena_bounds: 50.0
 # and we already get hard wall-collision termination from PyBullet).
 gate_collision: false
 
-# Spawn pose. Single-gate diagnostic: spawn 4 m behind Gate_00 along +X
-# at world z=3.0 (matches training distribution altitude).
+# Spawn pose for the M3-spline rectangle layout. Computed by
+# _phase2_build_playroom_asset.py: 1.5 m behind Gate_00 along its
+# M3-computed (smoothed) yaw direction. Position is WORLD frame
+# (= pre-offset + world_offset_z = -0.598 + 5.475 = 4.877).
 spawn:
-  position: [-4.0, 0.0, 3.0]
-  yaw_rad: 0.0
+  position: [-3.973, -2.285, 4.877]
+  yaw_rad: 0.191
