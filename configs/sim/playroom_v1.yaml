@@ -1,0 +1,55 @@
+# Playroom v1 — privileged-gate fly-through demo config (3DGS scene + mesh).
+#
+# Loaded by scripts/_playroom_eval_smoke.py (and by analogous evaluation
+# harnesses if we promote this past smoke). yaml.safe_load -> passed directly
+# into WarehouseRaceEnv.__init__.
+
+asset_dir: sim/assets/playroom_v1
+
+# Z translation applied to BOTH the mesh and the gates so the floor sits at
+# z=0. Playroom mesh after the Y-down → Z-up rotation has p1(z) = -5.475.
+world_offset_z: 5.475
+
+# Gate traversal order. Null = JSON insertion order (Gate_00, Gate_01).
+gate_order: null
+
+# Gates are authored by the M3 cubic-spline + anticipatory-yaw pipeline
+# (sim.tracks.waypoint.resample_waypoints + waypoints_to_track). The yaws
+# in gates_enu.json already point along the smoothed racing line with
+# lookahead=2 / EMA smoothing. Disable env-side reorient so those yaws
+# stand verbatim.
+reorient_to_racing_line: false
+
+# Match the gates_enu.json inner_radius_m (1.5 m inner diameter — matches
+# the previous G&CNet checkpoint's training distribution).
+gate_passage_radius: 0.75
+
+# Match training. 33-dim obs format = n_lookahead_gates=2 with the post-Apr
+# per-gate-width/height + arena_extent fields (20 + 6*N + 1 + 4*M = 33 at
+# N=2, M=0). Matches the better 33-dim checkpoint (expanded_33dim/model.zip).
+action_mode: trpy
+legacy_obs_v1: false
+n_lookahead_gates: 2
+n_action_history: 0
+
+# Episode bookkeeping. Playroom is ~15 m wide; 4 m between our two gates;
+# 1500 steps @ dt=0.01 s gives 15 s — plenty for a back-and-forth lap.
+dt: 0.01
+max_steps: 1500
+
+# Mesh tops out at z ≈ 10.75 after world_offset_z. Margin.
+ceiling: 11.0
+
+# Disable arena OOB — the playroom mesh is now the racing-volume boundary
+# (wall collision via PyBullet triggers termination).
+arena_bounds: 50.0
+
+# Disable gate-rim collision reward (the trained policy doesn't expect it,
+# and we already get hard wall-collision termination from PyBullet).
+gate_collision: false
+
+# Spawn pose. Single-gate diagnostic: spawn 4 m behind Gate_00 along +X
+# at world z=3.0 (matches training distribution altitude).
+spawn:
+  position: [-4.0, 0.0, 3.0]
+  yaw_rad: 0.0
