@@ -15,6 +15,16 @@ Algorithm (all vectors in ENU world frame except where noted):
   x_b_des = y_b_des × z_b_des
   R_des = [x_b_des | y_b_des | z_b_des]
   q_des = mat_to_quat_wxyz(R_des)
+
+TRPYMixer thrust-scaling compensation
+-------------------------------------
+The shared TRPYMixer (sim/dynamics/trpy_mixer.py) has a square-law thrust
+scaling bug: actual physical thrust below motor saturation is T_in² / (m·g),
+not T_in. This module compensates by sending sqrt(T_des · m·g) through the
+mixer, recovering linear thrust behaviour. The compensation is only on the
+position-mode path; SET_ATTITUDE_TARGET passes the policy's thrust value
+through unchanged so the trained MoE checkpoint stays compatible. Fixing
+the mixer itself is tracked separately and will require MoE retraining.
 """
 from __future__ import annotations
 
@@ -33,6 +43,12 @@ from sim.pybullet.mavlink_shim.backend import DroneState
 _K_P_DEFAULT = np.array([4.0, 4.0, 8.0])
 _K_D_DEFAULT = np.array([3.0, 3.0, 6.0])
 _G = 9.81
+# Maximum commanded tilt angle (degrees). Caps the horizontal component of
+# z_b_des so that the attitude controller never receives a quaternion error
+# that would cause it to produce destabilising torques given the current
+# TRPYMixer square-law torque scaling (see docstring above).
+_MAX_TILT_DEG = 30.0
+_MAX_TILT_TAN = float(np.tan(np.radians(_MAX_TILT_DEG)))
 
 
 def _rot_to_quat_wxyz(R: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -98,13 +114,42 @@ class PositionController:
         # Current body-z in world (rotate (0,0,1) by current attitude).
         z_b_current = _quat_rotate_vector(state.quat_wxyz, np.array([0.0, 0.0, 1.0]))
         thrust_n_world = float(np.dot(f_des, z_b_current))
-        thrust_norm = float(np.clip(thrust_n_world / self._max_thrust, 0.0, 1.0))
+        # Compensate for trpy_mixer's square-law thrust scaling:
+        # mixer outputs actual_thrust = (T_in)² / (m·g) (below saturation),
+        # so to get desired T_des through it we send sqrt(T_des · m·g).
+        # SET_ATTITUDE_TARGET path is NOT compensated (MoE was trained against
+        # the broken mixer); only this PositionController path corrects it.
+        T_des = max(thrust_n_world, 0.0)
+        T_to_mixer = float(np.sqrt(T_des * self.params.mass * _G))
+        thrust_norm = float(np.clip(T_to_mixer / self._max_thrust, 0.0, 1.0))
 
         # Desired body-z direction.
         if f_norm < 1e-6:
             # Degenerate: no thrust needed → keep current attitude.
             return state.quat_wxyz.copy(), 0.0
         z_b_des = f_des / f_norm
+
+        # Clamp absolute tilt angle: the TRPYMixer torque pathway also has
+        # square-law scaling (same bug as thrust), so large quaternion errors
+        # produce disproportionately large torques and flip the drone.
+        # Cap z_b_des to at most _MAX_TILT_DEG from world vertical [0,0,1].
+        # This bounds the quaternion error the attitude controller receives,
+        # preventing over-torque divergence. Thrust remains as-computed above.
+        cos_max = float(np.cos(np.radians(_MAX_TILT_DEG)))
+        z_world_up = np.array([0.0, 0.0, 1.0])
+        cos_tilt = float(z_b_des[2])  # dot product with [0,0,1]
+        if cos_tilt < cos_max:
+            # Decompose into vertical + horizontal components.
+            z_hor = z_b_des[:2]  # xy component (horizontal deviation)
+            z_hor_norm = float(np.linalg.norm(z_hor))
+            if z_hor_norm > 1e-6:
+                sin_max = float(np.sqrt(max(1.0 - cos_max ** 2, 0.0)))
+                z_hor_unit = z_hor / z_hor_norm
+                z_b_des = np.array([
+                    sin_max * z_hor_unit[0],
+                    sin_max * z_hor_unit[1],
+                    cos_max,
+                ])
 
         # Heading reference in horizontal plane.
         yaw_t = float(target.yaw_enu) if target.use_yaw else 0.0

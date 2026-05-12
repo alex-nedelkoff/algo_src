@@ -41,9 +41,17 @@ class MavlinkShim:
     })
     controller_k_att: float = 6.0
     controller_k_damp: float = 0.0    # rate damping; 0 = pure-P (backward compat)
+    # Position-mode attitude controller gains. Separate from the attitude-mode
+    # (MoE) path so that the trained checkpoint stays compatible: the MoE was
+    # trained against k_damp=0 with the broken mixer's implicit damping, while
+    # position mode needs explicit rate damping (k_damp=2.0) after the thrust
+    # pre-distortion fix removes that implicit damping effect.
+    position_k_att: float = 6.0
+    position_k_damp: float = 2.0      # rate damping for position-mode only
 
     _server: MavlinkServer = field(init=False, default=None)
     _controller: AttitudeController = field(init=False, default=None)
+    _position_att_controller: AttitudeController = field(init=False, default=None)
     _scheduler: RateScheduler = field(init=False, default=None)
     _thread: threading.Thread = field(init=False, default=None)
     _stop_event: threading.Event = field(init=False, default_factory=threading.Event)
@@ -59,6 +67,9 @@ class MavlinkShim:
     def __post_init__(self) -> None:
         self._controller = AttitudeController(
             params=self.params, k_att=self.controller_k_att, k_damp=self.controller_k_damp,
+        )
+        self._position_att_controller = AttitudeController(
+            params=self.params, k_att=self.position_k_att, k_damp=self.position_k_damp,
         )
         self._position_controller = PositionController(params=self.params)
         tick_hz = max(self.rates_hz.values()) if self.rates_hz else 200.0
@@ -187,16 +198,25 @@ class MavlinkShim:
             q_target_enu, thrust_norm = self._position_controller.compute(
                 target=self._last_pos_target, state=self._last_state,
             )
+            # Use the position-mode attitude controller (with rate damping) to
+            # prevent the over-torque from the TRPYMixer square-law from causing
+            # attitude divergence. The MoE attitude path uses self._controller
+            # (k_damp=0) to stay compatible with the trained checkpoint.
+            motor_speeds = self._position_att_controller.compute(
+                q_target_enu_wxyz=q_target_enu,
+                thrust_normalized=thrust_norm,
+                q_current_enu_wxyz=self._last_state.quat_wxyz,
+                omega_current_body=self._last_state.angular_vel_body,
+            )
         else:
             q_target_enu = ned_quat_wxyz_to_enu_quat(self._last_target_q)
             thrust_norm = self._last_target_thrust
-
-        motor_speeds = self._controller.compute(
-            q_target_enu_wxyz=q_target_enu,
-            thrust_normalized=thrust_norm,
-            q_current_enu_wxyz=self._last_state.quat_wxyz,
-            omega_current_body=self._last_state.angular_vel_body,
-        )
+            motor_speeds = self._controller.compute(
+                q_target_enu_wxyz=q_target_enu,
+                thrust_normalized=thrust_norm,
+                q_current_enu_wxyz=self._last_state.quat_wxyz,
+                omega_current_body=self._last_state.angular_vel_body,
+            )
         if not np.all(np.isfinite(motor_speeds)):
             motor_speeds = np.zeros(4)
         self._last_state = self.backend.step(motor_speeds, dt=dt)
