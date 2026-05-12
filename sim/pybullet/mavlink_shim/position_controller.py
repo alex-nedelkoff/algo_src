@@ -86,13 +86,21 @@ class PositionController:
         # Desired thrust vector in world.
         f_des = -self._k_p * e_p - self._k_d * e_v + m * np.array([0.0, 0.0, _G]) + m * target.accel_enu
 
+        # Saturate f_des magnitude so the attitude loop has headroom for
+        # differential torques. Without this, large step errors saturate the
+        # motors and the drone can't tilt — it just climbs straight up.
+        max_f = 0.80 * self._max_thrust
+        f_norm = float(np.linalg.norm(f_des))
+        if f_norm > max_f:
+            f_des = f_des * (max_f / f_norm)
+            f_norm = max_f
+
         # Current body-z in world (rotate (0,0,1) by current attitude).
         z_b_current = _quat_rotate_vector(state.quat_wxyz, np.array([0.0, 0.0, 1.0]))
         thrust_n_world = float(np.dot(f_des, z_b_current))
         thrust_norm = float(np.clip(thrust_n_world / self._max_thrust, 0.0, 1.0))
 
         # Desired body-z direction.
-        f_norm = float(np.linalg.norm(f_des))
         if f_norm < 1e-6:
             # Degenerate: no thrust needed → keep current attitude.
             return state.quat_wxyz.copy(), 0.0
