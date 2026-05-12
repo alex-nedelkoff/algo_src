@@ -120,6 +120,10 @@ class NumpyQuadBackend:
             timestamp_us=self._now_us(),
         )
 
+    def close(self) -> None:
+        """No-op: NumpyQuadBackend holds no external resources."""
+        pass
+
 
 def _rotate_world_to_body(
     v_world: NDArray[np.float64],

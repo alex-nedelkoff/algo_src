@@ -7,6 +7,7 @@ attitude over time.
 Usage:
     conda run -n monorace python -m scripts.mavlink.smoke_test \\
         [--port 14550] [--out outputs/mavlink_smoke/attitude.png]
+        [--backend numpy_quad|pybullet] [--mode attitude|position]
 
 Output: PNG with two subplots (pitch / roll) showing commanded vs
 achieved trajectories.
@@ -49,15 +50,28 @@ def main() -> int:
                     default=Path("outputs/mavlink_smoke/attitude.png"))
     ap.add_argument("--hold", action="store_true",
                     help="Keep shim alive after plotting for QGC manual check")
+    ap.add_argument(
+        "--backend", choices=["numpy_quad", "pybullet"], default="numpy_quad",
+        help="Physics backend to drive the shim with.",
+    )
+    ap.add_argument(
+        "--mode", choices=["attitude", "position"], default="attitude",
+        help="Client-side command mode: SET_ATTITUDE_TARGET vs SET_POSITION_TARGET_LOCAL_NED.",
+    )
     args = ap.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     params = VehicleParams()
-    backend = NumpyQuadBackend(params=params)
+    if args.backend == "numpy_quad":
+        backend = NumpyQuadBackend(params=params)
+    else:
+        from sim.pybullet.mavlink_shim.pybullet_backend import PyBulletBackend
+        backend = PyBulletBackend(params=params, gui=False)
+
     shim = MavlinkShim(
         backend=backend, params=params,
         host="127.0.0.1", port=args.port, lockstep=False,
-        rates_hz={"heartbeat": 1, "attitude": 100, "odometry": 100, "highres_imu": 200},
+        rates_hz={"heartbeat": 2, "attitude": 100, "odometry": 100, "highres_imu": 200},
         controller_k_att=5.0,
         controller_k_damp=2.0,   # rate damping — prevents P-only overshoot in real-time mode
     )
@@ -72,7 +86,7 @@ def main() -> int:
 
     thrust = _hover_thrust(params)
 
-    sequence = [
+    sequence_attitude = [
         # (q_target_ned_wxyz, duration_s, label)
         ((1.0, 0.0, 0.0, 0.0), 2.0, "hover"),
         ((np.cos(np.pi/12), 0.0, np.sin(np.pi/12), 0.0), 2.0, "+30 pitch"),
@@ -83,6 +97,7 @@ def main() -> int:
 
     cmd_pitch_log: list[tuple[float, float]] = []
     ach_pitch_log: list[tuple[float, float]] = []
+    pos_log: list[tuple[float, np.ndarray]] = []  # (t, pos_enu) for position-mode
 
     with shim:
         shim.reset(initial)
@@ -111,18 +126,36 @@ def main() -> int:
         recv_thread = threading.Thread(target=_recv_loop, daemon=True)
         recv_thread.start()
 
-        for q_target, dur, _label in sequence:
-            cmd_pitch_deg = float(np.degrees(2.0 * np.arctan2(q_target[2], q_target[0])))
-            t_seg_end = time.monotonic() + dur
+        if args.mode == "attitude":
+            for q_target, dur, _label in sequence_attitude:
+                cmd_pitch_deg = float(np.degrees(2.0 * np.arctan2(q_target[2], q_target[0])))
+                t_seg_end = time.monotonic() + dur
+                while time.monotonic() < t_seg_end:
+                    client.mav.set_attitude_target_send(
+                        time_boot_ms=0, target_system=1, target_component=1, type_mask=0,
+                        q=list(q_target),
+                        body_roll_rate=0.0, body_pitch_rate=0.0, body_yaw_rate=0.0,
+                        thrust=float(thrust),
+                    )
+                    cmd_pitch_log.append((time.monotonic() - t_start, cmd_pitch_deg))
+                    time.sleep(0.01)
+        else:
+            # Position mode: hold (5, 0, -2) NED for 10 s, log current pos.
+            t_seg_end = time.monotonic() + 10.0
             while time.monotonic() < t_seg_end:
-                client.mav.set_attitude_target_send(
-                    time_boot_ms=0, target_system=1, target_component=1, type_mask=0,
-                    q=list(q_target),
-                    body_roll_rate=0.0, body_pitch_rate=0.0, body_yaw_rate=0.0,
-                    thrust=float(thrust),
+                client.mav.set_position_target_local_ned_send(
+                    time_boot_ms=int((time.monotonic() - t_start) * 1000),
+                    target_system=1, target_component=1,
+                    coordinate_frame=mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                    type_mask=0,
+                    x=5.0, y=0.0, z=-2.0,
+                    vx=0.0, vy=0.0, vz=0.0,
+                    afx=0.0, afy=0.0, afz=0.0,
+                    yaw=0.0, yaw_rate=0.0,
                 )
-                cmd_pitch_log.append((time.monotonic() - t_start, cmd_pitch_deg))
-                time.sleep(0.01)
+                t_log = time.monotonic() - t_start
+                pos_log.append((t_log, shim._last_state.pos_enu.copy()))
+                time.sleep(0.05)
 
         stop_recv.set()
         recv_thread.join(timeout=1.0)
@@ -141,20 +174,36 @@ def main() -> int:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    cmd_t, cmd_p = zip(*cmd_pitch_log) if cmd_pitch_log else ([], [])
-    ach_t, ach_p = zip(*ach_pitch_log) if ach_pitch_log else ([], [])
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(cmd_t, cmd_p, "k--", label="commanded pitch")
-    ax.plot(ach_t, ach_p, "b-", label="achieved pitch")
-    ax.set_xlabel("time (s)")
-    ax.set_ylabel("pitch (deg)")
-    ax.set_title("MAVLink shim — attitude tracking smoke test")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(args.out, dpi=120)
-    print(f"Wrote {args.out}")
+    if args.mode == "attitude":
+        cmd_t, cmd_p = zip(*cmd_pitch_log) if cmd_pitch_log else ([], [])
+        ach_t, ach_p = zip(*ach_pitch_log) if ach_pitch_log else ([], [])
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(cmd_t, cmd_p, "k--", label="commanded pitch")
+        ax.plot(ach_t, ach_p, "b-", label="achieved pitch")
+        ax.set_xlabel("time (s)"); ax.set_ylabel("pitch (deg)")
+        ax.set_title(f"MAVLink shim — attitude tracking ({args.backend})")
+        ax.legend(); ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(args.out, dpi=120)
+        print(f"Wrote {args.out}")
+    else:
+        if not pos_log:
+            print("No position-log entries; nothing to plot.")
+        else:
+            ts, ps = zip(*pos_log)
+            ps = np.array(ps)
+            fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+            labels = ["x (East, m)", "y (North, m)", "z (Up, m)"]
+            targets = [0.0, 5.0, 2.0]
+            for i, (ax, label, target) in enumerate(zip(axes, labels, targets)):
+                ax.plot(ts, ps[:, i], "b-", label="position")
+                ax.axhline(target, color="k", ls="--", label="target")
+                ax.set_ylabel(label); ax.grid(True, alpha=0.3); ax.legend(loc="best")
+            axes[-1].set_xlabel("time (s)")
+            axes[0].set_title(f"MAVLink shim — position tracking ({args.backend})")
+            fig.tight_layout()
+            fig.savefig(args.out, dpi=120)
+            print(f"Wrote {args.out}")
 
     return 0
 

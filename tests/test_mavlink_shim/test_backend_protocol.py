@@ -50,6 +50,9 @@ class MockBackend:
             timestamp_us=0,
         )
 
+    def close(self) -> None:
+        pass
+
 
 def test_shim_step_calls_backend_step_with_motor_commands_from_controller():
     port = _free_port()

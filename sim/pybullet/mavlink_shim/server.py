@@ -159,3 +159,11 @@ class MavlinkServer:
             temperature=0.0,
             fields_updated=accel_gyro_bits,
         )
+
+    def send_timesync(self, tc1: int, ts1: int) -> None:
+        """Send a TIMESYNC message.
+
+        Server-initiated periodic: tc1=our_time_ns, ts1=0.
+        Reply to inbound TIMESYNC: tc1=our_time_ns, ts1=echoed-from-inbound.
+        """
+        self._conn.mav.timesync_send(int(tc1), int(ts1))

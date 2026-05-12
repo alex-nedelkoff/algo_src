@@ -10,7 +10,7 @@ conversion at the message boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,6 +35,7 @@ class ImuSample:
     timestamp_us: int
 
 
+@runtime_checkable
 class DroneBackend(Protocol):
     """Interface for any physics engine driving a single quadrotor.
 
@@ -52,4 +53,12 @@ class DroneBackend(Protocol):
 
     def get_imu(self) -> ImuSample:
         """Return the latest IMU sample derived from current state."""
+        ...
+
+    def close(self) -> None:
+        """Release any resources held by the backend (e.g. PyBullet client).
+
+        Called by MavlinkShim.stop(). Backends with no resources to release
+        may implement as a no-op.
+        """
         ...
