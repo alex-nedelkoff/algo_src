@@ -11,6 +11,10 @@ from numpy.typing import NDArray
 from sim.dynamics.params import VehicleParams
 from sim.pybullet.mavlink_shim.attitude_controller import AttitudeController
 from sim.pybullet.mavlink_shim.backend import DroneBackend, DroneState
+from sim.pybullet.mavlink_shim.position_controller import PositionController
+from sim.pybullet.mavlink_shim.position_target import (
+    PositionTarget, parse_set_position_target_local_ned,
+)
 from sim.pybullet.mavlink_shim.coords_mavlink import (
     enu_quat_to_ned_euler,
     enu_quat_to_ned_quat_xyzw,
@@ -48,11 +52,15 @@ class MavlinkShim:
     _last_state: DroneState = field(init=False, default=None)
     _last_step_us: int = field(init=False, default=0)
     _t0_us: int = field(init=False, default=0)
+    _mode: str = field(init=False, default="attitude")  # "attitude" | "position"
+    _last_pos_target: PositionTarget = field(init=False, default=None)
+    _position_controller: PositionController = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self._controller = AttitudeController(
             params=self.params, k_att=self.controller_k_att, k_damp=self.controller_k_damp,
         )
+        self._position_controller = PositionController(params=self.params)
         tick_hz = max(self.rates_hz.values()) if self.rates_hz else 200.0
         self._scheduler = RateScheduler(rates_hz=dict(self.rates_hz), tick_hz=tick_hz)
         self._last_target_q = np.array([1.0, 0.0, 0.0, 0.0])
@@ -114,6 +122,11 @@ class MavlinkShim:
                 if t == "SET_ATTITUDE_TARGET":
                     self._last_target_q = np.array(m.q, dtype=np.float64)
                     self._last_target_thrust = float(m.thrust)
+                    self._mode = "attitude"
+                    got_command = True
+                elif t == "SET_POSITION_TARGET_LOCAL_NED":
+                    self._last_pos_target = parse_set_position_target_local_ned(m)
+                    self._mode = "position"
                     got_command = True
                 elif t == "TIMESYNC" and getattr(m, "tc1", 1) == 0:
                     self._server.send_timesync(tc1=time.monotonic_ns(), ts1=int(m.ts1))
@@ -125,25 +138,40 @@ class MavlinkShim:
         self._do_one_step()
         return True
 
+    def _recv_and_dispatch(self) -> None:
+        """Drain all pending inbound messages and update latched state."""
+        msgs = self._server.recv_pending()
+        for m in msgs:
+            t = m.get_type()
+            if t == "SET_ATTITUDE_TARGET":
+                self._last_target_q = np.array(m.q, dtype=np.float64)
+                self._last_target_thrust = float(m.thrust)
+                self._mode = "attitude"
+            elif t == "SET_POSITION_TARGET_LOCAL_NED":
+                self._last_pos_target = parse_set_position_target_local_ned(m)
+                self._mode = "position"
+            elif t == "TIMESYNC" and getattr(m, "tc1", 1) == 0:
+                self._server.send_timesync(tc1=time.monotonic_ns(), ts1=int(m.ts1))
+
     def _run_loop(self) -> None:
         tick_period_s = 1.0 / max(self.rates_hz.values())
+        # Poll recv at >= 50 Hz regardless of the scheduled-output tick rate.
+        _RECV_PERIOD_S = min(tick_period_s, 0.02)
         next_tick = time.monotonic()
+        next_recv = time.monotonic()
         while not self._stop_event.is_set():
-            msgs = self._server.recv_pending()
-            for m in msgs:
-                t = m.get_type()
-                if t == "SET_ATTITUDE_TARGET":
-                    self._last_target_q = np.array(m.q, dtype=np.float64)
-                    self._last_target_thrust = float(m.thrust)
-                elif t == "TIMESYNC" and getattr(m, "tc1", 1) == 0:
-                    self._server.send_timesync(tc1=time.monotonic_ns(), ts1=int(m.ts1))
-            self._do_one_step()
-            next_tick += tick_period_s
-            sleep_for = next_tick - time.monotonic()
+            now = time.monotonic()
+            if now >= next_recv:
+                self._recv_and_dispatch()
+                next_recv = now + _RECV_PERIOD_S
+            if now >= next_tick:
+                self._do_one_step()
+                next_tick += tick_period_s
+                if next_tick < now:
+                    next_tick = now + tick_period_s
+            sleep_for = min(next_tick, next_recv) - time.monotonic()
             if sleep_for > 0:
                 time.sleep(sleep_for)
-            else:
-                next_tick = time.monotonic()
 
     def _do_one_step(self) -> None:
         now_us = int(time.monotonic() * 1_000_000) - self._t0_us
@@ -152,15 +180,20 @@ class MavlinkShim:
             dt = 1.0 / max(self.rates_hz.values())
         self._last_step_us = now_us
 
-        q_target_enu = ned_quat_wxyz_to_enu_quat(self._last_target_q)
-
         if self._last_state is None:
-            motor_speeds = np.zeros(4)
-            self._last_state = self.backend.step(motor_speeds, dt=0.0)
+            self._last_state = self.backend.step(np.zeros(4), dt=0.0)
+
+        if self._mode == "position" and self._last_pos_target is not None:
+            q_target_enu, thrust_norm = self._position_controller.compute(
+                target=self._last_pos_target, state=self._last_state,
+            )
+        else:
+            q_target_enu = ned_quat_wxyz_to_enu_quat(self._last_target_q)
+            thrust_norm = self._last_target_thrust
 
         motor_speeds = self._controller.compute(
             q_target_enu_wxyz=q_target_enu,
-            thrust_normalized=self._last_target_thrust,
+            thrust_normalized=thrust_norm,
             q_current_enu_wxyz=self._last_state.quat_wxyz,
             omega_current_body=self._last_state.angular_vel_body,
         )
