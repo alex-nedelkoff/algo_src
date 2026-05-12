@@ -30,10 +30,10 @@ class MavlinkShim:
     compid: int = 1
     lockstep: bool = False
     rates_hz: dict = field(default_factory=lambda: {
-        "heartbeat": 1.0,
+        "heartbeat": 2.0,       # spec §4.4 minimum
         "attitude": 100.0,
-        "odometry": 100.0,
         "highres_imu": 200.0,
+        "timesync": 10.0,       # PX4 default cadence; spec doesn't pin
     })
     controller_k_att: float = 6.0
     controller_k_damp: float = 0.0    # rate damping; 0 = pure-P (backward compat)
