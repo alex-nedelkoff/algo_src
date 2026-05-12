@@ -96,6 +96,8 @@ class MavlinkShim:
         if self._server is not None:
             self._server.close()
             self._server = None
+        # Release any backend-held resources (e.g. PyBullet physics client).
+        self.backend.close()
 
     def is_running(self) -> bool:
         return self._server is not None

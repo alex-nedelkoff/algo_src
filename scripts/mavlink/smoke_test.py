@@ -71,7 +71,7 @@ def main() -> int:
     shim = MavlinkShim(
         backend=backend, params=params,
         host="127.0.0.1", port=args.port, lockstep=False,
-        rates_hz={"heartbeat": 1, "attitude": 100, "odometry": 100, "highres_imu": 200},
+        rates_hz={"heartbeat": 2, "attitude": 100, "odometry": 100, "highres_imu": 200},
         controller_k_att=5.0,
         controller_k_damp=2.0,   # rate damping — prevents P-only overshoot in real-time mode
     )

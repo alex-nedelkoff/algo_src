@@ -54,3 +54,11 @@ class DroneBackend(Protocol):
     def get_imu(self) -> ImuSample:
         """Return the latest IMU sample derived from current state."""
         ...
+
+    def close(self) -> None:
+        """Release any resources held by the backend (e.g. PyBullet client).
+
+        Called by MavlinkShim.stop(). Backends with no resources to release
+        may implement as a no-op.
+        """
+        ...

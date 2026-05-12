@@ -4,11 +4,20 @@ Converts collective thrust + body rate commands into individual motor speeds
 using the standard quadrotor allocation matrix. Used when the policy outputs
 TRPY commands (for Anduril Grand Prix ESC interface) instead of direct motor RPMs.
 
-Allocation for X-config (FR-CW, RR-CCW, RL-CW, FL-CCW):
+Allocation for X-config (motor index → label/spin/body-frame position):
+    M1 = FR-CW   at (+L/√2, -L/√2, 0)
+    M2 = FL-CCW  at (+L/√2, +L/√2, 0)
+    M3 = RL-CW   at (-L/√2, +L/√2, 0)
+    M4 = RR-CCW  at (-L/√2, -L/√2, 0)
+
     T_total = k_t * (w1² + w2² + w3² + w4²)
     τ_roll  = k_t * L/√2 * (-w1² + w2² + w3² - w4²)
     τ_pitch = k_t * L/√2 * (-w1² - w2² + w3² + w4²)
     τ_yaw   = k_q * (w1² - w2² + w3² - w4²)
+
+Note: prior versions of this docstring listed M2=RR, M4=FL, which contradicted
+the allocation matrix. The matrix is authoritative; positions above are derived
+from it (see PyBulletBackend for the consuming side).
 
 We invert this to get w² from [T, τ_roll, τ_pitch, τ_yaw], then scale by the
 hover equilibrium speed to obtain motor speeds (rad/s). This linearised form
