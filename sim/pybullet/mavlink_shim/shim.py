@@ -110,10 +110,13 @@ class MavlinkShim:
         while time.monotonic() < deadline:
             msgs = self._server.recv_pending()
             for m in msgs:
-                if m.get_type() == "SET_ATTITUDE_TARGET":
+                t = m.get_type()
+                if t == "SET_ATTITUDE_TARGET":
                     self._last_target_q = np.array(m.q, dtype=np.float64)
                     self._last_target_thrust = float(m.thrust)
                     got_command = True
+                elif t == "TIMESYNC" and getattr(m, "tc1", 1) == 0:
+                    self._server.send_timesync(tc1=time.monotonic_ns(), ts1=int(m.ts1))
             if got_command:
                 break
             time.sleep(0.001)
@@ -128,9 +131,12 @@ class MavlinkShim:
         while not self._stop_event.is_set():
             msgs = self._server.recv_pending()
             for m in msgs:
-                if m.get_type() == "SET_ATTITUDE_TARGET":
+                t = m.get_type()
+                if t == "SET_ATTITUDE_TARGET":
                     self._last_target_q = np.array(m.q, dtype=np.float64)
                     self._last_target_thrust = float(m.thrust)
+                elif t == "TIMESYNC" and getattr(m, "tc1", 1) == 0:
+                    self._server.send_timesync(tc1=time.monotonic_ns(), ts1=int(m.ts1))
             self._do_one_step()
             next_tick += tick_period_s
             sleep_for = next_tick - time.monotonic()
@@ -185,3 +191,6 @@ class MavlinkShim:
         elif name == "highres_imu":
             imu = self.backend.get_imu()
             self._server.send_highres_imu(imu.accel_body, imu.gyro_body)
+        elif name == "timesync":
+            # Server-initiated periodic: tc1=our_time_ns, ts1=0.
+            self._server.send_timesync(tc1=time.monotonic_ns(), ts1=0)
