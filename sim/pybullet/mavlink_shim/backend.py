@@ -10,7 +10,7 @@ conversion at the message boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -35,6 +35,7 @@ class ImuSample:
     timestamp_us: int
 
 
+@runtime_checkable
 class DroneBackend(Protocol):
     """Interface for any physics engine driving a single quadrotor.
 
