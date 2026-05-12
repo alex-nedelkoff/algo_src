@@ -46,6 +46,7 @@ def test_velocity_only_target():
 def test_yaw_ignore_bit_blanks_yaw():
     tgt = parse_set_position_target_local_ned(_msg(yaw=1.5, type_mask=0x400))
     assert tgt.use_yaw is False
+    assert tgt.yaw_enu == 0.0
 
 
 def test_accel_fields_pass_through():

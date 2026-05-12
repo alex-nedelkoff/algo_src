@@ -6,7 +6,9 @@ PositionController).
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -33,7 +35,14 @@ _MASK_ACC = _BIT_IGNORE_ACC_X | _BIT_IGNORE_ACC_Y | _BIT_IGNORE_ACC_Z
 
 @dataclass
 class PositionTarget:
-    """A parsed SET_POSITION_TARGET_LOCAL_NED in ENU world frame."""
+    """A parsed SET_POSITION_TARGET_LOCAL_NED in ENU world frame.
+
+    The use_* booleans invert the MAVLink type_mask's ignore-sense:
+    use_position is True when the position bits are zero (i.e. the
+    position field is ACTIVE, not ignored). Downstream consumers
+    (PositionController) read the use_* flags; the raw type_mask is
+    discarded after parsing.
+    """
     pos_enu: NDArray[np.float64]    # (3,) m
     vel_enu: NDArray[np.float64]    # (3,) m/s
     accel_enu: NDArray[np.float64]  # (3,) m/s²
@@ -49,13 +58,19 @@ def _ned_to_enu_xyz(x: float, y: float, z: float) -> NDArray[np.float64]:
     return np.array([y, x, -z], dtype=np.float64)
 
 
-def parse_set_position_target_local_ned(msg) -> PositionTarget:
+def parse_set_position_target_local_ned(msg: Any) -> PositionTarget:
     """Convert a pymavlink SET_POSITION_TARGET_LOCAL_NED → PositionTarget (ENU).
 
     type_mask bits set ⇒ ignore the corresponding field group (zeroed out).
     Yaw flips sign across the NED↔ENU basis change.
     """
     tm = int(msg.type_mask)
+    if tm & _BIT_FORCE_FLAG:
+        warnings.warn(
+            "SET_POSITION_TARGET_LOCAL_NED FORCE bit set; treating accel field as accel (m/s²), "
+            "not force (N). Mass-scaling not applied.",
+            stacklevel=2,
+        )
     use_pos = (tm & _MASK_POS) == 0
     use_vel = (tm & _MASK_VEL) == 0
     use_acc = (tm & _MASK_ACC) == 0
