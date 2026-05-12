@@ -7,8 +7,12 @@ import time
 
 os.environ.setdefault("MAVLINK20", "1")
 
+import numpy as np
 from pymavlink import mavutil  # noqa: E402
 
+from sim.dynamics.params import VehicleParams
+from sim.pybullet.mavlink_shim import DroneState, MavlinkShim
+from sim.pybullet.mavlink_shim.numpy_quad_backend import NumpyQuadBackend
 from sim.pybullet.mavlink_shim.server import MavlinkServer
 
 
@@ -57,13 +61,6 @@ def test_send_timesync_emits_packet():
         server.close()
 
 
-import numpy as np
-
-from sim.dynamics.params import VehicleParams
-from sim.pybullet.mavlink_shim import DroneState, MavlinkShim
-from sim.pybullet.mavlink_shim.numpy_quad_backend import NumpyQuadBackend
-
-
 def _initial_hover_state(params: VehicleParams) -> DroneState:
     hover_omega = float(np.sqrt(params.mass * 9.81 / (4.0 * params.k_thrust)))
     return DroneState(
@@ -92,6 +89,7 @@ def test_shim_emits_periodic_timesync():
         client.mav.heartbeat_send(
             mavutil.mavlink.MAV_TYPE_GCS, mavutil.mavlink.MAV_AUTOPILOT_INVALID, 0, 0, 0,
         )
+        time.sleep(0.05)
 
         count = 0
         deadline = time.time() + 1.5
