@@ -27,7 +27,6 @@ def test_constructs_in_direct_mode():
         backend.close()
 
 
-@pytest.mark.xfail(reason="step() implemented in Task 8")
 def test_reset_places_drone_at_initial_state():
     backend = PyBulletBackend(params=_spec_quad(), gui=False)
     try:
@@ -41,7 +40,8 @@ def test_reset_places_drone_at_initial_state():
         backend.reset(s0)
         # First step with zero motor commands → drone falls under gravity.
         s1 = backend.step(np.zeros(4), dt=0.01)
-        np.testing.assert_allclose(s1.pos_enu[:2], [1.0, 2.0], atol=1e-3)
+        # XY drifts by v·dt (~0.002 m with initial vel [0.1, -0.2]); use atol=5e-3.
+        np.testing.assert_allclose(s1.pos_enu[:2], [1.0, 2.0], atol=5e-3)
         # Should have lost some altitude (gravity pulls -Z in ENU).
         assert s1.pos_enu[2] < 3.0
         # Quaternion stays roughly identity.

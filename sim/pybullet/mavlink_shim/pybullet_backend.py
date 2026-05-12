@@ -128,8 +128,69 @@ class PyBulletBackend:
         self._t0_ns = time.monotonic_ns()
 
     def step(self, motor_commands: NDArray[np.float64], dt: float) -> DroneState:
-        # Implemented in Task 8.
-        raise NotImplementedError("PyBulletBackend.step is implemented in Task 8")
+        sub_dt = 1.0 / self.physics_hz
+        n_substeps = max(1, int(round(dt / sub_dt)))
+        sub_dt = dt / n_substeps if n_substeps > 0 else sub_dt
+
+        vel_before_world = np.array(p.getBaseVelocity(self._body_id, physicsClientId=self._client)[0])
+
+        # Yaw torque sign convention from the trpy_mixer allocation matrix.
+        # M0=FR-CW, M1=FL-CCW, M2=RL-CW, M3=RR-CCW.
+        spin_sign = np.array([+1.0, -1.0, +1.0, -1.0])
+
+        for _ in range(n_substeps):
+            # First-order motor-lag integration. Closed-form per sub-step:
+            # ω_new = ω_cmd + (ω - ω_cmd) · exp(-sub_dt/τ).
+            alpha = float(np.exp(-sub_dt / max(self.params.tau_motor, 1e-6)))
+            self._omega_actual = motor_commands + (self._omega_actual - motor_commands) * alpha
+            omega_sq = self._omega_actual ** 2
+
+            f_motors = self.params.k_thrust * omega_sq           # (4,) N
+            tau_yaw = float(np.sum(self.params.k_torque * omega_sq * spin_sign))  # N·m
+
+            for i in range(4):
+                p.applyExternalForce(
+                    self._body_id, -1,
+                    forceObj=[0.0, 0.0, float(f_motors[i])],
+                    posObj=[float(self._motor_positions_body[i, 0]),
+                            float(self._motor_positions_body[i, 1]),
+                            float(self._motor_positions_body[i, 2])],
+                    flags=p.LINK_FRAME, physicsClientId=self._client,
+                )
+            p.applyExternalTorque(
+                self._body_id, -1,
+                torqueObj=[0.0, 0.0, tau_yaw],
+                flags=p.LINK_FRAME, physicsClientId=self._client,
+            )
+            p.stepSimulation(physicsClientId=self._client)
+
+        # Read back full state.
+        pos, quat_xyzw = p.getBasePositionAndOrientation(self._body_id, physicsClientId=self._client)
+        vel_world, ang_world = p.getBaseVelocity(self._body_id, physicsClientId=self._client)
+        pos_enu = np.array(pos, dtype=np.float64)
+        vel_enu = np.array(vel_world, dtype=np.float64)
+        quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float64)
+        ang_body = _rotate_world_to_body(np.array(ang_world, dtype=np.float64), quat_wxyz)
+
+        # IMU derivation — same pattern as NumpyQuadBackend.
+        if dt > 0.0:
+            world_accel = (vel_enu - vel_before_world) / dt
+        else:
+            world_accel = np.zeros(3)
+        accel_body_kinematic = _rotate_world_to_body(world_accel, quat_wxyz)
+        gravity_body = _rotate_world_to_body(np.array([0.0, 0.0, -_G]), quat_wxyz)
+        self._last_accel_body = accel_body_kinematic - gravity_body
+        self._last_omega_body = ang_body.copy()
+        self._last_vel_world = vel_enu.copy()
+
+        return DroneState(
+            pos_enu=pos_enu,
+            vel_enu=vel_enu,
+            quat_wxyz=quat_wxyz,
+            angular_vel_body=ang_body,
+            motor_speed=self._omega_actual.copy(),
+            timestamp_us=(time.monotonic_ns() - self._t0_ns) // 1000,
+        )
 
     def get_imu(self) -> ImuSample:
         return ImuSample(
