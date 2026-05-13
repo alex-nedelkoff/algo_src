@@ -75,6 +75,11 @@ class MavlinkShim:
         tick_hz = max(self.rates_hz.values()) if self.rates_hz else 200.0
         self._scheduler = RateScheduler(rates_hz=dict(self.rates_hz), tick_hz=tick_hz)
         self._last_target_q = np.array([1.0, 0.0, 0.0, 0.0])
+        self._inbound_handlers: dict[str, callable] = {
+            "SET_ATTITUDE_TARGET": self._on_set_attitude_target,
+            "SET_POSITION_TARGET_LOCAL_NED": self._on_set_position_target,
+            "TIMESYNC": self._on_timesync,
+        }
 
     def start(self) -> None:
         if self._server is not None:
@@ -132,17 +137,10 @@ class MavlinkShim:
             msgs = self._server.recv_pending()
             for m in msgs:
                 t = m.get_type()
-                if t == "SET_ATTITUDE_TARGET":
-                    self._last_target_q = np.array(m.q, dtype=np.float64)
-                    self._last_target_thrust = float(m.thrust)
-                    self._mode = "attitude"
+                handler = self._inbound_handlers.get(t, self._on_unknown)
+                handler(m)
+                if t in ("SET_ATTITUDE_TARGET", "SET_POSITION_TARGET_LOCAL_NED"):
                     got_command = True
-                elif t == "SET_POSITION_TARGET_LOCAL_NED":
-                    self._last_pos_target = parse_set_position_target_local_ned(m)
-                    self._mode = "position"
-                    got_command = True
-                elif t == "TIMESYNC" and getattr(m, "tc1", 1) == 0:
-                    self._server.send_timesync(tc1=time.monotonic_ns(), ts1=int(m.ts1))
             if got_command:
                 break
             time.sleep(0.001)
@@ -152,19 +150,10 @@ class MavlinkShim:
         return True
 
     def _recv_and_dispatch(self) -> None:
-        """Drain all pending inbound messages and update latched state."""
-        msgs = self._server.recv_pending()
-        for m in msgs:
+        """Drain all pending inbound messages and route via the handler table."""
+        for m in self._server.recv_pending():
             t = m.get_type()
-            if t == "SET_ATTITUDE_TARGET":
-                self._last_target_q = np.array(m.q, dtype=np.float64)
-                self._last_target_thrust = float(m.thrust)
-                self._mode = "attitude"
-            elif t == "SET_POSITION_TARGET_LOCAL_NED":
-                self._last_pos_target = parse_set_position_target_local_ned(m)
-                self._mode = "position"
-            elif t == "TIMESYNC" and getattr(m, "tc1", 1) == 0:
-                self._server.send_timesync(tc1=time.monotonic_ns(), ts1=int(m.ts1))
+            self._inbound_handlers.get(t, self._on_unknown)(m)
 
     def _run_loop(self) -> None:
         tick_period_s = 1.0 / max(self.rates_hz.values())
@@ -249,3 +238,22 @@ class MavlinkShim:
         elif name == "timesync":
             # Server-initiated periodic: tc1=our_time_ns, ts1=0.
             self._server.send_timesync(tc1=time.monotonic_ns(), ts1=0)
+
+    # ----- inbound handlers (registered into self._inbound_handlers) -----
+
+    def _on_set_attitude_target(self, m) -> None:
+        self._last_target_q = np.array(m.q, dtype=np.float64)
+        self._last_target_thrust = float(m.thrust)
+        self._mode = "attitude"
+
+    def _on_set_position_target(self, m) -> None:
+        self._last_pos_target = parse_set_position_target_local_ned(m)
+        self._mode = "position"
+
+    def _on_timesync(self, m) -> None:
+        if int(getattr(m, "tc1", 1)) == 0:
+            self._server.send_timesync(tc1=time.monotonic_ns(), ts1=int(m.ts1))
+
+    def _on_unknown(self, m) -> None:
+        # Default no-op; subclasses or later phases override.
+        return None
