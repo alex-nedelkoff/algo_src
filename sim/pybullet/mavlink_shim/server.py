@@ -286,3 +286,15 @@ class MavlinkServer:
             param_count=0,
             param_index=0,
         )
+
+    def send_empty_mission_count(self) -> None:
+        """Send MISSION_COUNT(0) — no mission stored."""
+        self._conn.mav.mission_count_send(
+            target_system=0, target_component=0, count=0,
+        )
+
+    def send_empty_log_entry(self) -> None:
+        """Send LOG_ENTRY with num_logs=0 — no logs stored."""
+        self._conn.mav.log_entry_send(
+            id=0, num_logs=0, last_log_num=0, time_utc=0, size=0,
+        )

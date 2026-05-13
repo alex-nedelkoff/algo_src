@@ -94,6 +94,8 @@ class MavlinkShim:
         self._inbound_handlers["COMMAND_LONG"] = self._on_command_long
         self._inbound_handlers["PARAM_REQUEST_LIST"] = self._on_param_request_list
         self._inbound_handlers["PARAM_REQUEST_READ"] = self._on_param_request_read
+        self._inbound_handlers["MISSION_REQUEST_LIST"] = self._on_mission_request_list
+        self._inbound_handlers["LOG_REQUEST_LIST"] = self._on_log_request_list
 
     def start(self) -> None:
         if self._server is not None:
@@ -314,6 +316,12 @@ class MavlinkShim:
     def _on_param_request_read(self, m) -> None:
         # Silent. We have no parameters to return.
         return None
+
+    def _on_mission_request_list(self, m) -> None:
+        self._server.send_empty_mission_count()
+
+    def _on_log_request_list(self, m) -> None:
+        self._server.send_empty_log_entry()
 
     def _on_unknown(self, m) -> None:
         # Default no-op; subclasses or later phases override.
