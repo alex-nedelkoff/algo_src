@@ -220,3 +220,55 @@ class MavlinkServer:
             errors_count3=0,
             errors_count4=0,
         )
+
+    def send_autopilot_version(self) -> None:
+        """Send AUTOPILOT_VERSION advertising no extended capabilities.
+
+        Fired only in response to MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES.
+        All-zero versions/vendor/product is the QGC-tolerated 'generic
+        autopilot' identity — keeps QGC from probing PX4/ArduPilot params.
+
+        Adaptation: pymavlink 2.4.49's ``autopilot_version_send`` declares
+        ``uid2`` as ``uint8[18]`` (not 8 as some older references suggest),
+        so we pass 18 zeros.
+        """
+        zero_md5 = [0] * 8      # uint8[8] custom version hashes
+        zero_uid2 = [0] * 18    # uint8[18] extended UID
+        self._conn.mav.autopilot_version_send(
+            capabilities=0,
+            flight_sw_version=0,
+            middleware_sw_version=0,
+            os_sw_version=0,
+            board_version=0,
+            flight_custom_version=zero_md5,
+            middleware_custom_version=zero_md5,
+            os_custom_version=zero_md5,
+            vendor_id=0,
+            product_id=0,
+            uid=0,
+            uid2=zero_uid2,
+        )
+
+    def send_protocol_version(self) -> None:
+        """Send PROTOCOL_VERSION (we only speak v2).
+
+        Adaptation: pymavlink 2.4.49 does not include the PROTOCOL_VERSION
+        message (msg id 300) in any bundled dialect — it has been removed
+        from upstream common.xml in favour of the v2-capability heartbeat
+        flag. We keep the method on the API surface so the Task 5
+        COMMAND_LONG dispatcher can call it uniformly, but it is a no-op
+        on this pymavlink build. A NotImplementedError would break the
+        ACK path; silent no-op lets the dispatcher still ACK ACCEPTED.
+        """
+        send = getattr(self._conn.mav, "protocol_version_send", None)
+        if send is None:
+            # Not available in this pymavlink dialect; skip.
+            return
+        zero_hash = [0] * 8
+        send(
+            version=200,
+            min_version=100,
+            max_version=200,
+            spec_version_hash=zero_hash,
+            library_version_hash=zero_hash,
+        )
