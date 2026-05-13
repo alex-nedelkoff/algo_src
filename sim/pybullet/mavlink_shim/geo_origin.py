@@ -15,7 +15,9 @@ import math
 
 # Anduril HQ, Costa Mesa, CA. Chosen because (a) recognisable, (b) clearly
 # fictional for sim purposes, (c) makes the QGC map look populated.
-ANDURIL_HQ_LAT_LON: tuple[float, float] = (33.6595, -117.9988)
+# Coords verified 2026-05-13 — earlier (33.6595, -117.9988) landed in
+# Huntington Beach (wrong side of the 405).
+ANDURIL_HQ_LAT_LON: tuple[float, float] = (33.6450, -117.8640)
 
 _M_PER_DEG_LAT = 111_320.0
 

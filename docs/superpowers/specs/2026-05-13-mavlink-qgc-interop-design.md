@@ -155,11 +155,37 @@ In dependency order, each TDD-friendly:
 
 **Q1: Autopilot identity in HEARTBEAT.** *Answered: stay with `MAV_AUTOPILOT_GENERIC`.* This means QGC won't probe for PX4-specific or ArduPilot-specific params, which is appropriate given our empty param list.
 
-**Q2: Reference point for GPS / map.** *Answered: warehouse origin.* Since VADR-TS-002 explicitly states "GPS simulation is not available," the warehouse local origin (0,0,0) NED has no defined geographic location. We need to invent one purely for QGC's map rendering. **Proposed default: 33.6595°N, -117.9988°E (Anduril HQ, Costa Mesa CA)** — recognizable, makes the map look sensible, and clearly fictional for sim purposes. Configurable via a `MavlinkShim` constructor parameter `geo_origin_lat_lon` defaulting to that pair. *If you want a different point (e.g., the actual competition venue when announced), it's one constructor argument.*
+**Q2: Reference point for GPS / map.** *Answered: warehouse origin.* Since VADR-TS-002 explicitly states "GPS simulation is not available," the warehouse local origin (0,0,0) NED has no defined geographic location. We need to invent one purely for QGC's map rendering. **Default: 33.6450°N, -117.8640°W (Anduril HQ, Costa Mesa CA)**, defined as `ANDURIL_HQ_LAT_LON` in `sim/pybullet/mavlink_shim/geo_origin.py` and configurable via `MavlinkShim(geo_origin_lat_lon=(lat, lon))`. (Initial spec value `33.6595, -117.9988` was published in error — that's Huntington Beach, ~10 km west; corrected post-Task-11 verification.)
 
 **Q3: CI manual-screenshot gate.** *Answered: yes, screenshot.* The automated `test_qgc_handshake.py` covers the protocol; the screenshot covers the QGC interpretation. Both required for the PR.
 
 **Q4: Param stub scope.** *Answered: empty list.* Single `PARAM_VALUE` response with `param_count=0`. If QGC complains too loudly in practice we can expand later, but starting empty keeps scope minimal.
+
+## Acceptance evidence — Task 11
+
+Manual QGC verification completed 2026-05-13 on `laptop-tc658s39` (Windows, QGroundControl latest). Shim launched via `python -m scripts.mavlink.run_qgc_demo`. QGC comm link: Listening Port 14540, Server Address `127.0.0.1:14550`.
+
+**Screenshot 1 — vehicle discovered, GPS fix, map populated**
+`assets/qgc-interop/qgc-vehicle-discovered.png`
+- "Ready To Fly" status badge
+- GPS satellite indicator: 12 sats, 1.0 HDOP
+- Vehicle marker on map at synthetic origin (Anduril HQ area)
+- Position widget: live altitude / climb / vertical speed (drone in free-fall absent any attitude target — expected with the demo runner)
+
+**Screenshot 2 — MAVLink Inspector showing all 9 periodic messages parsing at QGC**
+`assets/qgc-interop/qgc-mavlink-inspector.png`
+- HEARTBEAT @ 2 Hz (spec)
+- TIMESYNC @ 10 Hz (spec)
+- SYS_STATUS @ 1 Hz (spec)
+- GPS_RAW_INT @ 1 Hz (spec)
+- LOCAL_POSITION_NED @ 30.8 Hz (~30 Hz spec)
+- GLOBAL_POSITION_INT @ 5.0 Hz (spec)
+- VFR_HUD @ 10 Hz (spec)
+- ATTITUDE @ 64.8 Hz (spec target 100 Hz — Windows ~15 ms sleep granularity caps fast rates; QGC HUD unaffected)
+- HIGHRES_IMU @ 64.8 Hz (spec target 200 Hz — same cause; not consumed by QGC)
+- ATTITUDE field decode (`roll/pitch/yaw/rollspeed/pitchspeed/yawspeed/time_boot_ms`) confirms wire format is valid per QGC's MAVLink parser.
+
+This satisfies the spec's manual verification gate. The Windows fast-rate degradation is platform-inherent and not a defect in the shim; the rates QGC actually renders (HEARTBEAT 2 Hz, LOCAL_POSITION 30 Hz, GLOBAL_POSITION 5 Hz, SYS_STATUS / GPS 1 Hz) all hit nominal.
 
 ## Out-of-spec follow-ups (file as separate work)
 

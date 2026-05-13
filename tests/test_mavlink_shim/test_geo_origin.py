@@ -10,8 +10,8 @@ from sim.pybullet.mavlink_shim.geo_origin import (
 
 def test_default_origin_is_anduril_hq():
     lat, lon = ANDURIL_HQ_LAT_LON
-    assert abs(lat - 33.6595) < 1e-6
-    assert abs(lon - (-117.9988)) < 1e-6
+    assert abs(lat - 33.6450) < 1e-6
+    assert abs(lon - (-117.8640)) < 1e-6
 
 
 def test_origin_offset_is_origin():
