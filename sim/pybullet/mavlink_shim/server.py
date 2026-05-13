@@ -184,3 +184,39 @@ class MavlinkServer:
         self._conn.mav.local_position_ned_send(
             self._t_boot_ms(), x, y, z, vx, vy, vz,
         )
+
+    def send_sys_status(self) -> None:
+        """Send SYS_STATUS advertising a healthy simulated vehicle.
+
+        Sensor bitmask covers gyro, accel, mag, abs-pressure, GPS, attitude
+        stabilisation, yaw position, motors. Battery is reported as fully
+        charged at 12.0 V (12000 mV), -1 A (current unknown). CPU load 10%
+        (the field's unit is 0.1%, so raw value 100).
+        """
+        ml = mavutil.mavlink
+        sensors = (
+            ml.MAV_SYS_STATUS_SENSOR_3D_GYRO
+            | ml.MAV_SYS_STATUS_SENSOR_3D_ACCEL
+            | ml.MAV_SYS_STATUS_SENSOR_3D_MAG
+            | ml.MAV_SYS_STATUS_SENSOR_ABSOLUTE_PRESSURE
+            | ml.MAV_SYS_STATUS_SENSOR_GPS
+            | ml.MAV_SYS_STATUS_SENSOR_ANGULAR_RATE_CONTROL
+            | ml.MAV_SYS_STATUS_SENSOR_ATTITUDE_STABILIZATION
+            | ml.MAV_SYS_STATUS_SENSOR_YAW_POSITION
+            | ml.MAV_SYS_STATUS_SENSOR_MOTOR_OUTPUTS
+        )
+        self._conn.mav.sys_status_send(
+            onboard_control_sensors_present=sensors,
+            onboard_control_sensors_enabled=sensors,
+            onboard_control_sensors_health=sensors,
+            load=100,                  # 10.0% (units: 0.1%)
+            voltage_battery=12000,     # mV
+            current_battery=-1,        # cA, -1 = unknown
+            battery_remaining=100,     # %
+            drop_rate_comm=0,
+            errors_comm=0,
+            errors_count1=0,
+            errors_count2=0,
+            errors_count3=0,
+            errors_count4=0,
+        )

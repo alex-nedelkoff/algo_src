@@ -38,6 +38,7 @@ class MavlinkShim:
         "attitude": 100.0,
         "highres_imu": 200.0,
         "local_position_ned": 30.0,   # QGC position HUD
+        "sys_status": 1.0,
         "timesync": 10.0,       # PX4 default cadence; spec doesn't pin
     })
     controller_k_att: float = 6.0
@@ -238,6 +239,8 @@ class MavlinkShim:
             self._server.send_highres_imu(imu.accel_body, imu.gyro_body)
         elif name == "local_position_ned":
             self._server.send_local_position_ned(s.pos_enu, s.vel_enu)
+        elif name == "sys_status":
+            self._server.send_sys_status()
         elif name == "timesync":
             # Server-initiated periodic: tc1=our_time_ns, ts1=0.
             self._server.send_timesync(tc1=time.monotonic_ns(), ts1=0)
