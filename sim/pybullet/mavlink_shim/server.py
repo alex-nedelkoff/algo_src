@@ -349,3 +349,17 @@ class MavlinkServer:
             approach_x=0.0, approach_y=0.0, approach_z=0.0,
             time_usec=self._t_usec(),
         )
+
+    def send_vfr_hud(
+        self,
+        airspeed: float, groundspeed: float, heading_deg: float,
+        throttle: int, alt_m: float, climb: float,
+    ) -> None:
+        self._conn.mav.vfr_hud_send(
+            airspeed=float(airspeed),
+            groundspeed=float(groundspeed),
+            heading=int(heading_deg),
+            throttle=int(throttle),
+            alt=float(alt_m),
+            climb=float(climb),
+        )

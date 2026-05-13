@@ -1,6 +1,7 @@
 """MavlinkShim — top-level orchestrator wiring server + controller + backend."""
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -47,6 +48,7 @@ class MavlinkShim:
         "timesync": 10.0,       # PX4 default cadence; spec doesn't pin
         "gps_raw_int": 1.0,
         "global_position_int": 5.0,
+        "vfr_hud": 10.0,
     })
     geo_origin_lat_lon: tuple[float, float] = field(
         default_factory=lambda: ANDURIL_HQ_LAT_LON
@@ -282,6 +284,17 @@ class MavlinkShim:
             # On-demand only (see _on_unknown -> first heartbeat trigger below).
             origin_lat, origin_lon = self.geo_origin_lat_lon
             self._server.send_home_position(origin_lat, origin_lon, 0.0)
+        elif name == "vfr_hud":
+            v = s.vel_enu
+            air = float(np.linalg.norm(v))
+            ground = float(np.linalg.norm(v[:2]))
+            _, _, yaw_ned = enu_quat_to_ned_euler(s.quat_wxyz)
+            heading_deg = (math.degrees(yaw_ned) + 360.0) % 360.0
+            self._server.send_vfr_hud(
+                airspeed=air, groundspeed=ground,
+                heading_deg=heading_deg, throttle=50,
+                alt_m=float(s.pos_enu[2]), climb=float(v[2]),
+            )
 
     def _current_lat_lon_alt(self) -> tuple[float, float, float]:
         s = self._last_state
