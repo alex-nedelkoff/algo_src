@@ -276,3 +276,13 @@ class MavlinkServer:
     def send_command_ack(self, command: int, result: int) -> None:
         """Send COMMAND_ACK in response to a COMMAND_LONG."""
         self._conn.mav.command_ack_send(int(command), int(result))
+
+    def send_empty_param_value(self) -> None:
+        """Send a single PARAM_VALUE with param_count=0 (empty-list signal)."""
+        self._conn.mav.param_value_send(
+            param_id=b"_EMPTY",
+            param_value=0.0,
+            param_type=mavutil.mavlink.MAV_PARAM_TYPE_REAL32,
+            param_count=0,
+            param_index=0,
+        )

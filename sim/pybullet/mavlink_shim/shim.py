@@ -92,6 +92,8 @@ class MavlinkShim:
             mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE: self._cmd_request_message,
         }
         self._inbound_handlers["COMMAND_LONG"] = self._on_command_long
+        self._inbound_handlers["PARAM_REQUEST_LIST"] = self._on_param_request_list
+        self._inbound_handlers["PARAM_REQUEST_READ"] = self._on_param_request_read
 
     def start(self) -> None:
         if self._server is not None:
@@ -305,6 +307,13 @@ class MavlinkShim:
             # COMMAND_LONG contract, but emit no message body.
             result = ml.MAV_RESULT_UNSUPPORTED
         self._server.send_command_ack(int(m.command), result)
+
+    def _on_param_request_list(self, m) -> None:
+        self._server.send_empty_param_value()
+
+    def _on_param_request_read(self, m) -> None:
+        # Silent. We have no parameters to return.
+        return None
 
     def _on_unknown(self, m) -> None:
         # Default no-op; subclasses or later phases override.
