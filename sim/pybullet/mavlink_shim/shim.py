@@ -25,6 +25,7 @@ from sim.pybullet.mavlink_shim.coords_mavlink import (
     enu_quat_to_ned_quat_xyzw,
     ned_quat_wxyz_to_enu_quat,
 )
+from sim.pybullet.mavlink_shim.geo_origin import ANDURIL_HQ_LAT_LON, enu_to_lat_lon
 from sim.pybullet.mavlink_shim.rate_scheduler import RateScheduler
 
 
@@ -44,7 +45,12 @@ class MavlinkShim:
         "local_position_ned": 30.0,   # QGC position HUD
         "sys_status": 1.0,
         "timesync": 10.0,       # PX4 default cadence; spec doesn't pin
+        "gps_raw_int": 1.0,
+        "global_position_int": 5.0,
     })
+    geo_origin_lat_lon: tuple[float, float] = field(
+        default_factory=lambda: ANDURIL_HQ_LAT_LON
+    )
     controller_k_att: float = 6.0
     controller_k_damp: float = 0.0    # rate damping; 0 = pure-P (backward compat)
     # Position-mode attitude controller gains. Separate from the attitude-mode
@@ -69,6 +75,7 @@ class MavlinkShim:
     _mode: str = field(init=False, default="attitude")  # "attitude" | "position"
     _last_pos_target: PositionTarget = field(init=False, default=None)
     _position_controller: PositionController = field(init=False, default=None)
+    _home_sent: bool = field(init=False, default=False)
 
     def __post_init__(self) -> None:
         self._controller = AttitudeController(
@@ -258,6 +265,32 @@ class MavlinkShim:
         elif name == "timesync":
             # Server-initiated periodic: tc1=our_time_ns, ts1=0.
             self._server.send_timesync(tc1=time.monotonic_ns(), ts1=0)
+        elif name == "gps_raw_int":
+            lat, lon, alt = self._current_lat_lon_alt()
+            self._server.send_gps_raw_int(lat, lon, alt)
+        elif name == "global_position_int":
+            lat, lon, alt = self._current_lat_lon_alt()
+            # vel_ned = (north, east, down) = (vy_enu, vx_enu, -vz_enu)
+            v = s.vel_enu
+            vel_ned = (float(v[1]), float(v[0]), -float(v[2]))
+            self._server.send_global_position_int(
+                lat_deg=lat, lon_deg=lon,
+                alt_m_amsl=alt, relative_alt_m=float(s.pos_enu[2]),
+                vel_ned_m_s=vel_ned, heading_deg=0.0,
+            )
+        elif name == "home_position":
+            # On-demand only (see _on_unknown -> first heartbeat trigger below).
+            origin_lat, origin_lon = self.geo_origin_lat_lon
+            self._server.send_home_position(origin_lat, origin_lon, 0.0)
+
+    def _current_lat_lon_alt(self) -> tuple[float, float, float]:
+        s = self._last_state
+        lat, lon = enu_to_lat_lon(
+            east=float(s.pos_enu[0]), north=float(s.pos_enu[1]),
+            origin=self.geo_origin_lat_lon,
+        )
+        alt_amsl_m = float(s.pos_enu[2])  # treat origin as MSL=0 (sim fiction)
+        return lat, lon, alt_amsl_m
 
     # ----- inbound handlers (registered into self._inbound_handlers) -----
 
@@ -324,5 +357,9 @@ class MavlinkShim:
         self._server.send_empty_log_entry()
 
     def _on_unknown(self, m) -> None:
-        # Default no-op; subclasses or later phases override.
-        return None
+        # We register HEARTBEAT as 'unknown' deliberately: it has no payload
+        # we care about beyond 'a GCS exists'. First time we see one, fire a
+        # HOME_POSITION so QGC's map widget initialises.
+        if m.get_type() == "HEARTBEAT" and not self._home_sent:
+            self._send_message("home_position")
+            self._home_sent = True

@@ -298,3 +298,54 @@ class MavlinkServer:
         self._conn.mav.log_entry_send(
             id=0, num_logs=0, last_log_num=0, time_utc=0, size=0,
         )
+
+    def send_gps_raw_int(
+        self,
+        lat_deg: float, lon_deg: float, alt_m_amsl: float,
+    ) -> None:
+        """Stubbed GPS_RAW_INT: 3D fix, 12 sats, lat/lon from caller."""
+        ml = mavutil.mavlink
+        self._conn.mav.gps_raw_int_send(
+            time_usec=self._t_usec(),
+            fix_type=ml.GPS_FIX_TYPE_3D_FIX,
+            lat=int(lat_deg * 1e7),
+            lon=int(lon_deg * 1e7),
+            alt=int(alt_m_amsl * 1000),
+            eph=100, epv=100, vel=0, cog=0,
+            satellites_visible=12,
+        )
+
+    def send_global_position_int(
+        self,
+        lat_deg: float, lon_deg: float,
+        alt_m_amsl: float, relative_alt_m: float,
+        vel_ned_m_s,  # length-3 array-like
+        heading_deg: float,
+    ) -> None:
+        """GLOBAL_POSITION_INT — lat/lon in 1e7 deg, alt in mm, vel in cm/s."""
+        self._conn.mav.global_position_int_send(
+            time_boot_ms=self._t_boot_ms(),
+            lat=int(lat_deg * 1e7),
+            lon=int(lon_deg * 1e7),
+            alt=int(alt_m_amsl * 1000),
+            relative_alt=int(relative_alt_m * 1000),
+            vx=int(vel_ned_m_s[0] * 100),
+            vy=int(vel_ned_m_s[1] * 100),
+            vz=int(vel_ned_m_s[2] * 100),
+            hdg=int(heading_deg * 100),
+        )
+
+    def send_home_position(
+        self, lat_deg: float, lon_deg: float, alt_m_amsl: float,
+    ) -> None:
+        """HOME_POSITION at the supplied lat/lon; local NED set to origin."""
+        zero_q = [1.0, 0.0, 0.0, 0.0]
+        self._conn.mav.home_position_send(
+            latitude=int(lat_deg * 1e7),
+            longitude=int(lon_deg * 1e7),
+            altitude=int(alt_m_amsl * 1000),
+            x=0.0, y=0.0, z=0.0,
+            q=zero_q,
+            approach_x=0.0, approach_y=0.0, approach_z=0.0,
+            time_usec=self._t_usec(),
+        )
