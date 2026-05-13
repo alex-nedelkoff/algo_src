@@ -8,6 +8,11 @@ from dataclasses import dataclass, field
 import numpy as np
 from numpy.typing import NDArray
 
+# server.py sets MAVLINK20=1 before importing mavutil; importing it first
+# guarantees the env-var is set when we import mavutil below.
+from sim.pybullet.mavlink_shim.server import MavlinkServer
+from pymavlink import mavutil  # noqa: E402 -- must follow server import
+
 from sim.dynamics.params import VehicleParams
 from sim.pybullet.mavlink_shim.attitude_controller import AttitudeController
 from sim.pybullet.mavlink_shim.backend import DroneBackend, DroneState
@@ -21,7 +26,6 @@ from sim.pybullet.mavlink_shim.coords_mavlink import (
     ned_quat_wxyz_to_enu_quat,
 )
 from sim.pybullet.mavlink_shim.rate_scheduler import RateScheduler
-from sim.pybullet.mavlink_shim.server import MavlinkServer
 
 
 @dataclass
@@ -82,6 +86,12 @@ class MavlinkShim:
             "SET_POSITION_TARGET_LOCAL_NED": self._on_set_position_target,
             "TIMESYNC": self._on_timesync,
         }
+        self._command_handlers: dict[int, callable] = {
+            mavutil.mavlink.MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES: self._cmd_request_autopilot_capabilities,
+            mavutil.mavlink.MAV_CMD_REQUEST_PROTOCOL_VERSION: self._cmd_request_protocol_version,
+            mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE: self._cmd_request_message,
+        }
+        self._inbound_handlers["COMMAND_LONG"] = self._on_command_long
 
     def start(self) -> None:
         if self._server is not None:
@@ -259,6 +269,42 @@ class MavlinkShim:
     def _on_timesync(self, m) -> None:
         if int(getattr(m, "tc1", 1)) == 0:
             self._server.send_timesync(tc1=time.monotonic_ns(), ts1=int(m.ts1))
+
+    def _on_command_long(self, m) -> None:
+        ml = mavutil.mavlink
+        cmd = int(m.command)
+        handler = self._command_handlers.get(cmd)
+        if handler is None:
+            self._server.send_command_ack(cmd, ml.MAV_RESULT_UNSUPPORTED)
+            return
+        handler(m)
+
+    def _cmd_request_autopilot_capabilities(self, m) -> None:
+        self._server.send_autopilot_version()
+        self._server.send_command_ack(
+            int(m.command), mavutil.mavlink.MAV_RESULT_ACCEPTED,
+        )
+
+    def _cmd_request_protocol_version(self, m) -> None:
+        self._server.send_protocol_version()
+        self._server.send_command_ack(
+            int(m.command), mavutil.mavlink.MAV_RESULT_ACCEPTED,
+        )
+
+    def _cmd_request_message(self, m) -> None:
+        """Param1 is the requested message id (MAVLINK_MSG_ID_*)."""
+        ml = mavutil.mavlink
+        msg_id = int(m.param1)
+        result = ml.MAV_RESULT_ACCEPTED
+        if msg_id == ml.MAVLINK_MSG_ID_AUTOPILOT_VERSION:
+            self._server.send_autopilot_version()
+        elif hasattr(ml, "MAVLINK_MSG_ID_PROTOCOL_VERSION") and msg_id == ml.MAVLINK_MSG_ID_PROTOCOL_VERSION:
+            self._server.send_protocol_version()
+        else:
+            # Unknown message id -> we still ACK (UNSUPPORTED) to satisfy the
+            # COMMAND_LONG contract, but emit no message body.
+            result = ml.MAV_RESULT_UNSUPPORTED
+        self._server.send_command_ack(int(m.command), result)
 
     def _on_unknown(self, m) -> None:
         # Default no-op; subclasses or later phases override.

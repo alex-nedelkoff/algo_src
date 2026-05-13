@@ -272,3 +272,7 @@ class MavlinkServer:
             spec_version_hash=zero_hash,
             library_version_hash=zero_hash,
         )
+
+    def send_command_ack(self, command: int, result: int) -> None:
+        """Send COMMAND_ACK in response to a COMMAND_LONG."""
+        self._conn.mav.command_ack_send(int(command), int(result))
