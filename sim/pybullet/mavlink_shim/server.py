@@ -167,3 +167,20 @@ class MavlinkServer:
         Reply to inbound TIMESYNC: tc1=our_time_ns, ts1=echoed-from-inbound.
         """
         self._conn.mav.timesync_send(int(tc1), int(ts1))
+
+    def send_local_position_ned(
+        self,
+        pos_enu: NDArray[np.float64],
+        vel_enu: NDArray[np.float64],
+    ) -> None:
+        """Send LOCAL_POSITION_NED. Converts ENU -> NED at the wire boundary."""
+        # ENU (east, north, up) -> NED (north, east, down).
+        x = float(pos_enu[1])
+        y = float(pos_enu[0])
+        z = -float(pos_enu[2])
+        vx = float(vel_enu[1])
+        vy = float(vel_enu[0])
+        vz = -float(vel_enu[2])
+        self._conn.mav.local_position_ned_send(
+            self._t_boot_ms(), x, y, z, vx, vy, vz,
+        )
