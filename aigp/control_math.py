@@ -101,6 +101,14 @@ def mat_to_quat(R) -> np.ndarray:
     return q / np.linalg.norm(q)
 
 
+def setpoint_send_remap(q_wxyz) -> np.ndarray:
+    """Map a desired attitude (our FRD/wxyz convention) into the AI-GP sim's
+    SET_ATTITUDE_TARGET frame. Empirically the sim's setpoint body frame is rotated
+    ~90 deg about pitch: vector part [x,y,z] -> [z, y, -x] (roll<->yaw swap)."""
+    w, x, y, z = q_wxyz
+    return np.array([w, z, y, -x])
+
+
 def attitude_error_quat(q_cur_wxyz, q_des_wxyz) -> np.ndarray:
     """Body-frame rotation vector (axis*angle, small-angle) from current to desired.
     Robust through 180 deg; takes the shortest path."""

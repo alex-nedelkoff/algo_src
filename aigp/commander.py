@@ -52,8 +52,23 @@ class Commander:
             float(yaw), 0.0,      # yaw, yaw_rate (ignored)
         )
 
+    def send_attitude_setpoint(self, q_wxyz, thrust_norm):
+        """Desired attitude (quaternion, sim send-frame) + normalized thrust via
+        SET_ATTITUDE_TARGET in ATTITUDE mode (body-rate fields ignored). This is the
+        STABLE interface for the AI-GP sim (rate mode is explosive)."""
+        now_ms = int(time.time() * 1000) - self.system_boot_ms
+        mask = (mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_BODY_ROLL_RATE_IGNORE
+                | mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_BODY_PITCH_RATE_IGNORE
+                | mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_BODY_YAW_RATE_IGNORE)
+        self.conn.mav.set_attitude_target_send(
+            now_ms, self.conn.target_system, self.conn.target_component, mask,
+            [float(q_wxyz[0]), float(q_wxyz[1]), float(q_wxyz[2]), float(q_wxyz[3])],
+            0.0, 0.0, 0.0, float(np.clip(thrust_norm, 0.0, 1.0)))
+
     def send_attitude_target(self, body_rates, thrust_norm):
-        """Body-rate setpoint + normalized thrust via SET_ATTITUDE_TARGET (rate mode)."""
+        """Body-rate setpoint + normalized thrust via SET_ATTITUDE_TARGET (rate mode).
+        NOTE: the AI-GP sim's rate loop is explosive/nonlinear — prefer
+        send_attitude_setpoint (attitude mode) instead."""
         now_ms = int(time.time() * 1000) - self.system_boot_ms
         self.conn.mav.set_attitude_target_send(
             now_ms,

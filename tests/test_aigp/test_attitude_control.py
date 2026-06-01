@@ -27,6 +27,24 @@ def test_below_setpoint_increases_thrust():
     assert thrust > 0.5
 
 
+from aigp.attitude_control import AttitudeSetpointController
+
+
+def test_attitude_setpoint_hover():
+    ctl = AttitudeSetpointController(hover_thrust=0.23, k_a=62.0)
+    q, thr = ctl.update(pos=np.zeros(3), vel=np.zeros(3), quat=IDENT,
+                        pos_sp=np.zeros(3), vel_sp=np.zeros(3), yaw_sp=0.0)
+    assert np.isclose(thr, 0.23, atol=1e-6)
+    assert np.allclose(q, [1, 0, 0, 0], atol=1e-6)   # identity remaps to identity
+
+
+def test_attitude_setpoint_below_increases_thrust():
+    ctl = AttitudeSetpointController(hover_thrust=0.23, k_a=62.0)
+    q, thr = ctl.update(np.zeros(3), np.zeros(3), IDENT,
+                        pos_sp=np.array([0, 0, -1.0]), vel_sp=np.zeros(3), yaw_sp=0.0)
+    assert thr > 0.23
+
+
 def test_rate_gain_inverts_sign():
     # with negative sim rate gain, the sent rate is flipped vs gain=+1
     args = dict(pos=np.zeros(3), vel=np.zeros(3), quat=IDENT, omega=np.zeros(3),

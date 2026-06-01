@@ -58,10 +58,12 @@ class MavlinkIO:
                 continue
             t = m.get_type()
             if t == "ODOMETRY":
+                # NOTE: this sim fills ODOMETRY.q as xyzw (w-LAST), not the MAVLink
+                # spec's wxyz. Reorder to wxyz so quat_to_R reads the true attitude.
                 self.store.set_drone(DroneState(
                     pos_ned=np.array([m.x, m.y, m.z]),
                     vel_ned=np.array([m.vx, m.vy, m.vz]),
-                    quat_wxyz=np.array([m.q[0], m.q[1], m.q[2], m.q[3]]),
+                    quat_wxyz=np.array([m.q[3], m.q[0], m.q[1], m.q[2]]),
                     omega=np.array([m.rollspeed, m.pitchspeed, m.yawspeed]),
                     t_us=m.time_usec,
                 ))

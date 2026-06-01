@@ -96,6 +96,14 @@ def test_attitude_error_quat_small_roll_sign():
     assert np.isclose(e[0], 0.2, atol=1e-3)
 
 
+def test_setpoint_send_remap():
+    from aigp.control_math import setpoint_send_remap
+    # identity stays identity
+    assert np.allclose(setpoint_send_remap([1.0, 0, 0, 0]), [1.0, 0, 0, 0])
+    # [w,x,y,z] -> [w,z,y,-x]
+    assert np.allclose(setpoint_send_remap([0.9, 0.1, 0.2, 0.3]), [0.9, 0.3, 0.2, -0.1])
+
+
 def test_attitude_error_quat_robust_at_180():
     # 180 deg yaw error must NOT collapse to zero (the vee-formula singularity)
     qc = np.array([1.0, 0, 0, 0])
