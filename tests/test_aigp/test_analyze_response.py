@@ -17,7 +17,28 @@ def test_fit_thrust_map_recovers_constants():
     assert np.isclose(out["hover_thrust"], (9.81 + 6.0) / 30.0, atol=1e-6)
 
 
-from aigp.analyze_response import fit_rate_gain, summarize
+from aigp.analyze_response import fit_rate_gain, summarize, summarize_pulses
+
+
+def test_summarize_pulses_recovers_constants():
+    # synthetic pulses: 3 thrust levels, each with a known constant vz slope.
+    # thrust_up = k_a*tn + b ; pick k_a=30, b=-6 -> accel_up = 30*tn-6-g... we
+    # build vz so that -dvz/dt + g = 30*tn - 6  =>  dvz/dt = g - (30*tn-6)
+    samples = []
+    t = 0.0
+    g = 9.81
+    for tn in [0.3, 0.5, 0.7]:
+        thrust_up = 30.0 * tn - 6.0
+        dvzdt = g - thrust_up          # vz is down-positive
+        for k in range(8):
+            vz = dvzdt * (k * 0.02)
+            samples.append({"segment": "thrust_pulse", "t": t, "thrust_norm": tn,
+                            "cmd_rates": [0, 0, 0], "vel_ned": [0, 0, vz],
+                            "omega": [0, 0, 0]})
+            t += 0.02
+    out = summarize_pulses(samples, skip=1)
+    assert np.isclose(out["k_a"], 30.0, atol=0.5)
+    assert np.isclose(out["hover_thrust"], (9.81 + 6.0) / 30.0, atol=0.02)
 
 
 def test_fit_rate_gain():

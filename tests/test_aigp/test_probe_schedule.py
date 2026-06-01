@@ -1,4 +1,14 @@
-from aigp.probe_response import build_schedule
+import numpy as np
+from aigp.probe_response import build_schedule, _tilt_deg
+
+
+def test_tilt_deg_level_and_inverted():
+    assert _tilt_deg([1.0, 0.0, 0.0, 0.0]) < 1e-6          # level -> 0 deg
+    # 180 deg roll about body-x: quat [0, 1, 0, 0]
+    assert abs(_tilt_deg([0.0, 1.0, 0.0, 0.0]) - 180.0) < 1e-6
+    # 90 deg roll about body-x: quat [cos45, sin45, 0, 0]
+    s = np.sqrt(0.5)
+    assert abs(_tilt_deg([s, s, 0.0, 0.0]) - 90.0) < 1e-4
 
 
 def test_schedule_segments_and_bounds():
