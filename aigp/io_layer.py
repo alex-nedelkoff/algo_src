@@ -67,6 +67,12 @@ class MavlinkIO:
                     omega=np.array([m.rollspeed, m.pitchspeed, m.yawspeed]),
                     t_us=m.time_usec,
                 ))
+            elif t == "HIGHRES_IMU":
+                self.store.set_imu(
+                    np.array([m.xacc, m.yacc, m.zacc]),
+                    np.array([m.xgyro, m.ygyro, m.zgyro]),
+                    m.time_usec,
+                )
             elif t == "DATA_TRANSMISSION_HANDSHAKE":
                 self._track_chunks[m.width] = {}
                 self._track_expected[m.width] = m.packets

@@ -66,7 +66,7 @@ def run_probe(store, commander, mav_conn, out_dir="sysid_dyn", run_id="dyn",
         for u in seg["commands"]:
             commander.send_motor_command(u)
             time.sleep(dt)
-            imu = mav_conn.recv_match(type="HIGHRES_IMU", blocking=False)
+            imu = store.get_imu()              # captured by io_layer (not a competing recv)
             ds = store.get_drone()
             if ds is None:
                 continue
@@ -76,8 +76,9 @@ def run_probe(store, commander, mav_conn, out_dir="sysid_dyn", run_id="dyn",
                    "quat_wxyz": [float(x) for x in ds.quat_wxyz],
                    "omega": [float(x) for x in ds.omega]}
             if imu is not None:
-                row["imu_acc"] = [float(imu.xacc), float(imu.yacc), float(imu.zacc)]
-                row["imu_gyro"] = [float(imu.xgyro), float(imu.ygyro), float(imu.zgyro)]
+                acc, gyro, _ = imu
+                row["imu_acc"] = [float(x) for x in acc]
+                row["imu_gyro"] = [float(x) for x in gyro]
             f.write(json.dumps(row) + "\n")
             f.flush()
     f.close()

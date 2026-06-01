@@ -27,6 +27,7 @@ class Store:
         self._frame_seq = 0
         self._gates = None
         self._race = None        # latest parsed race-status dict
+        self._imu = None         # (acc(3), gyro(3), t_us) from HIGHRES_IMU
 
     def set_drone(self, ds: DroneState) -> None:
         with self._lock:
@@ -73,3 +74,12 @@ class Store:
     def get_race_live(self) -> bool:
         with self._lock:
             return bool(self._race and self._race.get("race_live"))
+
+    def set_imu(self, acc, gyro, t_us) -> None:
+        with self._lock:
+            self._imu = (acc, gyro, t_us)
+
+    def get_imu(self):
+        """Returns (acc(3), gyro(3), t_us) or None."""
+        with self._lock:
+            return self._imu
