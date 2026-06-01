@@ -27,6 +27,18 @@ def test_below_setpoint_increases_thrust():
     assert thrust > 0.5
 
 
+def test_rate_gain_inverts_sign():
+    # with negative sim rate gain, the sent rate is flipped vs gain=+1
+    args = dict(pos=np.zeros(3), vel=np.zeros(3), quat=IDENT, omega=np.zeros(3),
+                pos_sp=np.array([5.0, 0, 0]), vel_sp=np.zeros(3), yaw_sp=0.0)
+    w_pos, _ = BodyRateController(0.23, 62.0, rate_gain=1.0).update(**args)
+    w_neg, _ = BodyRateController(0.23, 62.0, rate_gain=-1.93).update(**args)
+    # at least one axis has meaningful command, and the sign is opposite
+    i = int(np.argmax(np.abs(w_pos)))
+    assert abs(w_pos[i]) > 1e-6
+    assert np.sign(w_neg[i]) == -np.sign(w_pos[i])
+
+
 def test_rates_clamped():
     w, _ = _ctl().update(
         np.zeros(3), np.zeros(3), IDENT, np.zeros(3),
