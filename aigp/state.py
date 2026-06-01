@@ -26,6 +26,7 @@ class Store:
         self._frame = None       # (np.ndarray BGR, t_ns)
         self._frame_seq = 0
         self._gates = None
+        self._race = None        # latest parsed race-status dict
 
     def set_drone(self, ds: DroneState) -> None:
         with self._lock:
@@ -60,3 +61,15 @@ class Store:
     def get_gates(self):
         with self._lock:
             return self._gates
+
+    def set_race(self, race: dict) -> None:
+        with self._lock:
+            self._race = race
+
+    def get_race(self):
+        with self._lock:
+            return self._race
+
+    def get_race_live(self) -> bool:
+        with self._lock:
+            return bool(self._race and self._race.get("race_live"))

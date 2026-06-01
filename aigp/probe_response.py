@@ -50,16 +50,37 @@ def _tilt_deg(quat):
     return math.degrees(math.acos(max(-1.0, min(1.0, cos_tilt))))
 
 
-def run_probe(store, commander, out_dir="sysid", run_id="probe", dt=0.05, **kw):
-    sched = build_schedule(dt=dt, **kw)
+def run_probe(store, commander, out_dir="sysid", run_id="probe", dt=0.05,
+              hover_guess=0.5, reset_first=True, **kw):
+    """Run the excitation probe inside ONE live race.
+
+    Critical: the sim DQs + closes if we actuate during the countdown, so we
+    SIM_RESET (optional) then wait for the race to go live before sending any
+    command. No per-segment resets (each would re-enter a countdown). On
+    divergence we abort the whole probe (no reset)."""
+    from .race import wait_for_race_live
+    sched = build_schedule(dt=dt, hover_guess=hover_guess, **kw)
     root = Path(out_dir) / run_id
     root.mkdir(parents=True, exist_ok=True)
     f = open(root / "log.jsonl", "w")
+
+    if reset_first:
+        commander.sim_reset()              # passive command, safe; starts a countdown
+    if not wait_for_race_live(store, timeout=15.0):
+        f.close()
+        raise RuntimeError("race never went live (countdown) within timeout")
+
+    start = store.get_drone()
+    z0 = start.pos_ned[2] if start else 0.0
+    settle_n = max(1, int(0.5 / dt))
+    aborted = False
     for seg in sched:
-        commander.sim_reset()
-        time.sleep(1.0)                    # let the sim respawn
-        start = store.get_drone()
-        z0 = start.pos_ned[2] if start else 0.0
+        if aborted:
+            break
+        # settle at hover guess between segments (no reset)
+        for _ in range(settle_n):
+            commander.send_attitude_target([0.0, 0.0, 0.0], hover_guess)
+            time.sleep(dt)
         for cmd in seg["commands"]:
             commander.send_attitude_target(cmd["rates"], cmd["thrust"])
             time.sleep(dt)
@@ -67,7 +88,8 @@ def run_probe(store, commander, out_dir="sysid", run_id="probe", dt=0.05, **kw):
             if ds is None:
                 continue
             if _tilt_deg(ds.quat_wxyz) > TILT_ABORT_DEG or ds.pos_ned[2] - z0 > ALT_FLOOR_M:
-                break                      # safety: bail this segment
+                aborted = True             # safety: stop the whole probe
+                break
             f.write(json.dumps({
                 "segment": seg["name"], "t": time.time(),
                 "thrust_norm": cmd["thrust"], "cmd_rates": list(cmd["rates"]),
@@ -78,6 +100,6 @@ def run_probe(store, commander, out_dir="sysid", run_id="probe", dt=0.05, **kw):
             }) + "\n")
             f.flush()
     f.close()
-    commander.sim_reset()
-    print(f"probe log at {root/'log.jsonl'}", flush=True)
+    print(f"probe log at {root/'log.jsonl'}{' (ABORTED on divergence)' if aborted else ''}",
+          flush=True)
     return str(root / "log.jsonl")

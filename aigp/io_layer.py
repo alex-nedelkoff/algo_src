@@ -21,10 +21,12 @@ VISION_PORT = 5600
 
 
 class MavlinkIO:
-    def __init__(self, store: Store, host: str = "0.0.0.0", port: int = 14550):
+    def __init__(self, store: Store, host: str = "0.0.0.0", port: int = 14550,
+                 send_timesync: bool = False):
         self.store = store
         self.conn = mavutil.mavlink_connection(f"udpin:{host}:{port}")
         self._stop = threading.Event()
+        self._send_timesync = send_timesync
         self._rx = threading.Thread(target=self._rx_loop, daemon=True)
         self._ts = threading.Thread(target=self._ts_loop, daemon=True)
         self._track_chunks: dict[int, dict[int, bytes]] = {}
@@ -34,8 +36,11 @@ class MavlinkIO:
         return self.conn.wait_heartbeat(timeout=timeout)
 
     def start(self):
+        # Receive-only by default: sending anything (incl. timesync) during the
+        # pre-race countdown can DQ + close the sim. Telemetry flows without it.
         self._rx.start()
-        self._ts.start()
+        if self._send_timesync:
+            self._ts.start()
 
     def stop(self):
         self._stop.set()
@@ -72,7 +77,9 @@ class MavlinkIO:
             return
         dtype = raw[0]
         if dtype == ENCAP_RACE_STATUS:
-            self.store.set_gate_idx(parse_race_status(raw)["active_gate_index"])
+            rs = parse_race_status(raw)
+            self.store.set_gate_idx(rs["active_gate_index"])
+            self.store.set_race(rs)
         elif dtype == ENCAP_TRACK_INFO:
             import struct
             _, tid = struct.unpack_from("<BH", raw)

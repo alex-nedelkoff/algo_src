@@ -47,6 +47,12 @@ def parse_track_payload(payload: bytes) -> list[Gate]:
     return gates
 
 
+def is_race_live(boot_ms: int, start_ms: int) -> bool:
+    """Race is LIVE (safe to actuate) once the sim clock passes the scheduled
+    start. start_ms >= 0 alone only means the start is *scheduled* (countdown)."""
+    return start_ms >= 0 and boot_ms >= start_ms
+
+
 def parse_race_status(raw: bytes) -> dict:
     """ENCAPSULATED_DATA (type 1) -> race status dict."""
     _, boot_ms, start_ms, finish_ns, gate_idx, last_t = struct.unpack_from(_RACE_FMT, raw, 0)
@@ -54,6 +60,7 @@ def parse_race_status(raw: bytes) -> dict:
         "boot_ms": boot_ms,
         "active_gate_index": int(gate_idx),
         "race_started": start_ms >= 0,
+        "race_live": is_race_live(boot_ms, start_ms),
         "race_start_ms": start_ms,
         "race_finish_ns": finish_ns,
         "last_gate_time": last_t,

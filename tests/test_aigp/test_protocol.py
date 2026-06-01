@@ -32,6 +32,7 @@ def test_parse_race_status():
     rs = parse_race_status(raw)
     assert rs["active_gate_index"] == 3
     assert rs["race_started"] is True   # start_ms >= 0
+    assert rs["race_live"] is True      # boot_ms 1000 >= start_ms 500
     assert rs["last_gate_time"] == -1
 
 
@@ -39,6 +40,14 @@ def test_parse_race_status_not_started():
     raw = struct.pack("<BQqqIq", ENCAP_RACE_STATUS, 1000, -1, -1, 0, -1)
     rs = parse_race_status(raw)
     assert rs["race_started"] is False
+    assert rs["race_live"] is False
+
+
+def test_is_race_live():
+    from aigp.protocol import is_race_live
+    assert is_race_live(boot_ms=4000, start_ms=3298) is True   # past countdown
+    assert is_race_live(boot_ms=342, start_ms=3298) is False   # mid countdown (scheduled, not live)
+    assert is_race_live(boot_ms=6, start_ms=-1) is False       # not scheduled yet
 
 
 from aigp.protocol import JpegReassembler
