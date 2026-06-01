@@ -66,3 +66,39 @@ def test_body_rate_cmd_clamps():
     R_des = _Rx(1.0)
     w = body_rate_cmd(np.eye(3), R_des, kp_att=50.0, max_rate=2.0)
     assert np.all(np.abs(w) <= 2.0 + 1e-9)
+
+
+from aigp.control_math import mat_to_quat, attitude_error_quat
+from aigp.geometry import quat_to_R
+
+
+def test_mat_to_quat_roundtrip():
+    for q in [np.array([1.0, 0, 0, 0]), np.array([0.5, 0.5, 0.5, 0.5]),
+              np.array([0.0, 0.0, 0.0, 1.0])]:
+        q = q / np.linalg.norm(q)
+        R = quat_to_R(q)
+        q2 = mat_to_quat(R)
+        if q2[0] * q[0] < 0:
+            q2 = -q2
+        assert np.allclose(q2, q, atol=1e-6)
+
+
+def test_attitude_error_quat_zero_when_aligned():
+    q = np.array([0.5, 0.5, 0.5, 0.5]); q = q / np.linalg.norm(q)
+    assert np.allclose(attitude_error_quat(q, q), 0.0, atol=1e-9)
+
+
+def test_attitude_error_quat_small_roll_sign():
+    qc = np.array([1.0, 0, 0, 0])
+    qd = np.array([np.cos(0.1), np.sin(0.1), 0, 0])   # +0.2 rad roll
+    e = attitude_error_quat(qc, qd)
+    assert e[0] > 0 and abs(e[1]) < 1e-9 and abs(e[2]) < 1e-9
+    assert np.isclose(e[0], 0.2, atol=1e-3)
+
+
+def test_attitude_error_quat_robust_at_180():
+    # 180 deg yaw error must NOT collapse to zero (the vee-formula singularity)
+    qc = np.array([1.0, 0, 0, 0])
+    qd = np.array([0.0, 0, 0, 1.0])   # 180 deg about z
+    e = attitude_error_quat(qc, qd)
+    assert np.linalg.norm(e) > 1.0

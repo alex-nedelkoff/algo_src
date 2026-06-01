@@ -4,15 +4,14 @@ from __future__ import annotations
 import numpy as np
 
 from .control_math import (
-    G, accel_to_thrust_norm, body_rate_cmd, collective_accel,
-    desired_accel, desired_attitude,
+    G, accel_to_thrust_norm, attitude_error_quat, collective_accel,
+    desired_accel, desired_attitude, mat_to_quat,
 )
-from .geometry import quat_to_R
 
 
 class BodyRateController:
-    def __init__(self, hover_thrust, k_a, kp_pos=(6, 6, 6), kd_pos=(4, 4, 4),
-                 kp_att=8.0, max_rate=4.0, rate_gain=1.0, g=G):
+    def __init__(self, hover_thrust, k_a, kp_pos=(2, 2, 2), kd_pos=(3, 3, 3),
+                 kp_att=4.0, max_rate=3.0, rate_gain=1.0, g=G):
         self.hover_thrust = hover_thrust
         self.k_a = k_a
         self.kp_pos = np.asarray(kp_pos, float)
@@ -30,8 +29,9 @@ class BodyRateController:
         a_des = desired_accel(pos, vel, pos_sp, vel_sp, self.kp_pos, self.kd_pos)
         c = collective_accel(a_des, quat, self.g)
         thrust = accel_to_thrust_norm(c, self.hover_thrust, self.k_a, self.g)
-        R_cur = quat_to_R(quat)
         R_des = desired_attitude(a_des, yaw_sp, self.g)
-        w = body_rate_cmd(R_cur, R_des, self.kp_att) / self.rate_gain
+        q_des = mat_to_quat(R_des)
+        e = attitude_error_quat(quat, q_des)        # body-frame rotation cur->des (robust thru 180)
+        w = (self.kp_att * e) / self.rate_gain
         w = np.clip(w, -self.max_rate, self.max_rate)
         return w, thrust
