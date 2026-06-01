@@ -49,6 +49,16 @@ def test_orbit_holds_altitude():
     assert sp.vz < 0.0
 
 
+def test_orbit_clamps_speed_when_far():
+    gate = np.array([0.0, 0.0, 0.0])
+    drone = np.array([50.0, 0.0, 5.0])  # 50 m away horizontally, 5 m off altitude
+    sp = OrbitPattern(radius=4.0, speed=2.0, target_z=0.0, max_speed=5.0).update(
+        drone, np.zeros(3), gate
+    )
+    assert np.linalg.norm([sp.vx, sp.vy]) <= 5.0 + 1e-6
+    assert abs(sp.vz) <= 5.0 + 1e-6
+
+
 from aigp.guidance import ApproachPattern
 
 

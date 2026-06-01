@@ -23,12 +23,14 @@ def yaw_to_target(drone_pos_ned, target_pos_ned) -> float:
 class OrbitPattern:
     """Circle the gate at a fixed radius/height, yaw locked on the gate."""
 
-    def __init__(self, radius=4.0, speed=2.0, target_z=-2.0, kp_radius=1.0, kp_z=1.0):
+    def __init__(self, radius=4.0, speed=2.0, target_z=-2.0, kp_radius=1.0, kp_z=1.0,
+                 max_speed=None):
         self.radius = radius
         self.speed = speed
         self.target_z = target_z
         self.kp_radius = kp_radius
         self.kp_z = kp_z
+        self.max_speed = max_speed  # cap on |horizontal| and |vertical| velocity
 
     def update(self, drone_pos_ned, drone_vel_ned, gate_pos_ned) -> Setpoint:
         rel = np.asarray(drone_pos_ned)[:2] - np.asarray(gate_pos_ned)[:2]  # (N,E)
@@ -38,6 +40,11 @@ class OrbitPattern:
         radius_err = self.radius - dist  # >0 means too close -> push outward (+radial)
         v_h = tangential * self.speed + radial * self.kp_radius * radius_err
         vz = self.kp_z * (self.target_z - drone_pos_ned[2])
+        if self.max_speed is not None:
+            h_mag = float(np.linalg.norm(v_h))
+            if h_mag > self.max_speed:
+                v_h = v_h / h_mag * self.max_speed
+            vz = float(np.clip(vz, -self.max_speed, self.max_speed))
         yaw = yaw_to_target(drone_pos_ned, gate_pos_ned)
         return Setpoint(float(v_h[0]), float(v_h[1]), float(vz), yaw)
 
