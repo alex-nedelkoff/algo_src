@@ -96,3 +96,15 @@ def test_fit_from_log_thrust():
     out = fit_from_log(samples, n_motors=4)
     assert out["power"] == 2
     assert np.isclose(out["c_T"], 6.0, atol=0.3)
+
+
+def test_fit_from_log_detects_swapped_axis():
+    # diff_roll mix produces response only on body gyro axis 2 (the swap)
+    samples = []
+    t = 0.0
+    for k in range(8):
+        samples.append({"segment": "diff_roll", "t": t, "u": [0.3, 0.4, 0.4, 0.3],
+                        "imu_gyro": [0.0, 0.0, float(k)], "imu_acc": [0, 0, -9]})
+        t += 0.01
+    out = fit_from_log(samples, n_motors=4)
+    assert out["c_L_axis"] == 2

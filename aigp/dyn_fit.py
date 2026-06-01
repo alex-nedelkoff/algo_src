@@ -90,6 +90,8 @@ def fit_from_log(samples, n_motors=4) -> dict:
         out["c_T"] = c_T
 
     power = out.get("power", 2)
+    # The sim's body frame is permuted vs our motor-mix naming (roll<->yaw swap),
+    # so fit each mix against the body axis it ACTUALLY drives (max gyro response).
     for ax, key in (("roll", "c_L"), ("pitch", "c_M"), ("yaw", "c_N")):
         seg = [s for s in samples if s["segment"] == f"diff_{ax}" and "imu_gyro" in s]
         if len(seg) < 3:
@@ -97,9 +99,10 @@ def fit_from_log(samples, n_motors=4) -> dict:
         t = np.array([s["t"] for s in seg])
         gyro = np.array([s["imu_gyro"] for s in seg])
         aa = angular_accel(t, gyro)
-        axis_idx = {"roll": 0, "pitch": 1, "yaw": 2}[ax]
+        dom = int(np.argmax(np.ptp(gyro, axis=0)))   # body axis this mix drives
         u = np.array([s["u"][:n_motors] for s in seg], float)
         reg = (u ** power) @ _MIX_ROWS[ax][:n_motors]
-        out[key] = fit_axis_torque(reg, aa[:, axis_idx])
+        out[key] = fit_axis_torque(reg, aa[:, dom])
+        out[key + "_axis"] = dom
 
     return out
