@@ -65,6 +65,20 @@ class Commander:
             [float(q_wxyz[0]), float(q_wxyz[1]), float(q_wxyz[2]), float(q_wxyz[3])],
             0.0, 0.0, 0.0, float(np.clip(thrust_norm, 0.0, 1.0)))
 
+    def send_motor_command(self, controls):
+        """Direct motor/actuator command via SET_ACTUATOR_CONTROL_TARGET (group 0).
+        `controls` is up to 8 normalized values [0,1]; padded to 8, clipped.
+        Bypasses the sim inner controllers (for open-loop dynamics sysID).
+        Actuate only after the race is live."""
+        u = np.zeros(8, dtype=float)
+        c = np.asarray(controls, float).ravel()
+        n = min(8, c.shape[0])
+        u[:n] = np.clip(c[:n], 0.0, 1.0)
+        self.conn.mav.set_actuator_control_target_send(
+            int(time.time() * 1e6), 0,   # time_usec, group_mlx=0
+            self.conn.target_system, self.conn.target_component,
+            u.tolist())
+
     def send_attitude_target(self, body_rates, thrust_norm):
         """Body-rate setpoint + normalized thrust via SET_ATTITUDE_TARGET (rate mode).
         NOTE: the AI-GP sim's rate loop is explosive/nonlinear — prefer
