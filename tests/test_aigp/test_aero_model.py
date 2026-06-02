@@ -19,12 +19,13 @@ def test_force_features_are_linear_in_theta():
 
 
 def test_moment_features_damping_and_weathervane():
-    v = np.array([5.0, 0.0, 0.0]); w = np.array([0.0, 0.0, 0.3])
+    v = np.array([3.0, 2.0, 0.0]); w = np.array([0.0, 0.0, 0.3])
     phi = moment_features(v, w)
     assert phi.shape == (3, len(MOMENT_COLS))
-    idw = MOMENT_COLS.index("d_z")
-    assert np.isclose(phi[2, idw], -0.3)
-    assert "w_x" in MOMENT_COLS and "w_z" in MOMENT_COLS
+    assert np.isclose(phi[2, MOMENT_COLS.index("d_z")], -0.3)          # yaw damping
+    assert np.isclose(phi[0, MOMENT_COLS.index("wv_x")], 2.0)         # roll <- v_y
+    assert np.isclose(phi[1, MOMENT_COLS.index("wv_y")], 3.0)         # pitch <- v_x
+    assert np.isclose(phi[2, MOMENT_COLS.index("wv_z")], 3.0)         # yaw <- v_x
 
 
 def test_predict_roundtrip():
