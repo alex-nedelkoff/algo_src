@@ -28,6 +28,7 @@ class Store:
         self._gates = None
         self._race = None        # latest parsed race-status dict
         self._imu = None         # (acc(3), gyro(3), t_us) from HIGHRES_IMU
+        self._act = None         # (outputs(4), t_us) from ACTUATOR_OUTPUT_STATUS (motors, normalized [0,1])
 
     def set_drone(self, ds: DroneState) -> None:
         with self._lock:
@@ -83,3 +84,12 @@ class Store:
         """Returns (acc(3), gyro(3), t_us) or None."""
         with self._lock:
             return self._imu
+
+    def set_actuators(self, outputs, t_us) -> None:
+        with self._lock:
+            self._act = (outputs, t_us)
+
+    def get_actuators(self):
+        """Returns (outputs(4), t_us) or None. Motors, normalized [0,1]."""
+        with self._lock:
+            return self._act

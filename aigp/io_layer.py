@@ -73,6 +73,9 @@ class MavlinkIO:
                     np.array([m.xgyro, m.ygyro, m.zgyro]),
                     m.time_usec,
                 )
+            elif t == "ACTUATOR_OUTPUT_STATUS":
+                # 4 motors on channels 0-3, normalized [0,1] (idle ~0.05, hover ~0.23)
+                self.store.set_actuators(np.array(m.actuator[:4], dtype=float), m.time_usec)
             elif t == "DATA_TRANSMISSION_HANDSHAKE":
                 self._track_chunks[m.width] = {}
                 self._track_expected[m.width] = m.packets
