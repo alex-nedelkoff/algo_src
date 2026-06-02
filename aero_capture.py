@@ -231,6 +231,34 @@ def run_doublet(axis, speed, amp=2.0, direction="back"):
     print(f"\nSAVED {path}  rows={len(df)}", flush=True)
 
 
+def run_weave(v_fwd, v_lat, period=4.0, dur=16.0):
+    """Powered lemniscate-style weave, FIXED heading: net-forward toward the course (tail-first) with a
+    lateral velocity sinusoid -> sweeps body-y velocity (sideslip) while netting toward open space.
+    Horizontal aero force a_aero_x/y = f_body_x/y is thrust-INDEPENDENT, so this gives clean D_x AND D_y."""
+    ds0, yaw0, z_sp = setup()
+    fwd = heading_vec(yaw0, "fwd"); lat = heading_vec(yaw0, "right")
+    lg = Logger(); t0 = time.time(); last = -1
+    while time.time() - t0 < dur:
+        tau = time.time() - t0
+        vsp = v_fwd * fwd + v_lat * np.sin(2 * np.pi * tau / period) * lat
+        ds = s.get_drone(); imu = s.get_imu()
+        if ds is not None and imu is not None:
+            wcmd, thr, ta, tilt = control(ds, vsp, z_sp, yaw0)
+            c.send_attitude_target(wcmd, thr)
+            lg.log(tau, ds, imu, ta, coast=False)
+            if tilt > ABORT_TILT:
+                print(f"ABORT tilt={tilt:.0f}", flush=True); break
+            k = int(tau / 2.0)
+            if k != last:
+                last = k
+                R = quat_to_R(ds.quat_wxyz); vby = float((R.T @ ds.vel_ned)[1])
+                print(f"t={tau:4.1f} spd={np.linalg.norm(ds.vel_ned[:2]):4.1f} v_body_y={vby:+4.1f} "
+                      f"tilt={tilt:3.0f}", flush=True)
+        time.sleep(LOOP_DT)
+    path, df = lg.save("weave")
+    print(f"\nSAVED {path}  rows={len(df)}", flush=True)
+
+
 def run_tumble(axis, speed, direction="back", spin_amp=4.0, free_s=1.2):
     ds0, yaw0, z_sp = setup()
     hat = heading_vec(yaw0, direction); lg = Logger()
@@ -277,5 +305,8 @@ if __name__ == "__main__":
         run_tumble(sys.argv[2], float(sys.argv[3]),
                    sys.argv[4] if len(sys.argv) > 4 else "back",
                    spin_amp=float(sys.argv[5]) if len(sys.argv) > 5 else 4.0)
+    elif man == "weave":
+        run_weave(float(sys.argv[2]), float(sys.argv[3]),
+                  float(sys.argv[4]) if len(sys.argv) > 4 else 4.0)
     else:
         print(f"unknown maneuver {man}"); sys.exit(1)
