@@ -70,17 +70,22 @@ def fresh_start():
 
 class Logger:
     COLS = ["t", "vx", "vy", "vz", "qw", "qx", "qy", "qz", "wx", "wy", "wz",
-            "fx", "fy", "fz", "thrust_accel", "coast"]
+            "fx", "fy", "fz", "thrust_accel", "coast",
+            "u0", "u1", "u2", "u3", "wcx", "wcy", "wcz", "thr_cmd"]  # motors + control effort
 
     def __init__(self):
         self.rows = []
 
-    def log(self, t, ds, imu, thrust_accel, coast):
+    def log(self, t, ds, imu, thrust_accel, coast, wcmd=None, thr_cmd=0.0):
         acc, gyro, _ = imu
         q = ds.quat_wxyz; v = ds.vel_ned
+        a = s.get_actuators(); u = a[0] if a is not None else np.zeros(4)   # ACTUATOR_OUTPUT_STATUS
+        w = np.zeros(3) if wcmd is None else np.asarray(wcmd, float)
         self.rows.append([t, v[0], v[1], v[2], q[0], q[1], q[2], q[3],
                           gyro[0], gyro[1], gyro[2], acc[0], acc[1], acc[2],
-                          float(max(0.0, thrust_accel)), bool(coast)])  # actual collective >= 0
+                          float(max(0.0, thrust_accel)), bool(coast),    # actual collective >= 0
+                          float(u[0]), float(u[1]), float(u[2]), float(u[3]),
+                          float(w[0]), float(w[1]), float(w[2]), float(thr_cmd)])
 
     def save(self, maneuver):
         import pandas as pd
@@ -101,15 +106,23 @@ class Logger:
         return path, df
 
 
-def control(ds, vel_sp_world, z_sp, yaw0, extra_w=None):
+def control(ds, vel_sp_world, z_sp, yaw0, extra_w=None, tilt_acc=TILT_MAX_ACC,
+            al_dir=None, al_max=None):
     """Compute (wcmd, thr, thrust_accel, tilt) to track a world-velocity setpoint at fixed heading.
-    extra_w: optional additive body-rate command (rad/s) for doublet injection."""
+    extra_w: optional additive body-rate command (rad/s) for doublet injection.
+    tilt_acc: cap on commanded horizontal accel (governor passes a tighter value).
+    al_dir/al_max: cap the ACCELERATION along al_dir to al_max (allow strong decel) — the race_cruise
+    forward-accel cap that keeps tail-first flight under the weathervane runaway threshold."""
     a = np.zeros(3)
     a[:2] = KD_AL * (vel_sp_world[:2] - ds.vel_ned[:2])
     a[2] = KP_Z * (z_sp - ds.pos_ned[2]) + KD_Z * (vel_sp_world[2] - ds.vel_ned[2])
+    if al_max is not None and al_dir is not None:
+        hat = np.asarray(al_dir, float)[:2]; hat = hat / (np.linalg.norm(hat) + 1e-9)
+        a_al = float(a[:2] @ hat)
+        a[:2] = a[:2] + (np.clip(a_al, -4.0, al_max) - a_al) * hat   # cap accel, allow decel
     ah = a[:2]; n = float(np.linalg.norm(ah))
-    if n > TILT_MAX_ACC:
-        a[:2] = ah / n * TILT_MAX_ACC
+    if n > tilt_acc:
+        a[:2] = ah / n * tilt_acc
     Rc = quat_to_R(ds.quat_wxyz); yaw_cur = float(np.arctan2(Rc[1, 0], Rc[0, 0]))
     q_des = mat_to_quat(desired_attitude(a, yaw_cur))
     w_des = KP_ATT * attitude_error_quat(ds.quat_wxyz, q_des)
@@ -326,6 +339,76 @@ def run_tumble(axis, speed, direction="back", spin_amp=4.0, free_s=1.2):
     print(f"\nSAVED {path}  rows={len(df)} n_coast={int(df['coast'].sum())} peak_|w|={pw:.1f} rad/s", flush=True)
 
 
+class ReferenceGovernor:
+    """Envelope protection for closed-loop ID: cap the velocity-setpoint magnitude and slew rate so
+    excitation can't trigger the speed overshoot / tilt-spike / divergence seen with open-loop circles.
+    (The tilt cap is applied separately via control(tilt_acc=...).)"""
+    def __init__(self, max_speed=4.0, max_slew=2.0):
+        self.max_speed = max_speed; self.max_slew = max_slew; self.prev = np.zeros(3)
+
+    def govern(self, vsp_raw, dt):
+        v = np.asarray(vsp_raw, float).copy()
+        sp = float(np.linalg.norm(v[:2]))
+        if sp > self.max_speed:
+            v[:2] = v[:2] / sp * self.max_speed
+        dv = v - self.prev; n = float(np.linalg.norm(dv))
+        if n > self.max_slew * dt:
+            dv = dv / n * self.max_slew * dt
+        v = self.prev + dv; self.prev = v
+        return v
+
+
+def run_doublet211(axis, trim_speed, amp, dwell=0.5):
+    """Closed-loop ID excitation: hold a modest fwd (toward-course) trim under the reference governor,
+    then inject a 2-1-1 multistep (signs +,-,+ with durations 2d,d,d) on the lateral-velocity ('lat')
+    or yaw-rate ('yaw') channel. Stays near trim -> safe on the weathervane-unstable platform. Logs the
+    measured motor outputs + commanded effort so tau_motor can be reconstructed offline."""
+    ds0, yaw0, z_sp = setup()
+    fwd = heading_vec(yaw0, "fwd"); lat = heading_vec(yaw0, "right")
+    gov = ReferenceGovernor(max_speed=max(trim_speed + 1.5, 3.0))
+    tilt_acc = np.tan(np.radians(18.0)) * 9.81
+    settle = 4.0
+    segs = [(+1, 2 * dwell), (-1, 1 * dwell), (+1, 1 * dwell)]
+    total = settle + sum(d for _, d in segs) + 2.5
+
+    def seg_sign(te):
+        acc = settle
+        for sgn, dur in segs:
+            if te < acc + dur:
+                return sgn
+            acc += dur
+        return 0
+
+    lg = Logger(); t0 = time.time(); last = -1
+    while time.time() - t0 < total:
+        tau = time.time() - t0; sgn = seg_sign(tau)
+        ds = s.get_drone(); imu = s.get_imu()
+        if ds is not None and imu is not None:
+            vsp = gov.govern(trim_speed * fwd, LOOP_DT)   # gently-ramped trim (no overshoot)
+            extra = None
+            if axis == "lat":
+                vsp = vsp + sgn * amp * lat                # sharp lateral doublet ON TOP (not slewed)
+            elif axis == "yaw":
+                extra = np.zeros(3); extra[2] = sgn * amp
+            wcmd, thr, ta, tilt = control(ds, vsp, z_sp, yaw0, extra_w=extra, tilt_acc=tilt_acc,
+                                          al_dir=fwd, al_max=0.6)   # cap forward accel (anti-runaway)
+            c.send_attitude_target(wcmd, thr)
+            lg.log(tau, ds, imu, ta, coast=False, wcmd=wcmd, thr_cmd=thr)
+            if tilt > ABORT_TILT:
+                print(f"ABORT tilt={tilt:.0f}", flush=True); break
+            k = int(tau / 2.0)
+            if k != last:
+                last = k
+                R = quat_to_R(ds.quat_wxyz); vb = R.T @ ds.vel_ned
+                a = s.get_actuators(); u = a[0] if a else np.zeros(4)
+                print(f"t={tau:4.1f} seg={sgn:+d} v_body=({vb[0]:+4.1f},{vb[1]:+4.1f}) "
+                      f"spd={np.linalg.norm(ds.vel_ned[:2]):4.1f} tilt={tilt:3.0f} "
+                      f"u=[{u[0]:.2f},{u[1]:.2f},{u[2]:.2f},{u[3]:.2f}]", flush=True)
+        time.sleep(LOOP_DT)
+    path, df = lg.save(f"d211_{axis}")
+    print(f"\nSAVED {path}  rows={len(df)} cols={len(df.columns)}", flush=True)
+
+
 if __name__ == "__main__":
     man = sys.argv[1]
     if man == "sweep":
@@ -345,5 +428,8 @@ if __name__ == "__main__":
                   float(sys.argv[4]) if len(sys.argv) > 4 else 4.0)
     elif man == "circle":
         run_circle(float(sys.argv[2]), float(sys.argv[3]))
+    elif man == "doublet211":
+        run_doublet211(sys.argv[2], float(sys.argv[3]), float(sys.argv[4]),
+                       float(sys.argv[5]) if len(sys.argv) > 5 else 0.5)
     else:
         print(f"unknown maneuver {man}"); sys.exit(1)
