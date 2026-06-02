@@ -132,3 +132,11 @@
 - Live verify (hover/roll/yaw): hover `u≈[0.264,0.264,0.269,0.269]` (~hover_thrust); roll input → `[0.08,0.31,0.08,0.11]`; yaw input → `[0.44,0.60,0.46,0.46]`. **Differential clearly observable** ⇒ `τ_motor` reconstruction feasible.
 - Motor-layout hint for T2 mixer: a +roll command raised **motor 1** and lowered **0 & 2** (3 mid); yaw raised **motor 1** most → use these signatures to pin the quad-X mixer sign pattern during T2 calibration.
 - Wired `io_layer.py` (`ACTUATOR_OUTPUT_STATUS` handler) + `state.py` (`set_actuators`/`get_actuators`). Next: **T1** (reference governor + 2-1-1 excitation + actuator/effort logging).
+
+---
+### T1 — DONE (2026-06-02), commit `c8c3f8d`
+- `ReferenceGovernor` (velocity-setpoint speed cap + slew-rate, ramp from rest) + a **forward-accel cap** added to `control(al_dir,al_max)` — the latter is the race_cruise anti-runaway fix and was **essential**: without it the fwd (tail-first) trim ran away to 6.6 m/s and tumbled (tilt 99°). With it, the smoke held **speed ~2–3 m/s, tilt ≤27°, no divergence**.
+- `doublet211 <lat|yaw> <trim_speed> <amp> [dwell]`: governed fwd trim, 2-1-1 multistep (signs +,−,+, durations 2d,d,d) on the lateral-velocity or yaw-rate channel; doublet added ON TOP of the governed trim (sharp, not slewed).
+- `Logger` now logs **24 cols**: + `u0..u3` (motor outputs from `get_actuators()`), `wcx,wcy,wcz` (commanded body-rate effort), `thr_cmd`. All existing maneuvers keep working (new cols default to actuators+zeros).
+- Verified: actuators vary during the doublet; yaw effort `wcz` ±0.28 (controller countering sideslip = the weathervane signal). **But lateral excitation was modest (`v_body_y`~1.2 m/s)** with dwell=0.5 — **T6 must tune dwell/amp/trim up** for stronger sideslip + weathervane signal.
+- Next: **T2** motor+mixer model + calibration (use the T0 motor-layout hint: +roll raised motor 1, lowered 0&2).
