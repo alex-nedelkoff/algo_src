@@ -623,3 +623,13 @@ git commit -m "feat(aero): collect/fit/validate orchestration + identified sim_a
 - **Forces at high speed**: add the `k_h·v_h²` thrust term and/or a **BEM anchor** (NeuroBEM hybrid); the empirical droop term alone under-predicts >15% at race speed.
 - **Residual**: temporal-window features (history of v, ω, commanded thrust/torque), TCN over MLP, 70/20/10 split with full-envelope coverage, regularized to avoid unstable feedback.
 - **Data split discipline**: held-out *runs* (not random samples) covering the speed/direction envelope.
+
+### Phase 2 update (2026-06-02 eve) — `D_y` is control-gated; use closed-loop ID
+Tried `D_y` three ways in-sim, all failed: diagonal coast (bluff-body non-diagonal force), powered weave (phase/lever-arm artifact → spurious *negative* d_y), and a steady fixed-heading circle (controller can't track it — speed overshoots, tilt spikes ~58°, drift 30 m). **Root cause: lateral-drag ID is gated on lateral-flight control, which is blocked by the very weathervane we're trying to measure** (chicken-and-egg). By-product findings: quasi-steady `D_x`≈0.56 corroborates coast 0.52; powered-transient `D_x`≈0.34 < coast → linear drag is **thrust/operating-point dependent**.
+
+**Resolution (NotebookLM):** don't fly open-loop ID trajectories — use **closed-loop ID**, the control effort IS the measurement.
+- **Reference governor**: clamp velocity-setpoint rate + commanded tilt to the controller's stability/motor envelope so excitation can't trigger the overshoot/tilt-spike/divergence seen above.
+- **Excitation**: **2-1-1 lateral/yaw doublets near trim** (agile-aircraft standard; stays in trim) instead of large sideslip excursions.
+- **Estimator**: **Nelder-Mead minimizing orientation error over short transient rollouts**, correlating IMU specific force + **commanded control moments** (the yaw/pitch moment the controller applies to hold heading against the weathervane = CP-migration moment = direct function of lateral aero). NOT steady-state regression.
+- Add **motor speeds** if the sim exposes them (thrust-coupled drag) + IMU lever-arm correction `a_CG = a_IMU − ω×(ω×r) − ω̇×r`. Crazyflow fits such models in <4 min of flight.
+- This unifies `D_y` AND the weathervane-moment ID into one closed-loop campaign — and it's the same machinery the team needs to fix the control problem itself.
