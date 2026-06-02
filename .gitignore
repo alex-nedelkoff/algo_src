@@ -21,3 +21,4 @@ outputs/
 .claude/worktrees/
 carwelding_depth_left.zip
 dataset/
+aero_data/ 
