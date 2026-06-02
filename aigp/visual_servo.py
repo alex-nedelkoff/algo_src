@@ -21,8 +21,8 @@ class ServoCfg:
     k_yaw: float = 0.8       # rad per unit ex (horizontal bearing)
     k_alt: float = 6.0       # m per unit ey (z-setpoint nudge)
     fwd_speed: float = 1.8   # m/s along camera heading (capped, weathervane-safe)
-    sign_x: float = 1.0      # pinned in bring-up
-    sign_y: float = 1.0
+    sign_x: float = -1.0     # pinned: +8deg yaw -> gate +113px right, so correct a right gate with -yaw
+    sign_y: float = 1.0      # confirm in flight (descend when gate below center)
     max_dz: float = 4.0      # clamp; just above in-frame max (k_alt*0.5625 ≈ 3.4 m)
     coast_frac: float = 0.5  # forward-speed fraction when gate momentarily lost
 
