@@ -14,6 +14,9 @@ Usage: python aero_capture.py <maneuver> [args...]
   coast <entry_speed> [dir=back|fwd]  build to entry_speed, cut thrust, log ~0.6s decel/twist
                                       (clean aero force: thrust=0 -> specific force == aero/m)
   doublet <axis r|p|y> <speed> [amp]  reach speed, inject +/- body-rate doublet (damping + control)
+  tumble  <axis r|p|y> <speed> [dir]  build speed, pulse a body rate, then CUT MOTORS and log the
+                                      free rotational+translational decay (clean damping+weathervane:
+                                      motor torque = 0, so I*dw/dt = tau_aero - w x (I w))
 """
 import sys, csv, json, time, os
 import numpy as np
@@ -77,7 +80,7 @@ class Logger:
         q = ds.quat_wxyz; v = ds.vel_ned
         self.rows.append([t, v[0], v[1], v[2], q[0], q[1], q[2], q[3],
                           gyro[0], gyro[1], gyro[2], acc[0], acc[1], acc[2],
-                          float(thrust_accel), bool(coast)])
+                          float(max(0.0, thrust_accel)), bool(coast)])  # actual collective >= 0
 
     def save(self, maneuver):
         import pandas as pd
@@ -220,6 +223,38 @@ def run_doublet(axis, speed, amp=2.0, direction="back"):
     print(f"\nSAVED {path}  rows={len(df)}", flush=True)
 
 
+def run_tumble(axis, speed, direction="back", spin_amp=4.0, free_s=1.2):
+    ds0, yaw0, z_sp = setup()
+    hat = heading_vec(yaw0, direction); lg = Logger()
+    ax = {"r": 0, "p": 1, "y": 2}[axis]
+    t0 = time.time()
+    while time.time() - t0 < 10.0:                       # phase 1: build speed (powered)
+        tau = time.time() - t0; ds = s.get_drone(); imu = s.get_imu()
+        if ds is not None and imu is not None:
+            wcmd, thr, ta, tilt = control(ds, speed * hat, z_sp, yaw0)
+            c.send_attitude_target(wcmd, thr); lg.log(tau, ds, imu, ta, coast=False)
+            if np.linalg.norm(ds.vel_ned[:2]) >= 0.9 * speed and tau > 4.0:
+                break
+        time.sleep(LOOP_DT)
+    ts = time.time()                                     # phase 2: spin-up pulse (powered, brief)
+    while time.time() - ts < 0.3:
+        tau = time.time() - t0; ds = s.get_drone(); imu = s.get_imu()
+        if ds is not None and imu is not None:
+            extra = np.zeros(3); extra[ax] = spin_amp
+            wcmd, thr, ta, tilt = control(ds, speed * hat, z_sp, yaw0, extra_w=extra)
+            c.send_attitude_target(wcmd, thr); lg.log(tau, ds, imu, ta, coast=False)
+        time.sleep(LOOP_DT)
+    tc = time.time()                                     # phase 3: MOTORS OFF, log free decay (coast)
+    while time.time() - tc < free_s:
+        tau = time.time() - t0; ds = s.get_drone(); imu = s.get_imu()
+        if ds is not None and imu is not None:
+            idle(); lg.log(tau, ds, imu, 0.0, coast=True)
+        time.sleep(LOOP_DT)
+    path, df = lg.save(f"tumble_{axis}")
+    pw = np.abs(df[["wx", "wy", "wz"]].to_numpy()).max() if len(df) else 0.0
+    print(f"\nSAVED {path}  rows={len(df)} n_coast={int(df['coast'].sum())} peak_|w|={pw:.1f} rad/s", flush=True)
+
+
 if __name__ == "__main__":
     man = sys.argv[1]
     if man == "sweep":
@@ -230,5 +265,8 @@ if __name__ == "__main__":
     elif man == "doublet":
         run_doublet(sys.argv[2], float(sys.argv[3]),
                     float(sys.argv[4]) if len(sys.argv) > 4 else 2.0)
+    elif man == "tumble":
+        run_tumble(sys.argv[2], float(sys.argv[3]),
+                   sys.argv[4] if len(sys.argv) > 4 else "back")
     else:
         print(f"unknown maneuver {man}"); sys.exit(1)
