@@ -125,3 +125,10 @@
 - **Reuse:** `quat_to_R`, `dyn_model`, `aero_fit.fit_parametric`, `aero_validate`, `race_cruise.fresh_start/control` — don't reinvent. Keep Phase-1 `build_targets` + the 15 tests intact.
 - **Identifiability guard:** if joint `{r, lag, motor-model, aero}` is degenerate, fix `r`/`lag` from dedicated calibration (T0/T2) and only refine aero in T5; multi-start Nelder-Mead.
 - **Dual-purpose:** the governor + measured-control-allocation tooling here is the same machinery needed to tame the tail-first instability.
+
+---
+### T0 — DONE (2026-06-02), commit `6d98e35`
+- `ACTUATOR_OUTPUT_STATUS`: `active=15` (4 motors), `actuator[]` len 32, **motors on channels 0–3, normalized [0,1]** (idle 0.05).
+- Live verify (hover/roll/yaw): hover `u≈[0.264,0.264,0.269,0.269]` (~hover_thrust); roll input → `[0.08,0.31,0.08,0.11]`; yaw input → `[0.44,0.60,0.46,0.46]`. **Differential clearly observable** ⇒ `τ_motor` reconstruction feasible.
+- Motor-layout hint for T2 mixer: a +roll command raised **motor 1** and lowered **0 & 2** (3 mid); yaw raised **motor 1** most → use these signatures to pin the quad-X mixer sign pattern during T2 calibration.
+- Wired `io_layer.py` (`ACTUATOR_OUTPUT_STATUS` handler) + `state.py` (`set_actuators`/`get_actuators`). Next: **T1** (reference governor + 2-1-1 excitation + actuator/effort logging).
