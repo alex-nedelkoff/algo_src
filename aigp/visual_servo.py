@@ -3,24 +3,31 @@ Camera intrinsics fx=fy=320, cx=320, cy=180 (aigp.geometry.K). Pixel->control si
 (sign_x, sign_y) are pinned empirically in bring-up (servo_sign_probe.py)."""
 from __future__ import annotations
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-FX = FY = 320.0
-CX = 320.0
-CY = 180.0
+if TYPE_CHECKING:
+    from .gate_detect import GateDetection
+
+from .geometry import K as _K
+
+FX = float(_K[0, 0])
+FY = float(_K[1, 1])
+CX = float(_K[0, 2])
+CY = float(_K[1, 2])
 
 
-@dataclass
+@dataclass(frozen=True)
 class ServoCfg:
     k_yaw: float = 0.8       # rad per unit ex (horizontal bearing)
     k_alt: float = 6.0       # m per unit ey (z-setpoint nudge)
     fwd_speed: float = 1.8   # m/s along camera heading (capped, weathervane-safe)
     sign_x: float = 1.0      # pinned in bring-up
     sign_y: float = 1.0
-    max_dz: float = 8.0      # clamp altitude nudge
+    max_dz: float = 4.0      # clamp; just above in-frame max (k_alt*0.5625 ≈ 3.4 m)
     coast_frac: float = 0.5  # forward-speed fraction when gate momentarily lost
 
 
-@dataclass
+@dataclass(frozen=True)
 class ServoCmd:
     fwd_speed: float
     yaw_sp: float
@@ -28,7 +35,7 @@ class ServoCmd:
     have_gate: bool
 
 
-def servo(det, yaw_cur: float, z_cur: float, cfg: ServoCfg, last: ServoCmd | None = None) -> ServoCmd:
+def servo(det: "GateDetection | None", yaw_cur: float, z_cur: float, cfg: ServoCfg, last: "ServoCmd | None" = None) -> ServoCmd:
     if det is None:
         if last is not None:
             return ServoCmd(cfg.fwd_speed * cfg.coast_frac, last.yaw_sp, last.z_sp, False)

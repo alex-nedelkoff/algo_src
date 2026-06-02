@@ -25,7 +25,9 @@ def test_gate_right_yaws_positive():
 def test_gate_low_descends():
     cmd = servo(_det(320, 300), yaw_cur=0.0, z_cur=-5.0, cfg=CFG)
     ey = (300 - 180) / 320.0
-    assert cmd.z_sp > -5.0  # NED z down +, gate below center -> descend
+    # z_cur=-5.0 is NED z (positive-DOWN). Gate below centre -> ey>0 -> dz>0 ->
+    # NED z increases from -5.0 toward 0 = descend. So z_sp > -5.0 is correct.
+    assert cmd.z_sp > -5.0
     assert abs((cmd.z_sp + 5.0) - CFG.k_alt * CFG.sign_y * ey) < 1e-6
 
 
