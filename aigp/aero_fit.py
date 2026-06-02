@@ -35,3 +35,33 @@ def fit_parametric(V, W, a_force, a_moment, weights=None) -> dict:
         "r2_force": _r2(np.asarray(a_force).reshape(-1), _stack(force_features, V) @ thF),
         "r2_moment": _r2(np.asarray(a_moment).reshape(-1), _stack(moment_features, V, W) @ thM),
     }
+
+
+import torch
+import torch.nn as nn
+
+
+class ResidualMLP:
+    """Small MLP r(v_body, omega) -> (dF or dTau) 3-vector. Differentiable, drops into a replica later."""
+    def __init__(self, net):
+        self._net = net
+
+    def predict(self, V, W):
+        x = torch.tensor(np.hstack([np.asarray(V, float), np.asarray(W, float)]), dtype=torch.float32)
+        with torch.no_grad():
+            return self._net(x).numpy()
+
+
+def fit_residual(V, W, residual, hidden=64, epochs=400, lr=1e-3):
+    """Fit an MLP to the parametric residual. Returns (ResidualMLP, info{residual_var_share})."""
+    X = torch.tensor(np.hstack([np.asarray(V, float), np.asarray(W, float)]), dtype=torch.float32)
+    Y = torch.tensor(np.asarray(residual, float), dtype=torch.float32)
+    net = nn.Sequential(nn.Linear(6, hidden), nn.Tanh(), nn.Linear(hidden, hidden), nn.Tanh(),
+                        nn.Linear(hidden, 3))
+    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    for _ in range(epochs):
+        opt.zero_grad(); loss = ((net(X) - Y) ** 2).mean(); loss.backward(); opt.step()
+    with torch.no_grad():
+        leftover = (net(X) - Y).numpy()
+    share = float(np.var(leftover) / (np.var(np.asarray(residual)) + 1e-12))
+    return ResidualMLP(net), {"residual_var_share": share}

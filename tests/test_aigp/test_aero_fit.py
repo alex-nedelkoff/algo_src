@@ -26,3 +26,17 @@ def test_robust_to_noise():
     aF = aF + np.random.default_rng(1).normal(0, 0.05, aF.shape)
     res = fit_parametric(V, W, aF, aM)
     assert np.allclose(res["theta_F"], thF, atol=0.02)
+
+import numpy as np
+from aigp.aero_fit import fit_residual
+
+
+def test_residual_mlp_reduces_leftover():
+    rng = np.random.default_rng(3); n = 1500
+    V = rng.uniform(-10, 10, (n, 3)); W = rng.uniform(-2, 2, (n, 3))
+    # a nonlinear residual the linear model cannot capture
+    r = np.stack([0.1 * np.sin(V[:, 0]) * np.abs(V[:, 1]), 0 * V[:, 0], 0.05 * V[:, 2] ** 2], axis=1)
+    model, info = fit_residual(V, W, r, epochs=300)
+    assert info["residual_var_share"] < 0.5     # MLP explains >50% of the leftover variance
+    pred = model.predict(V, W)
+    assert pred.shape == (n, 3)
