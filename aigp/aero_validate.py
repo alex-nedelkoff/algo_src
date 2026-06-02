@@ -4,10 +4,20 @@ import json
 import numpy as np
 from .aero_model import force_features, moment_features
 
+class _NpEncoder(json.JSONEncoder):
+    def default(self, o):
+        import numpy as _np
+        if isinstance(o, _np.integer): return int(o)
+        if isinstance(o, _np.floating): return float(o)
+        if isinstance(o, _np.ndarray): return o.tolist()
+        return super().default(o)
+
+
 
 def _rmse(y, yhat): return float(np.sqrt(np.mean((np.asarray(y) - np.asarray(yhat)) ** 2)))
 def _r2(y, yhat):
-    y = np.asarray(y); ss = float(np.sum((y - yhat) ** 2)); tot = float(np.sum((y - y.mean(0)) ** 2))
+    y = np.asarray(y).ravel(); yhat = np.asarray(yhat).ravel()
+    ss = float(np.sum((y - yhat) ** 2)); tot = float(np.sum((y - float(y.mean())) ** 2))
     return 1.0 - ss / tot if tot > 0 else 0.0
 
 
@@ -41,4 +51,4 @@ def term_contributions(V, theta, feature_fn, cols) -> dict:
 def save_model(path, theta_F, theta_M, force_cols, moment_cols, meta=None):
     json.dump({"theta_F": list(map(float, theta_F)), "theta_M": list(map(float, theta_M)),
                "force_cols": list(force_cols), "moment_cols": list(moment_cols),
-               "meta": meta or {}}, open(path, "w"), indent=2)
+               "meta": meta or {}}, open(path, "w"), cls=_NpEncoder, indent=2)

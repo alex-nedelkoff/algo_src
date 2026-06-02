@@ -27,6 +27,14 @@ def fit_parametric(V, W, a_force, a_moment, weights=None) -> dict:
         sw = np.sqrt(np.repeat(np.asarray(weights, float), 3))
         PhiF, yF = PhiF * sw[:, None], yF * sw
         PhiM, yM = PhiM * sw[:, None], yM * sw
+    import warnings
+    for _name, _Phi in (("PhiF", PhiF), ("PhiM", PhiM)):
+        _nc = _Phi.shape[1]
+        if np.linalg.matrix_rank(_Phi) < _nc:
+            warnings.warn(
+                f"Rank-deficient design matrix {_name} "
+                f"(rank {np.linalg.matrix_rank(_Phi)} < {_nc}): "
+                "under-excited flight log — some velocity/rate axis never exercised.")
     thF, *_ = np.linalg.lstsq(PhiF, yF, rcond=None)
     thM, *_ = np.linalg.lstsq(PhiM, yM, rcond=None)
     return {
@@ -53,9 +61,11 @@ class ResidualMLP:
 
 
 def fit_residual(V, W, residual, hidden=64, epochs=400, lr=1e-3):
-    """Fit an MLP to the parametric residual. Returns (ResidualMLP, info{residual_var_share})."""
+    """Fit an MLP to the parametric residual. Returns (ResidualMLP, info{residual_var_share}).
+    Note: residual_var_share is in-sample (optimistic) — use aero_validate.single_step_metrics on held-out data for an unbiased number."""
     X = torch.tensor(np.hstack([np.asarray(V, float), np.asarray(W, float)]), dtype=torch.float32)
     Y = torch.tensor(np.asarray(residual, float), dtype=torch.float32)
+    torch.manual_seed(0)
     net = nn.Sequential(nn.Linear(6, hidden), nn.Tanh(), nn.Linear(hidden, hidden), nn.Tanh(),
                         nn.Linear(hidden, 3))
     opt = torch.optim.Adam(net.parameters(), lr=lr)
