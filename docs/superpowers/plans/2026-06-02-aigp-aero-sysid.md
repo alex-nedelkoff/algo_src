@@ -599,3 +599,27 @@ git commit -m "feat(aero): collect/fit/validate orchestration + identified sim_a
 - **Spec coverage:** model terms (T1 force/moment features incl. weathervane), targets incl. thrust/coast + gyro-coupling (T2), lstsq backbone (T3), residual + share (T4), held-out single-step + term-breakdown + serialize (T5), rollout (T7-S4), data-collection battery + coast probe + coverage/convergence (T6, T7), pitfalls (coast-weighting in fit T3/T7, filtered α T2). The **thrust-vs-speed `k_h` term** and the **μ-multinomial moment refinement** are noted in the spec; T1's feature model uses the simpler velocity-coupling weathervane + leaves `k_h`/BEMT as a documented extension (add a `v_h^2` force column if the thrust residual stays large — YAGNI per spec).
 - **Types consistent:** `FORCE_COLS`/`MOMENT_COLS`, `force_features`/`moment_features`/`predict`, `build_targets`→dict keys (`v_body`,`omega`,`a_aero`,`al_aero`,`coast`), `fit_parametric`→`theta_F`/`theta_M`/`r2_*`, `fit_residual`→`ResidualMLP.predict`, `single_step_metrics`/`term_contributions`/`save_model` — used consistently across T1–T7.
 - **Live vs unit:** T1–T5 are pure/offline TDD; T6–T7 are live run-and-verify (need the sim + user-confirmed qualifier), with explicit expected observations.
+
+---
+
+## Phase 2 — literature-grounded refinement (added 2026-06-02 after NotebookLM review)
+
+**Phase 1 outcome:** full grey-box pipeline built + validated; **`D_x≈0.52/s` rotor drag identified and held-out-validated (0.16 m/s² RMSE) — matches published ground-truth 0.49–0.54/s** (NeuroBEM/Faessler/grey-box circle+lemniscate trials). Moments-from-coast and vertical force did NOT converge. Literature (this notebook) explains why and points the way:
+
+### What the literature changed
+- **Free tumbles are the wrong regime for moments.** Rotor-coupled aero moments (hub moment ∝ √T·ω, H-force/weathervane) physically require *spinning rotors* — motors-off removes the very effect we want. Standard practice (NeuroBEM, Faessler) is **powered flight with the rotor/control torque modeled**.
+- **Off-axis coast ≠ clean drag.** Empirically confirmed here: a 45° diagonal coast carries a non-diagonal bluff-body force that `−D·v` can't represent and it corrupts `D_x`. Lateral drag must come from **powered** maneuvers (as the published `d_y` did).
+- **Vertical force**: free-fall coast = vortex-ring/windmill-brake state (momentum theory fails). `d_z` is minor / often set to zero — **pinned to 0** in the deliverable.
+- **Residual**: a memoryless MLP overfits. NeuroBEM-style residuals need **temporal context** (~20-state history, often a **TCN**).
+
+### Phase 2 maneuver curriculum (all powered; coast retained only for `D_x` cross-check)
+- **`lemniscate` / `circle`** (powered, ~3–5 m/s, held heading → continuous sideslip sweep): identify `D_x` AND `D_y` together. Primary drag maneuver.
+- **Steady tail-first cruise + 2-1-1 doublets near trim** (powered): excite the weathervane/damping moments without leaving trim. Safer than tumbles; keeps rotors loaded.
+- **`thrustchirp`** (powered, held speed): identify the thrust-vs-airspeed droop (`k_h·v_h²`) / feed a BEM anchor.
+- **High-speed sweeps** (as the controller envelope allows): excite the quadratic parasitic drag `C` (dominates >15–20 m/s) toward the 33 m/s course speed.
+
+### Phase 2 estimator changes
+- **Moments via virtual mixer + rollout**: predict control torque from commanded rate/thrust (rate-loop gain ≈ −2.5), attribute `I·ω̇ − τ_control` to aero; fit by **trajectory rollout + gradient-free optimization (Nelder-Mead)** minimizing orientation error — NOT lstsq on finite-differenced ω̇. Use cubic-spline derivatives where needed.
+- **Forces at high speed**: add the `k_h·v_h²` thrust term and/or a **BEM anchor** (NeuroBEM hybrid); the empirical droop term alone under-predicts >15% at race speed.
+- **Residual**: temporal-window features (history of v, ω, commanded thrust/torque), TCN over MLP, 70/20/10 split with full-envelope coverage, regularized to avoid unstable feedback.
+- **Data split discipline**: held-out *runs* (not random samples) covering the speed/direction envelope.
