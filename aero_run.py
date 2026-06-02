@@ -204,19 +204,26 @@ def write_report(thF, thM, r2F, r2M, info, mf, mfr, mm, roll, cF, cM,
           "- ✅ **Horizontal rotor drag `D_x`** — headline result, held-out RMSE "
           f"{mf['rmse_force_axes'][0]:.3f} m/s², **matches published 0.49–0.54 /s**.",
           "- ✅ **Weathervane sign** (`wv_z>0`) — qualitatively confirms the tail-first yaw destabilizer.",
-          "- ❌ **Lateral drag `D_y`** — TWO attempts failed: (a) diagonal coast → non-diagonal "
-          "bluff-body force `−D·v` can't represent; (b) powered weave → lateral IMU force robustly "
-          "*anti*-correlates with v_y (negative 'drag') = a maneuver / IMU-lever-arm coupling, not drag. "
-          "Note: quasi-steady weave `D_x`≈0.56 corroborates the coast 0.52, and powered-transient "
-          "`D_x`≈0.34 < coast → the linear drag is **thrust/operating-point dependent** (rotor-drag "
-          "physics). `D_y` needs the steady route below.",
+          "- ❌ **Lateral drag `D_y`** — THREE attempts failed (diagonal coast → bluff-body; powered "
+          "weave → phase/lever-arm artifact, spurious negative; steady circle → controller can't track "
+          "it: speed overshoots, tilt spikes ~58°, drift 30 m). **Root cause: `D_y` is gated on "
+          "lateral-flight control, which is blocked by the very weathervane we're measuring** "
+          "(chicken-and-egg). The platform is too weathervane-unstable to fly the steady sideslip "
+          "trajectories the open-loop method needs. By-products: quasi-steady `D_x`≈0.56 corroborates "
+          "coast 0.52; powered-transient `D_x`≈0.34 < coast → linear drag is **thrust/operating-point "
+          "dependent** (rotor-drag physics). The viable path is **closed-loop ID** (next).",
           "- ❌ **Damping magnitudes & vertical force** — not reliably identified (see caveats above).",
           "\n## Recommended next steps (literature-grounded — NeuroBEM, Faessler, grey-box sysID)\n",
-          "1. **Lateral drag `D_y`**: needs a **STEADY constant-speed circle** (transient weaves couple "
-          "the maneuver into the lateral IMU force — tried, gives a spurious negative D_y) flown slowly "
-          "enough to stay controllable, ideally with **motor speeds** (for the thrust-coupled rotor-drag "
-          "term — powered D_x≈0.34 ≠ coast 0.52) and an **IMU lever-arm correction**. Published d_y came "
-          "from steady circles fit by gradient-free optimization.",
+          "1. **Lateral drag `D_y` via CLOSED-LOOP ID** (open-loop steady circles are unflyable here — "
+          "tried 3 ways). Keep a basic stabilizer running and make the **control effort the measurement**: "
+          "the commanded yaw/pitch moment the controller applies to hold heading against the weathervane "
+          "is a direct function of the lateral aero (CP-migration moment). Concretely: (a) add a "
+          "**reference governor** to keep commands inside the controller's stability/motor envelope (no "
+          "overshoot/tilt-spike); (b) excite with **2-1-1 lateral/yaw doublets near trim**; (c) fit "
+          "`D_y` (and the weathervane moment) by **Nelder-Mead minimizing orientation error over short "
+          "transient rollouts**, correlating IMU specific force + commanded moments — NOT steady-state "
+          "regression. Add **motor speeds** if exposed (powered D_x≈0.34 ≠ coast 0.52 → thrust-coupled) "
+          "and an IMU lever-arm correction. (Crazyflow fits such models in <4 min of flight.)",
           "2. **Moments, properly**: don't use free tumbles (motors-off *removes* the rotor-coupled hub/"
           "H-force moments that ARE the weathervane). Use a **virtual mixer** — map commanded rate/thrust "
           "→ predicted control torque (via the known rate-loop gain), attribute the residual `I·ω̇ − "

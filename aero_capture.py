@@ -231,6 +231,41 @@ def run_doublet(axis, speed, amp=2.0, direction="back"):
     print(f"\nSAVED {path}  rows={len(df)}", flush=True)
 
 
+def run_circle(speed, radius, dur=22.0):
+    """STEADY constant-speed circle, FIXED heading (body velocity sweeps all sideslip angles ->
+    excites D_x AND D_y). Centered AHEAD of spawn (toward the open course) so it stays clear of the
+    obstacle behind spawn. Position feedback keeps it on the circle. Steady-state lateral velocity =>
+    phase/latency-robust (unlike the transient weave). Logs raw rows; latency + lever-arm handled offline."""
+    ds0, yaw0, z_sp = setup()
+    fwd2 = heading_vec(yaw0, "fwd")[:2]                       # toward course (horizontal)
+    alpha0 = float(np.arctan2(fwd2[1], fwd2[0]))            # start velocity pointing at the course
+    wc = speed / radius                                       # velocity-direction rate (rad/s); curves into open space
+    spawn = ds0.pos_ned[:2].copy()
+    lg = Logger(); t0 = time.time(); last = -1
+    while time.time() - t0 < dur:
+        tau = time.time() - t0
+        alpha = alpha0 + wc * tau                             # PURE rotating constant-speed velocity (no position target)
+        ds = s.get_drone(); imu = s.get_imu()
+        if ds is not None and imu is not None:
+            vsp = np.zeros(3)
+            vsp[:2] = speed * np.array([np.cos(alpha), np.sin(alpha)])
+            wcmd, thr, ta, tilt = control(ds, vsp, z_sp, yaw0)
+            c.send_attitude_target(wcmd, thr)
+            lg.log(tau, ds, imu, ta, coast=False)
+            if tilt > ABORT_TILT:
+                print(f"ABORT tilt={tilt:.0f}", flush=True); break
+            k = int(tau / 3.0)
+            if k != last:
+                last = k
+                R = quat_to_R(ds.quat_wxyz); vb = R.T @ ds.vel_ned
+                drift = float(np.linalg.norm(ds.pos_ned[:2] - spawn))
+                print(f"t={tau:4.1f} spd={np.linalg.norm(ds.vel_ned[:2]):4.1f} "
+                      f"v_body=({vb[0]:+4.1f},{vb[1]:+4.1f}) drift={drift:4.1f} tilt={tilt:3.0f}", flush=True)
+        time.sleep(LOOP_DT)
+    path, df = lg.save("circle")
+    print(f"\nSAVED {path}  rows={len(df)}", flush=True)
+
+
 def run_weave(v_fwd, v_lat, period=4.0, dur=16.0):
     """Powered lemniscate-style weave, FIXED heading: net-forward toward the course (tail-first) with a
     lateral velocity sinusoid -> sweeps body-y velocity (sideslip) while netting toward open space.
@@ -308,5 +343,7 @@ if __name__ == "__main__":
     elif man == "weave":
         run_weave(float(sys.argv[2]), float(sys.argv[3]),
                   float(sys.argv[4]) if len(sys.argv) > 4 else 4.0)
+    elif man == "circle":
+        run_circle(float(sys.argv[2]), float(sys.argv[3]))
     else:
         print(f"unknown maneuver {man}"); sys.exit(1)
