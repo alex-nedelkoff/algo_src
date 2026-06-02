@@ -37,6 +37,8 @@ def main():
     ap.add_argument("--radius", type=float, default=4.0)
     ap.add_argument("--speed", type=float, default=2.0)
     ap.add_argument("--kp-pos", type=float, default=1.0)
+    ap.add_argument("--kd-pos", type=float, default=3.2)
+    ap.add_argument("--ki-pos", type=float, default=0.0)
     ap.add_argument("--tilt-deg", type=float, default=10.0)
     ap.add_argument("--control-hz", type=float, default=50.0)
     args = ap.parse_args()
@@ -46,6 +48,8 @@ def main():
     mav.start(); VisionIO(store).start()
     boot = int(time.time() * 1000); cmd = Commander(mav.conn, boot)
     ctl = _ctl_from(args.response, kp_pos=[args.kp_pos, args.kp_pos, 1.8],
+                    kd_pos=[args.kd_pos, args.kd_pos, 3.0],
+                    ki_pos=[args.ki_pos, args.ki_pos, 0.0],
                     tilt_max_deg=args.tilt_deg)
 
     # acquire gates BEFORE arming (passive reset+listen), if orbiting
@@ -82,7 +86,7 @@ def main():
             else:
                 pos_sp, vel_sp, yaw_sp = hold, np.zeros(3), hold_yaw
             q_send, thrust = ctl.update(ds.pos_ned, ds.vel_ned, ds.quat_wxyz,
-                                        pos_sp, vel_sp, yaw_sp)
+                                        pos_sp, vel_sp, yaw_sp, dt=dt)
             cmd.send_attitude_setpoint(q_send, thrust)
             pe = float(np.linalg.norm(np.asarray(pos_sp) - ds.pos_ned))
             pe_max = max(pe_max, pe); pe_samples.append(pe)

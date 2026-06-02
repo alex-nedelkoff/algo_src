@@ -24,6 +24,14 @@ def test_collective_accel_is_g_at_hover_level():
     assert np.isclose(c, G)
 
 
+def test_collective_accel_tilt_robust():
+    # zero a_des at a 30deg-rolled attitude must need MORE than g (g/cos30) so the
+    # vertical component stays at g; else a tilted drone under-thrusts and sinks.
+    q_roll30 = np.array([np.cos(np.radians(15)), np.sin(np.radians(15)), 0.0, 0.0])
+    assert np.isclose(collective_accel(np.zeros(3), q_roll30), G / np.cos(np.radians(30)), atol=1e-6)
+    assert collective_accel(np.zeros(3), q_roll30) > G
+
+
 def test_accel_to_thrust_norm_hover_and_climb():
     assert np.isclose(accel_to_thrust_norm(G, hover_thrust=0.5, k_a=20.0), 0.5)
     # one extra unit of k_a worth of accel -> +1.0 normalized (then clipped)

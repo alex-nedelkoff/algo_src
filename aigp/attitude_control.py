@@ -18,17 +18,25 @@ class AttitudeSetpointController:
     """
 
     def __init__(self, hover_thrust, k_a, kp_pos=(1.0, 1.0, 1.8),
-                 kd_pos=(3.2, 3.2, 3.0), tilt_max_deg=10.0, g=G):
+                 kd_pos=(3.2, 3.2, 3.0), ki_pos=(0.0, 0.0, 0.0), i_max=3.0,
+                 tilt_max_deg=10.0, g=G):
         self.hover_thrust = hover_thrust
         self.k_a = k_a
         self.kp_pos = np.asarray(kp_pos, float)
         self.kd_pos = np.asarray(kd_pos, float)
+        self.ki_pos = np.asarray(ki_pos, float)
+        self.i_max = i_max
         self.tilt_max_acc = float(np.tan(np.radians(tilt_max_deg)) * g)
         self.g = g
         self._q_prev = None
+        self._i_err = np.zeros(3)
 
-    def update(self, pos, vel, quat, pos_sp, vel_sp, yaw_sp):
-        a_des = desired_accel(pos, vel, pos_sp, vel_sp, self.kp_pos, self.kd_pos)
+    def update(self, pos, vel, quat, pos_sp, vel_sp, yaw_sp, dt=0.02):
+        # integral of position error (anti-windup clamp) nulls steady-state drift
+        e = np.asarray(pos_sp, float) - np.asarray(pos, float)
+        self._i_err = np.clip(self._i_err + e * dt, -self.i_max, self.i_max)
+        a_des = (desired_accel(pos, vel, pos_sp, vel_sp, self.kp_pos, self.kd_pos)
+                 + self.ki_pos * self._i_err)
         ah = a_des[:2]
         n = float(np.linalg.norm(ah))
         if n > self.tilt_max_acc:

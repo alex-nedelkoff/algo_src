@@ -17,10 +17,16 @@ def desired_accel(pos, vel, pos_sp, vel_sp, kp_pos, kd_pos) -> np.ndarray:
 
 
 def collective_accel(a_des, quat, g: float = G) -> float:
-    """Required thrust acceleration projected onto current body-up. ~g at hover."""
-    t_vec = np.asarray(a_des, float) - np.array([0.0, 0.0, g])  # hover -> [0,0,-g]
-    body_up = -quat_to_R(quat)[:, 2]                            # body up axis in world
-    return float(t_vec @ body_up)
+    """Collective thrust accel to hold the desired VERTICAL accel given current tilt.
+
+    c = (g - a_des_z) / cos(tilt), where cos(tilt) = body-down's world-z component.
+    Dividing by cos(tilt) compensates for the lean: a tilted drone commands MORE
+    thrust so its vertical component stays at g (the projection/magnitude forms
+    under-thrust when tilted and sink the drone into free-fall). cos(tilt) clamped
+    to avoid blow-up past ~60 deg."""
+    cos_tilt = float(quat_to_R(quat)[2, 2])          # = cos(tilt); 1 when level
+    cos_tilt = max(cos_tilt, 0.5)
+    return float((g - np.asarray(a_des, float)[2]) / cos_tilt)
 
 
 def accel_to_thrust_norm(c: float, hover_thrust: float, k_a: float, g: float = G) -> float:
