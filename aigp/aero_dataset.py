@@ -5,6 +5,7 @@ coast (bool). Output: aero force/moment targets + the coast mask."""
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+from scipy.ndimage import uniform_filter1d
 from .geometry import quat_to_R
 
 
@@ -19,8 +20,7 @@ def finite_diff_filtered(t, w, win: int = 9) -> np.ndarray:
     w = np.asarray(w, float)
     a = np.gradient(w, t, axis=0)
     if win > 1 and len(a) > win:
-        k = np.ones(win) / win
-        a = np.stack([np.convolve(a[:, j], k, mode="same") for j in range(a.shape[1])], axis=1)
+        a = uniform_filter1d(a, size=win, axis=0, mode="nearest")
     return a
 
 
@@ -30,13 +30,22 @@ def build_targets(df: pd.DataFrame, I_ratio) -> dict:
     a_aero  = f_body - thrust_body        (thrust along body -z)
     al_aero = alpha + omega x (I_ratio*omega)   (motor_torque omitted: rely on coast/zero-motor samples)
     """
+    if len(df) == 0:
+        raise ValueError("build_targets: empty DataFrame")
+
     t = df["t"].to_numpy()
-    Ir = np.asarray(I_ratio, float)
+    # I_ratio must be a 3-element vector (Ix/Iz, Iy/Iz, 1)
+    Ir = np.asarray(I_ratio, float).ravel()
+    assert Ir.shape == (3,), f"I_ratio must have 3 elements, got {Ir.shape}"
     n = len(df)
     vb = np.zeros((n, 3))
     aero_f = np.zeros((n, 3))
     w = df[["wx", "wy", "wz"]].to_numpy()
     f = df[["fx", "fy", "fz"]].to_numpy()
+
+    # thrust_accel is an m/s^2 magnitude (non-negative); thrust acts along body -z
+    assert (df["thrust_accel"].to_numpy() >= 0).all(), \
+        "thrust_accel must be a non-negative magnitude (m/s^2)"
 
     for i in range(n):
         q = df[["qw", "qx", "qy", "qz"]].iloc[i].to_numpy()
@@ -45,6 +54,9 @@ def build_targets(df: pd.DataFrame, I_ratio) -> dict:
         vb[i] = world_to_body_vel(v_world, R)
         thrust_body = np.array([0.0, 0.0, -float(df["thrust_accel"].iloc[i])])
         aero_f[i] = f[i] - thrust_body
+
+    if not (np.isfinite(vb).all() and np.isfinite(aero_f).all()):
+        raise ValueError("NaN/Inf in body velocity or aero force — check quaternion/IMU columns")
 
     alpha = finite_diff_filtered(t, w)
     gyro_coupling = np.cross(w, Ir * w)
