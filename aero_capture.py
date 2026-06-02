@@ -132,8 +132,16 @@ def setup():
 
 
 def heading_vec(yaw0, direction):
-    sign = -1.0 if direction == "fwd" else 1.0   # fwd = camera-forward (-body-x, tail-first)
-    return sign * np.array([np.cos(yaw0), np.sin(yaw0), 0.0])
+    """World-frame unit velocity direction for a held heading yaw0.
+    fwd = camera-forward (-body-x, toward course); back = nose-first (+body-x, toward spawn obstacle);
+    right/left = pure lateral (±body-y, strafe); diag/diagl = 45 deg fwd+lateral (excites D_x AND D_y
+    while net-moving toward the open course)."""
+    h = np.array([np.cos(yaw0), np.sin(yaw0), 0.0])       # +body-x (nose) in world
+    lat = np.array([-np.sin(yaw0), np.cos(yaw0), 0.0])    # +body-y (right) in world
+    fwd = -h
+    table = {"fwd": fwd, "back": h, "right": lat, "left": -lat,
+             "diag": (fwd + lat) / np.sqrt(2.0), "diagl": (fwd - lat) / np.sqrt(2.0)}
+    return table[direction]
 
 
 def run_sweep(vmax, direction="back", dur=14.0):
@@ -267,6 +275,7 @@ if __name__ == "__main__":
                     float(sys.argv[4]) if len(sys.argv) > 4 else 2.0)
     elif man == "tumble":
         run_tumble(sys.argv[2], float(sys.argv[3]),
-                   sys.argv[4] if len(sys.argv) > 4 else "back")
+                   sys.argv[4] if len(sys.argv) > 4 else "back",
+                   spin_amp=float(sys.argv[5]) if len(sys.argv) > 5 else 4.0)
     else:
         print(f"unknown maneuver {man}"); sys.exit(1)

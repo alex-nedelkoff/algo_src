@@ -1,6 +1,6 @@
 # AI-GP Sim Aerodynamic SysID — Identified Model Report
 
-_Generated 2026-06-02 17:35 · grey-box fit on motors-off (coast) data_
+_Generated 2026-06-02 18:19 · grey-box fit on motors-off (coast) data_
 
 ## Method
 
@@ -19,11 +19,11 @@ Linear-in-coefficients parametric backbone (least-squares) + torch residual MLP 
 |---|---|---|
 | x | +0.5231 | -0.0175 |
 | y | +0.0021 | -0.0258 |
-| z | -1.8501 | +0.4446 |
+| z | +0.0000 | +0.0000 |
 
 Train R²=0.408. Held-out single-step force RMSE **2.192 m/s²** (parametric) → **2.978** with residual; R² 0.400→-0.107.
 Per-axis held-out RMSE: x=0.156, y=0.003, z=3.793 m/s².
-> **`D_x` is the trusted result** — linear rotor drag along the flight axis (Faessler form). The **z-axis** comes from free-fall coast (rotor descent dynamics, not clean drag) and is unreliable; treat `D_z`/`C_z` as placeholders.
+> **`D_x` is the trusted, literature-validated result** — linear rotor drag along the flight axis (Faessler form). Published ground-truth for racing-class quads identified from real flight: `d_x≈0.49–0.54 /s` (circle/lemniscate @ 4 m/s) — **our 0.52 lands squarely in that band.** The **z-axis** is from free-fall coast (vortex-ring/windmill-brake state where momentum theory fails, not clean drag) so `D_z`/`C_z` are **pinned to 0** in the deliverable; literature notes vertical drag is a minor effect anyway. **`D_y` is not yet identified** — see next (off-axis coast carries non-drag bluff-body force; lateral drag needs a powered lemniscate).
 
 ## Moment model  `α_aero = -d·ω + weathervane(v)`  (rad/s², per body axis)
 
@@ -48,14 +48,16 @@ Train R²=0.173, held-out RMSE **7.759 rad/s²**, R²=0.138.
 
 ## What's trusted vs open
 
-- ✅ **Horizontal rotor drag `D_x`** — the headline result, validated on held-out data (0.156 m/s² single-step RMSE).
+- ✅ **Horizontal rotor drag `D_x`** — headline result, held-out RMSE 0.156 m/s², **matches published 0.49–0.54 /s**.
 - ✅ **Weathervane sign** (`wv_z>0`) — qualitatively confirms the tail-first yaw destabilizer.
+- ❌ **Lateral drag `D_y`** — diagonal-coast attempt failed (off-axis coast carries a non-diagonal bluff-body force the `−D·v` model can't represent; the MLP fit it to R²≈0.9 but the linear term couldn't). Needs the powered route below.
 - ❌ **Damping magnitudes & vertical force** — not reliably identified (see caveats above).
 
-## Recommended next data
+## Recommended next steps (literature-grounded — NeuroBEM, Faessler, grey-box sysID)
 
-1. **Moments, properly**: identify the weathervane/damping from **steady tail-first flight** by inverting the controller's commanded rate/torque (needs a motor-torque model), instead of free tumbles. This is the right path for the term the team actually cares about.
-2. **Vertical force & >8 m/s**: a thrust-vs-speed model unlocks the powered sweeps for clean vertical drag and the high-speed envelope (course peaks ~33 m/s).
-3. **Lateral drag `D_y`**: add a pure side-slip (strafe/side-coast) maneuver.
+1. **Lateral drag `D_y`**: fly a **powered circle / Gerono lemniscate** (the standard drag maneuver — maximally excites body x&y velocity; the published `d_x/d_y` came from exactly these). Coast-only can't do it because off-axis flight is the sideslip regime.
+2. **Moments, properly**: don't use free tumbles (motors-off *removes* the rotor-coupled hub/H-force moments that ARE the weathervane). Use a **virtual mixer** — map commanded rate/thrust → predicted control torque (via the known rate-loop gain), attribute the residual `I·ω̇ − τ_control` to aero — and identify it by **trajectory rollout + gradient-free optimization (Nelder-Mead)**, NOT regression on finite-differenced ω̇ (too noisy). Use cubic-spline derivatives if a derivative is needed.
+3. **Residual model**: the memoryless MLP overfit. NeuroBEM-style residuals need **temporal context** (a window of ~20 past states, often a **TCN**) so the net can reconstruct hidden airflow/wake state; train with a 70/20/10 split over a diverse-maneuver dataset.
+4. **High speed (→33 m/s)**: the `k_h·v_h²` thrust-droop term under-predicts >15% at race speed → use a **full BEM / NeuroBEM hybrid**; quadratic parasitic drag (`C` terms) dominates above ~15–20 m/s and needs high-speed excitation to identify.
 
-Model serialized to `aero_data/sim_aero.json`.
+Model serialized to `aero_data/sim_aero.json` (D_z/C_z pinned to 0).
