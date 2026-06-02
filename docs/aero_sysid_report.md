@@ -1,6 +1,6 @@
 # AI-GP Sim Aerodynamic SysID — Identified Model Report
 
-_Generated 2026-06-02 18:19 · grey-box fit on motors-off (coast) data_
+_Generated 2026-06-02 18:47 · grey-box fit on motors-off (coast) data_
 
 ## Method
 
@@ -50,12 +50,12 @@ Train R²=0.173, held-out RMSE **7.759 rad/s²**, R²=0.138.
 
 - ✅ **Horizontal rotor drag `D_x`** — headline result, held-out RMSE 0.156 m/s², **matches published 0.49–0.54 /s**.
 - ✅ **Weathervane sign** (`wv_z>0`) — qualitatively confirms the tail-first yaw destabilizer.
-- ❌ **Lateral drag `D_y`** — diagonal-coast attempt failed (off-axis coast carries a non-diagonal bluff-body force the `−D·v` model can't represent; the MLP fit it to R²≈0.9 but the linear term couldn't). Needs the powered route below.
+- ❌ **Lateral drag `D_y`** — TWO attempts failed: (a) diagonal coast → non-diagonal bluff-body force `−D·v` can't represent; (b) powered weave → lateral IMU force robustly *anti*-correlates with v_y (negative 'drag') = a maneuver / IMU-lever-arm coupling, not drag. Note: quasi-steady weave `D_x`≈0.56 corroborates the coast 0.52, and powered-transient `D_x`≈0.34 < coast → the linear drag is **thrust/operating-point dependent** (rotor-drag physics). `D_y` needs the steady route below.
 - ❌ **Damping magnitudes & vertical force** — not reliably identified (see caveats above).
 
 ## Recommended next steps (literature-grounded — NeuroBEM, Faessler, grey-box sysID)
 
-1. **Lateral drag `D_y`**: fly a **powered circle / Gerono lemniscate** (the standard drag maneuver — maximally excites body x&y velocity; the published `d_x/d_y` came from exactly these). Coast-only can't do it because off-axis flight is the sideslip regime.
+1. **Lateral drag `D_y`**: needs a **STEADY constant-speed circle** (transient weaves couple the maneuver into the lateral IMU force — tried, gives a spurious negative D_y) flown slowly enough to stay controllable, ideally with **motor speeds** (for the thrust-coupled rotor-drag term — powered D_x≈0.34 ≠ coast 0.52) and an **IMU lever-arm correction**. Published d_y came from steady circles fit by gradient-free optimization.
 2. **Moments, properly**: don't use free tumbles (motors-off *removes* the rotor-coupled hub/H-force moments that ARE the weathervane). Use a **virtual mixer** — map commanded rate/thrust → predicted control torque (via the known rate-loop gain), attribute the residual `I·ω̇ − τ_control` to aero — and identify it by **trajectory rollout + gradient-free optimization (Nelder-Mead)**, NOT regression on finite-differenced ω̇ (too noisy). Use cubic-spline derivatives if a derivative is needed.
 3. **Residual model**: the memoryless MLP overfit. NeuroBEM-style residuals need **temporal context** (a window of ~20 past states, often a **TCN**) so the net can reconstruct hidden airflow/wake state; train with a 70/20/10 split over a diverse-maneuver dataset.
 4. **High speed (→33 m/s)**: the `k_h·v_h²` thrust-droop term under-predicts >15% at race speed → use a **full BEM / NeuroBEM hybrid**; quadratic parasitic drag (`C` terms) dominates above ~15–20 m/s and needs high-speed excitation to identify.
