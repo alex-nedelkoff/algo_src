@@ -7,13 +7,16 @@ MAC_VIEWER = "rerun+http://100.101.13.126:9876/proxy"
 _ok = False
 
 
-def init():
+def init(rrd_path=None):
     """Connect to the Rerun viewer on the Mac. On failure, telemetry is silently disabled."""
     global _ok
     try:
         import rerun as rr
         rr.init("aigp-gate")
-        rr.connect_grpc(MAC_VIEWER)
+        if rrd_path:
+            rr.save(rrd_path)          # write a shareable .rrd recording
+        else:
+            rr.connect_grpc(MAC_VIEWER)
         try:
             rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_DOWN, static=True)  # NED: z down
         except Exception:

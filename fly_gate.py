@@ -1,8 +1,11 @@
-"""Fly through ONE gate, camera-only. Horizontal: fixed-heading + visual strafe (stable).
-Vertical: PITCH-INVARIANT — back-project the gate pixel through the camera mount (optical axis
-= -body-x tilted 20deg UP, right = -body_y) and the live attitude into the world, get the gate's
-true world ELEVATION, climb/descend to drive it to 0. Robust to pitch swings. Success = gate idx++.
-argv: SIGN_S K_VZ  (defaults -1.0 3.0)"""
+"""Fly through ONE gate, camera-only.
+- Horizontal: fixed heading (hold spawn yaw) + visual strafe (gate ex -> cross-track velocity).
+- Vertical: pitch-invariant world-elevation climb (back-project gate pixel through the camera
+  mount [axis=-body-x, 20deg UP, right=-body_y] + live attitude -> world elevation).
+- Terminal: once the gate is close AND centered (sz>SZ_LOCK, |ex|<EX_LOCK), LOCK its world
+  elevation and fly a straight BALLISTIC line (hold heading, climb at v_fwd*tan(elev)) through
+  it, ignoring the now-unreliable close-range detection.
+Success = active_gate_index increments.  argv: SIGN_S K_VZ RRD_PATH"""
 import json, sys, time
 import numpy as np
 from pymavlink import mavutil
@@ -17,25 +20,25 @@ from aigp import viz
 
 SIGN_S = float(sys.argv[1]) if len(sys.argv) > 1 else -1.0
 K_VZ = float(sys.argv[2]) if len(sys.argv) > 2 else 7.0
+RRD = sys.argv[3] if len(sys.argv) > 3 else None
+
 TILT_DEG = 20.0; C20 = np.cos(np.radians(TILT_DEG)); S20 = np.sin(np.radians(TILT_DEG))
-# optical(x-right,y-down,z-fwd) -> body(FRD): axis=-bodyx tilted 20up, right=-body_y
-R_OPT_BODY = np.array([[0.0, -S20, -C20],
-                       [-1.0, 0.0, 0.0],
-                       [0.0,  C20, -S20]])
+R_OPT_BODY = np.array([[0.0, -S20, -C20], [-1.0, 0.0, 0.0], [0.0, C20, -S20]])
+CX = 320.0; FX = 320.0; FY = 320.0; CY = 180.0
 r = json.load(open("sysid/sim_response.json"))
 HOVER = r["hover_thrust"]; KA = r["k_a"]
 RG = np.array([r["rate_gain_axes"]["roll"], r["rate_gain_axes"]["pitch"], r["rate_gain_axes"]["yaw"]])
 KP_ATT = np.array([0.7, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3
 KD_AL = 1.2; AL_MAX = 0.5; KD_LAT = 1.4; K_STRAFE = 4.0; VLAT_MAX = 1.2
 VZ_MAX = 2.2; FWD = 1.2; KP_Z = 1.8; KD_Z = 3.0
-CX = 320.0; FX = 320.0; FY = 320.0
-WMAX = 4.0; LOOP_DT = 0.004; DURATION = 30.0; SZ_COMMIT = 150.0
+SZ_LOCK = 100.0; EX_LOCK = 0.20
+WMAX = 4.0; LOOP_DT = 0.004; DURATION = 28.0
 TILTMAX = np.tan(np.radians(15)) * 9.81
 IDLE = mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
 P = load_params()
 
 s = Store(); m = MavlinkIO(s); assert m.wait_heartbeat(10); m.start(); VisionIO(s).start()
-boot = int(time.time()*1000); c = Commander(m.conn, boot); viz.init()
+boot = int(time.time()*1000); c = Commander(m.conn, boot); viz.init(RRD)
 
 
 def idle():
@@ -62,17 +65,16 @@ def fresh_start():
 def gate_world_elev(u, v, R_bw):
     d_opt = np.array([(u - CX) / FX, (v - CY) / FY, 1.0]); d_opt /= np.linalg.norm(d_opt)
     d_world = R_bw @ (R_OPT_BODY @ d_opt)
-    return float(-np.arcsin(np.clip(d_world[2], -1.0, 1.0)))   # +above horizontal
+    return float(-np.arcsin(np.clip(d_world[2], -1.0, 1.0)))
 
 
-CY = 180.0
 assert fresh_start(), "not live"
-ds0 = s.get_drone(); spawn = ds0.pos_ned.copy(); z_hold = float(spawn[2]); z_ref = float(spawn[2]); gi0 = s.get_gate_idx()
+ds0 = s.get_drone(); spawn = ds0.pos_ned.copy(); z_ref = float(spawn[2]); gi0 = s.get_gate_idx()
 yaw0 = float(np.arctan2(quat_to_R(ds0.quat_wxyz)[1, 0], quat_to_R(ds0.quat_wxyz)[0, 0]))
 fwd = -np.array([np.cos(yaw0), np.sin(yaw0)]); lat = np.array([-fwd[1], fwd[0]])
 c.arm()
-print(f"SIGN_S={SIGN_S} K_VZ={K_VZ} yaw0={np.degrees(yaw0):.0f}", flush=True)
-t0 = time.time(); passed = False; logn = 0; trail = []; lastlog = -1
+print(f"SIGN_S={SIGN_S} K_VZ={K_VZ} SZ_LOCK={SZ_LOCK:.0f} rrd={RRD}", flush=True)
+t0 = time.time(); passed = False; logn = 0; trail = []; lastlog = -1; locked = False; tan_lock = 0.0
 while time.time()-t0 < DURATION:
     ds = s.get_drone()
     if ds is not None:
@@ -82,16 +84,27 @@ while time.time()-t0 < DURATION:
         v_al = float(ds.vel_ned[:2] @ fwd); v_lat = float(ds.vel_ned[:2] @ lat)
         a_al = float(np.clip(KD_AL * (FWD - v_al), -4.0, AL_MAX))
         elev = None
-        if det is not None:
+        if det is not None and not locked and det.w_px > SZ_LOCK and abs((det.u - CX) / FX) < EX_LOCK:
+            phi = gate_world_elev(det.u, det.v, Rc); tan_lock = float(np.tan(phi)); locked = True
+            print(f"LOCK t={time.time()-t0:.1f}s phi={np.degrees(phi):+.0f}deg", flush=True)
+        if locked:
+            v_lat_sp = 0.0                                      # hold heading (u unreliable at the edge)
+            if det is not None:
+                elev = gate_world_elev(CX, det.v, Rc)          # track vertical by v only (assume centered)
+                vz_sp = float(np.clip(-K_VZ * elev, -VZ_MAX, VZ_MAX))
+                z_ref += vz_sp * LOOP_DT
+                z_ref = float(np.clip(z_ref, spawn[2] - 2.0, spawn[2] + 5.0))
+            a2 = float(np.clip(KP_Z * (z_ref - ds.pos_ned[2]) + KD_Z * (0.0 - ds.vel_ned[2]), -4.0, 4.0))
+        elif det is not None:
             ex = (det.u - CX) / FX
             v_lat_sp = float(np.clip(K_STRAFE * SIGN_S * ex, -VLAT_MAX, VLAT_MAX))
-            elev = gate_world_elev(det.u, det.v, Rc)          # pitch-invariant
-            vz_sp = float(np.clip(-K_VZ * elev, -VZ_MAX, VZ_MAX))   # gate above horizon -> climb (vz<0)
-            z_ref += vz_sp * LOOP_DT                                # integrate climb into altitude ref
-            z_ref = float(np.clip(z_ref, spawn[2] - 18.0, spawn[2] + 5.0))
+            elev = gate_world_elev(det.u, det.v, Rc)
+            vz_sp = float(np.clip(-K_VZ * elev, -VZ_MAX, VZ_MAX))
+            z_ref += vz_sp * LOOP_DT
+            z_ref = float(np.clip(z_ref, spawn[2] - 2.0, spawn[2] + 5.0))
             a2 = float(np.clip(KP_Z * (z_ref - ds.pos_ned[2]) + KD_Z * (0.0 - ds.vel_ned[2]), -4.0, 4.0))
         else:
-            v_lat_sp = 0.0                                      # lost/rejected: hold heading + climbing ref
+            v_lat_sp = 0.0
             a2 = KP_Z * (z_ref - ds.pos_ned[2]) + KD_Z * (0.0 - ds.vel_ned[2])
         a_lat = KD_LAT * (v_lat_sp - v_lat)
         a = np.zeros(3); a[:2] = a_al * fwd + a_lat * lat; a[2] = a2
@@ -105,19 +118,23 @@ while time.time()-t0 < DURATION:
         c.send_attitude_target(np.clip(w/RG, -WMAX, WMAX), thr)
         gi = s.get_gate_idx()
         if gi > gi0:
-            passed = True; print(f"*** GATE PASSED at t={time.time()-t0:.1f}s (idx {gi0}->{gi}) ***", flush=True); break
+            passed = True
+            if bgr is not None:
+                trail.append((ds.pos_ned - spawn).copy())
+                viz.log_step(time.time()-t0, ds.pos_ned - spawn, ds.vel_ned, bgr,
+                             red_mask(bgr, P), draw_overlay(bgr, det), det, None, trail=trail)
+            print(f"*** GATE PASSED at t={time.time()-t0:.1f}s (idx {gi0}->{gi}) ***", flush=True); break
         logn += 1
-        if logn % 12 == 0 and bgr is not None:
+        if logn % 10 == 0 and bgr is not None:
             trail.append((ds.pos_ned - spawn).copy())
             viz.log_step(time.time()-t0, ds.pos_ned - spawn, ds.vel_ned, bgr,
                          red_mask(bgr, P), draw_overlay(bgr, det), det, None, trail=trail)
         k = int((time.time()-t0)/2.0)
         if k != lastlog:
             lastlog = k; d = ds.pos_ned - spawn
-            uu = f"{det.u:.0f}" if det else "--"; vv = f"{det.v:.0f}" if det else "--"
-            ee = f"{np.degrees(elev):+4.0f}" if elev is not None else "--"; zz = f"{det.w_px:.0f}" if det else "--"
-            print(f"t={time.time()-t0:4.1f} u={uu} v={vv} elev={ee} sz={zz} spd={np.linalg.norm(ds.vel_ned[:2]):4.1f} "
-                  f"dDown={d[2]:+5.1f} zref={z_ref-spawn[2]:+4.1f} fwd={d[:2]@fwd:+5.1f} gi={gi}", flush=True)
+            uu = f"{det.u:.0f}" if det else "--"; vv = f"{det.v:.0f}" if det else "--"; zz = f"{det.w_px:.0f}" if det else "--"
+            print(f"t={time.time()-t0:4.1f} u={uu} v={vv} sz={zz} spd={np.linalg.norm(ds.vel_ned[:2]):4.1f} "
+                  f"dDown={d[2]:+5.1f} zref={z_ref-spawn[2]:+4.1f} lk={int(locked)} fwd={d[:2]@fwd:+5.1f} gi={gi}", flush=True)
     time.sleep(LOOP_DT)
 d = s.get_drone().pos_ned - spawn
 print(f"\nRESULT: {'PASSED gate' if passed else 'did NOT pass'} | fwd={d[:2]@fwd:+.0f}m dDown={d[2]:+.0f}m over {time.time()-t0:.0f}s", flush=True)
