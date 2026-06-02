@@ -20,3 +20,4 @@ outputs/
 # Git worktrees
 .claude/worktrees/
 carwelding_depth_left.zip
+dataset/

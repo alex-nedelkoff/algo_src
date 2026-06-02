@@ -1,0 +1,11 @@
+{
+  "hover_thrust": 0.23,
+  "k_a": 62.0,
+  "rate_gain": -1.93,
+  "rate_gain_axes": {
+    "roll": -1.98,
+    "pitch": -1.89,
+    "yaw": -1.93
+  },
+  "source": "probe6 (thrust map) + probe7 (rate gains)"
+}
