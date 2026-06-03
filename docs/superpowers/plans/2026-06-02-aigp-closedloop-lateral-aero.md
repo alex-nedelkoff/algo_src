@@ -156,3 +156,20 @@
 - ⚠️ **Lag-convention bug caught + fixed in review:** the optimizer originally returned lag with the OPPOSITE sign to `build_targets_cl` → would have double-shifted in T7. Now UNIFIED: `lag>0` = velocity is `lag` samples later than force; `refine_nuisance`'s returned `lag` feeds directly into `build_targets_cl`. (Sign caveat noted in the rollout docstring.)
 - Review also spot-checked T3/T4 formulas (tau_aero elementwise I_ratio, cross order, lever-arm signs, feature columns) — all correct.
 - Next: **T6** (live, sim up) — governed 2-1-1 battery (lat+yaw, a few trim speeds; boost dwell/amp for stronger sideslip per the T1 note). Then **T7** fit/validate → extend `sim_aero.json` + report.
+
+
+---
+### T6 / T7 — DONE (2026-06-03)
+- T6: flew governed 2-1-1 doublet battery (doublet211 lat|yaw). Lat → clean
+  but weak sideslip (~1 m/s; soft roll + 3.7x roll inertia bank slowly).
+  Yaw doublets at amp 1.0–1.2 DESTABILIZED (drone spun to ~11 m/s; excluded
+  by the pre-registered speed<4/|w|<6 filter). Aborted tilt-99 run 195243 excluded.
+- T7 (aero_run_cl.py): closed-loop fit. D_y ≈ +0.36/s identified — positive,
+  lit-consistent (0.24–0.39), R²=0.21 (excitation-limited). Enabler: lever-arm r
+  + latency lag=5 (~28 ms) refinement (aero_rollout.refine_nuisance) flipped
+  Phase-1's spurious NEGATIVE D_y to physical positive. kappa (inertia scale)
+  fit jointly: tau_motor = kappa*inertia − moment_features·θ_M. Deliverable
+  docs/sim_aero_cl.json; cached nuisance aero_data/cl_nuisance.json
+  (r=[0.02,−0.023,0.196], lag=5). Commit c9fc5af. Linear COR-96 + COR-127 updated.
+- Weathervane wv_z STILL ~0 (signal-limited): lat sideslip too weak, yaw
+  doublets destabilize, kappa/damping collinear in oscillatory data.
