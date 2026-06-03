@@ -8,14 +8,19 @@ are precomputed once per run (the expensive Python loops in build_targets_cl onl
 once), then the per-evaluation cost function only does the cheap lever-arm correction
 + lag shift + lstsq fit.
 
-Lag convention
---------------
-- `fit_residual_cost` (public API): passes `lag` straight to `build_targets_cl`.
-  In `build_targets_cl`, positive lag trims v_body[:lag] and keeps a_cg[:N-lag].
-- `refine_nuisance` (optimizer): uses physical convention where positive lag means
-  "force is delayed by lag samples" (force arrives lag samples late).  Internally
-  it maps to the opposite sign for `build_targets_cl`, but the RETURNED `lag` value
-  is the physical delay count (positive = force delayed).
+Lag convention (unified — same everywhere)
+------------------------------------------
+Positive lag means "velocity is delayed by lag samples relative to force" (equivalently,
+force arrives lag samples early, or v_body lags the IMU by lag samples).
+
+Alignment for lag > 0:
+  - keep v_body[lag:]   (drop the first lag velocity samples — they have no matching force)
+  - keep a_cg[:N-lag]   (drop the last lag force samples)
+  This pairs v_body[i+lag] with a_cg[i], i.e. uses the velocity that is lag steps later
+  than the corresponding force sample.
+
+This is the same convention used by `build_targets_cl` and `fit_residual_cost`, so the
+`lag` returned by `refine_nuisance` can be passed directly to `build_targets_cl`.
 """
 from __future__ import annotations
 import numpy as np
@@ -88,15 +93,13 @@ def _precompute_run_full(df, I_ratio, kappa, motor_params):
 def _cost_from_cache(r, lag, cache_list, motor_params, I_ratio, kappa, w_moment):
     """Fast cost function using precomputed run data.
 
-    Physical lag convention: positive lag = force is delayed by lag samples relative
-    to velocity.  This is the OPPOSITE sign to build_targets_cl's lag parameter.
-    Alignment: keep v_body[:N-lag] (earlier velocity) with a_cg[lag:] (later force).
+    Uses the same lag convention as build_targets_cl: positive lag keeps v_body[lag:]
+    paired with a_cg[:N-lag] (velocity is lag samples later than force).
 
     Parameters
     ----------
     lag : int
-        Physical delay in samples (>0 = force is late; i.e. force[i] corresponds to
-        velocity[i-lag]).  The internal build_targets_cl would use lag=-lag.
+        Lag in samples (same sign as build_targets_cl's lag parameter).
     """
     total = 0.0
     for cache in cache_list:
@@ -111,24 +114,23 @@ def _cost_from_cache(r, lag, cache_list, motor_params, I_ratio, kappa, w_moment)
         # Lever-arm correction (cheap)
         a_cg = leverarm_correct(f_imu, omega, omega_dot, r)
 
-        # Lag alignment using PHYSICAL convention
-        # lag > 0: force arrives lag samples late; align by keeping early velocity with late force
+        # Lag alignment — same slicing as build_targets_cl
         if lag != 0:
             if lag > 0:
-                # Force is delayed: pair v_body[0..N-lag-1] with a_cg[lag..N-1]
-                vb = v_body[:N - lag]
-                om = omega[lag:]
-                af = a_cg[lag:]
-                am = tau_aero[lag:]
-                T = T_arr[lag:]
+                # Pair v_body[lag+i] with a_cg[i]: velocity is lag samples later
+                vb = v_body[lag:]
+                om = omega[:N - lag]
+                af = a_cg[:N - lag]
+                am = tau_aero[:N - lag]
+                T = T_arr[:N - lag]
             else:
-                # Force is advanced (|lag| samples early): pair v_body[|lag|..N-1] with a_cg[0..N-|lag|-1]
+                # lag < 0: force is lag samples later (force advanced relative to velocity)
                 nl = -lag
-                vb = v_body[nl:]
-                om = omega[:N - nl]
-                af = a_cg[:N - nl]
-                am = tau_aero[:N - nl]
-                T = T_arr[:N - nl]
+                vb = v_body[:N - nl]
+                om = omega[nl:]
+                af = a_cg[nl:]
+                am = tau_aero[nl:]
+                T = T_arr[nl:]
         else:
             vb = v_body
             om = omega
@@ -210,8 +212,9 @@ def refine_nuisance(runs, I_ratio, kappa, motor_params, x0=None, restarts=3, w_m
     Uses precomputed run data (v_body, omega_dot, tau_aero, T) so each function
     evaluation only does lever-arm correction + lag alignment + lstsq fit.
 
-    The returned `lag` uses the PHYSICAL convention: positive lag = force is
-    delayed by that many samples (force arrives late).
+    The returned `lag` uses the same convention as `build_targets_cl`: positive lag
+    means velocity is delayed by that many samples relative to force.  The returned
+    value can be passed directly to `build_targets_cl(df, ..., lag=lag)`.
 
     Parameters
     ----------
@@ -225,7 +228,7 @@ def refine_nuisance(runs, I_ratio, kappa, motor_params, x0=None, restarts=3, w_m
     -------
     dict with keys:
         r          (3,)   -- best lever-arm (m)
-        lag        int    -- best physical lag (samples; positive = force delayed)
+        lag        int    -- best lag (samples; same convention as build_targets_cl)
         cost       float  -- best cost
         theta_F          -- force coefficients from final fit
         theta_M          -- moment coefficients from final fit
@@ -294,9 +297,9 @@ def refine_nuisance(runs, I_ratio, kappa, motor_params, x0=None, restarts=3, w_m
     if best_x is None:
         best_x = x0.copy()
 
-    # Final fit at the best nuisance point (physical lag convention)
+    # Final fit at the best nuisance point
     r_best = best_x[:3]
-    lag_best = int(round(best_x[3]))  # physical lag (positive = force delayed)
+    lag_best = int(round(best_x[3]))  # same convention as build_targets_cl
 
     # Aggregate all runs for the final coefficient estimate using precomputed cache
     all_vb, all_om, all_T, all_af, all_am = [], [], [], [], []
@@ -311,21 +314,21 @@ def refine_nuisance(runs, I_ratio, kappa, motor_params, x0=None, restarts=3, w_m
 
         a_cg = leverarm_correct(f_imu, omega, omega_dot, r_best)
 
-        # Use physical lag convention: lag > 0 = force delayed
+        # Same slicing convention as build_targets_cl
         if lag_best != 0:
             if lag_best > 0:
-                vb = v_body[:N - lag_best]
-                om = omega[lag_best:]
-                af = a_cg[lag_best:]
-                am = tau_aero[lag_best:]
-                T = T_arr[lag_best:]
+                vb = v_body[lag_best:]
+                om = omega[:N - lag_best]
+                af = a_cg[:N - lag_best]
+                am = tau_aero[:N - lag_best]
+                T = T_arr[:N - lag_best]
             else:
                 nl = -lag_best
-                vb = v_body[nl:]
-                om = omega[:N - nl]
-                af = a_cg[:N - nl]
-                am = tau_aero[:N - nl]
-                T = T_arr[:N - nl]
+                vb = v_body[:N - nl]
+                om = omega[nl:]
+                af = a_cg[nl:]
+                am = tau_aero[nl:]
+                T = T_arr[nl:]
         else:
             vb, om, af, am, T = v_body, omega, a_cg, tau_aero, T_arr
 

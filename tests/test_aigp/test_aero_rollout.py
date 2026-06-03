@@ -45,6 +45,10 @@ def test_refine_recovers_leverarm():
 
 
 def test_refine_recovers_latency():
+    # _make_run injects np.roll(a_imu, +3): new_a_imu[i] = old_a_imu[i-3], so force is
+    # delayed 3 samples.  To undo, build_targets_cl needs lag=-3 (takes v_body[:N-3] /
+    # a_cg[3:]), pairing v_body[i] with a_cg[i+3]=old_a_imu[i].  refine_nuisance must
+    # return lag=-3 so the caller passes it directly to build_targets_cl.
     run = _make_run(r_true=(0, 0, 0), lag_true=3, seed=2)
     out = refine_nuisance([run], I_RATIO, KAPPA, MP, restarts=4)
-    assert abs(out["lag"] - 3) <= 1
+    assert abs(out["lag"] + 3) <= 1  # -3: build_targets_cl advances force 3 samples to undo the roll
