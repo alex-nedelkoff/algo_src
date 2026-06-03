@@ -147,3 +147,12 @@
 - **Calibration (live):** de-meaned single-axis motor differentials (subtract the collective/altitude-loop component) → `sx=[-1,1,1,-1]` (roll), `sy=[-1,-1,1,1]` (pitch), `sz=[-1,1,-1,1]` (yaw) = **−(sx·sy) diagonal** — a consistent quad-X. **Validated: hover torque τ≈[0,0.02,0]** (alternating signs ⇒ pure-thrust hover). `k_f` from hover (`T=9.81`); `k_q` seeded (refine in T5). Saved `docs/motor_model.json`; baked into `DEFAULT_GEOM`.
 - Gotcha: a sustained roll/pitch/yaw rate command also shifts the collective (drone tilts → altitude loop raises all motors); must **de-mean** the per-motor delta to recover the differential sign pattern.
 - Next: **T3** (offline TDD) — `build_targets_cl`: aero moment `τ_aero = I·ω̇ + ω×(Iω) − τ_motor` (τ_motor from the calibrated model), lever-arm + latency correction, spline derivatives.
+
+---
+### T3 / T4 / T5 — DONE (2026-06-02), offline TDD, full aero suite 122 passed
+- **T3** `074609f` — `build_targets_cl`: `tau_aero = kappa*(I_ratio*ω̇ + ω×(I_ratio*ω)) − tau_motor` (motor torque now MEASURED from the calibrated model, not omitted); `spline_deriv` (cubic-spline ω̇, cleaner than finite-diff); `leverarm_correct` (`a_cg = a_imu − ω×(ω×r) − ω̇×r`); latency `lag`. Phase-1 `build_targets` + tests untouched.
+- **T4** `44ded0d` — `force_features_cl(v,T)`: thrust-coupled drag `−(D0 + D_T·T)·v − C·v|v|` (FORCE_COLS_CL, 9). `moment_features_cl(v,ω)`: damping + weathervane, **yaw from lateral v_y** (`phi[2,5]=v_y`, the sideslip→yaw the 2-1-1 excites). `fit_parametric_cl`.
+- **T5** `d3d4380` + review fix `b11f61c` — `aero_rollout.py`: `refine_nuisance` (Nelder-Mead over lever-arm r + latency lag, inner loop = build_targets_cl→fit_parametric_cl, objective = fit-residual; precompute cache for ~60× speed). Recovers r≈[0.05,−0.03] and lag in tests.
+- ⚠️ **Lag-convention bug caught + fixed in review:** the optimizer originally returned lag with the OPPOSITE sign to `build_targets_cl` → would have double-shifted in T7. Now UNIFIED: `lag>0` = velocity is `lag` samples later than force; `refine_nuisance`'s returned `lag` feeds directly into `build_targets_cl`. (Sign caveat noted in the rollout docstring.)
+- Review also spot-checked T3/T4 formulas (tau_aero elementwise I_ratio, cross order, lever-arm signs, feature columns) — all correct.
+- Next: **T6** (live, sim up) — governed 2-1-1 battery (lat+yaw, a few trim speeds; boost dwell/amp for stronger sideslip per the T1 note). Then **T7** fit/validate → extend `sim_aero.json` + report.
