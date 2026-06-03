@@ -409,6 +409,51 @@ def run_doublet211(axis, trim_speed, amp, dwell=0.5):
     print(f"\nSAVED {path}  rows={len(df)} cols={len(df.columns)}", flush=True)
 
 
+def run_pulse(axis, amp=1.5, reps=8, trim=1.5):
+    """KAPPA-ISOLATION (sysID): cruise slowly toward the OPEN course (governed + forward-accel-capped =
+    the proven doublet211 safe envelope, heading AWAY from the spawn obstacle) and inject a train of
+    SHARP, brief roll('roll')/pitch('pitch') body-rate pulses. Each pulse's leading edge has large
+    omega_dot while omega~0 and v is small (aero negligible), so I*omega_dot ~= tau_motor isolates the
+    inertia scale kappa from damping — breaking the omega_dot<->omega collinearity that makes kappa
+    unidentifiable in oscillatory doublets. Motor torque is known via the hover-calibrated k_f, so a
+    clean kappa propagates the gravity anchor to yaw (pins k_q and wv_z). Moving into open space avoids
+    gate contact (no collision flag exists in telemetry). Logs motors + effort."""
+    ds0, yaw0, z_sp = setup()
+    ax = {"roll": 0, "pitch": 1, "yaw": 2}[axis]
+    fwd = heading_vec(yaw0, "fwd")
+    gov = ReferenceGovernor(max_speed=max(trim + 1.0, 2.5))
+    tilt_acc = np.tan(np.radians(18.0)) * 9.81
+    pulse_dur, rest_dur, settle = 0.18, 0.6, 3.0
+    period = pulse_dur + rest_dur
+    lg = Logger(); t0 = time.time(); last = -1
+    total = settle + reps * period + 0.6
+    while time.time() - t0 < total:
+        tau = time.time() - t0
+        ds = s.get_drone(); imu = s.get_imu()
+        if ds is not None and imu is not None:
+            vsp = gov.govern(trim * fwd, LOOP_DT)              # gentle fwd cruise into open space
+            extra = None; te = tau - settle
+            if te >= 0:
+                k = int(te // period); ph = te - k * period
+                if k < reps and ph < pulse_dur:
+                    extra = np.zeros(3); extra[ax] = (1.0 if k % 2 == 0 else -1.0) * amp
+            wcmd, thr, ta, tilt = control(ds, vsp, z_sp, yaw0, extra_w=extra, tilt_acc=tilt_acc,
+                                          al_dir=fwd, al_max=0.6)
+            c.send_attitude_target(wcmd, thr)
+            lg.log(tau, ds, imu, ta, coast=False, wcmd=wcmd, thr_cmd=thr)
+            if tilt > ABORT_TILT:
+                print(f"ABORT tilt={tilt:.0f}", flush=True); break
+            k2 = int(tau / 1.0)
+            if k2 != last:
+                last = k2
+                R = quat_to_R(ds.quat_wxyz); vb = R.T @ ds.vel_ned
+                print(f"t={tau:4.1f} spd={np.linalg.norm(ds.vel_ned[:2]):4.1f} "
+                      f"w=({ds.omega[0]:+4.1f},{ds.omega[1]:+4.1f},{ds.omega[2]:+4.1f}) tilt={tilt:3.0f}", flush=True)
+        time.sleep(LOOP_DT)
+    path, df = lg.save(f"pulse_{axis}")
+    print(f"\nSAVED {path}  rows={len(df)} cols={len(df.columns)}", flush=True)
+
+
 if __name__ == "__main__":
     man = sys.argv[1]
     if man == "sweep":
@@ -431,5 +476,9 @@ if __name__ == "__main__":
     elif man == "doublet211":
         run_doublet211(sys.argv[2], float(sys.argv[3]), float(sys.argv[4]),
                        float(sys.argv[5]) if len(sys.argv) > 5 else 0.5)
+    elif man == "pulse":
+        run_pulse(sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 1.5,
+                  int(sys.argv[4]) if len(sys.argv) > 4 else 8,
+                  float(sys.argv[5]) if len(sys.argv) > 5 else 1.5)
     else:
         print(f"unknown maneuver {man}"); sys.exit(1)
