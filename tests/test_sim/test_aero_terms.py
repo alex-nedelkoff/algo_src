@@ -71,6 +71,17 @@ def test_aero_terms_domain_randomizable():
     assert p2.linear_drag_coeff.shape == (3,) and p2.weathervane_coeff.shape == (3,)
 
 
+def test_dr_handles_negative_weathervane_nominal():
+    """DR must not crash on a NEGATIVE nominal — weathervane_coeff is negative for the VQ drone
+    (nominal*(1-p) > nominal*(1+p) flips the uniform bounds; fixed via element-wise min/max)."""
+    from sim.domain_randomization import DomainRandomizer
+    p = _params(weathervane_coeff=np.array([0.0, 0.0, -0.008]))
+    dr = DomainRandomizer.from_percentage(0.75, params=["weathervane_coeff"])
+    p2 = dr.apply(p, np.random.default_rng(1))      # must not raise
+    wv = p2.weathervane_coeff[2]
+    assert -0.014 - 1e-9 <= wv <= -0.002 + 1e-9, wv  # within nominal*(1±0.75), sign preserved
+
+
 def test_aero_terms_default_off():
     """No aero coeffs -> no horizontal force (unchanged from stock sim)."""
     sim = NumpyQuadDynamics(_params())

@@ -92,7 +92,8 @@ class DomainRandomizer:
                 if self.absolute_bounds:
                     new_val = rng.uniform(lo, hi)
                 else:
-                    new_val = rng.uniform(nominal * (1.0 - lo), nominal * (1.0 + hi))
+                    a, b = nominal * (1.0 - lo), nominal * (1.0 + hi)
+                    new_val = rng.uniform(min(a, b), max(a, b))  # min/max: nominal may be negative
                 setattr(new_params, name, new_val)
 
             elif name in ARRAY_PARAMS:
@@ -100,9 +101,9 @@ class DomainRandomizer:
                 if self.absolute_bounds:
                     new_val = rng.uniform(lo, hi, size=nominal.shape)
                 else:
-                    new_val = rng.uniform(
-                        nominal * (1.0 - lo), nominal * (1.0 + hi)
-                    )
+                    a, b = nominal * (1.0 - lo), nominal * (1.0 + hi)
+                    # element-wise min/max so negative-nominal entries (e.g. weathervane) don't flip bounds
+                    new_val = rng.uniform(np.minimum(a, b), np.maximum(a, b))
                 setattr(new_params, name, new_val)
 
             elif name == "inertia":
@@ -111,7 +112,8 @@ class DomainRandomizer:
                 if self.absolute_bounds:
                     new_diag = rng.uniform(lo, hi, size=diag.shape)
                 else:
-                    new_diag = rng.uniform(diag * (1.0 - lo), diag * (1.0 + hi))
+                    a, b = diag * (1.0 - lo), diag * (1.0 + hi)
+                    new_diag = rng.uniform(np.minimum(a, b), np.maximum(a, b))
                 new_params.inertia = np.diag(new_diag)
 
         return new_params

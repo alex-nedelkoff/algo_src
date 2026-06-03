@@ -1,0 +1,46 @@
+_target_: sim.envs.numpy_quad_factory.NumpyQuadEnvFactory
+
+dt: 0.01
+n_envs: 100
+max_steps: 1000
+gate_passage_radius: 1.0
+
+random_gate_start: true
+start_behind_dist: 1.0
+start_vel_std: 0.5
+start_att_std: 0.35
+gate_collision: true
+start_omega_std: 1.0
+esc_nonlinearity: 0.95
+
+n_lookahead_gates: 1
+action_mode: trpy
+
+# === AI-GP Virtual Qualifier drone — identified parameters ===
+# Source of truth: docs/vq_drone_params.md / .json. The sysID is MASS-NORMALIZED, so absolute
+# scale comes via `mass` (degenerate -> chassis-bbox prior). The TRUSTED parts are the inertia
+# RATIO, the linear rotor drag, the quadratic thrust form, and the weathervane SIGN.
+# Unit bridge (numpy_quad does accel = force/mass): linear_drag_coeff = D[1/s] * mass;
+# inertia = I_ratio * kappa[mass-norm] * mass.
+params:
+  _target_: sim.dynamics.params.VehicleParams
+  mass: 0.65                       # chassis-bbox prior (VADR-TS-002 280x280x160mm, 5"); abs scale degenerate -> DR
+  arm_length: 0.14                 # motor_model.json
+  k_thrust: 2.49e-6                # hover at mass*g; T = k_thrust * sum(w^2)  (QUADRATIC form confirmed by sweep)
+  k_torque: 8.80e-8                # yaw reaction (weak authority); DR wide
+  tau_motor: 0.011                 # dyn3-identified motor lag
+  prop_radius: 0.0635
+  # inertia = [3.7, 1, 4.7] * kappa(0.0085) * mass(0.65). Ixx/Iyy=3.7 trusted (both efforts);
+  # Izz=4.7*Iyy from perpendicular-axis (UNDER-IDENTIFIED -> DR wide, see vq.yaml).
+  inertia: [0.0204, 0.0055, 0.0259]
+  # quadratic parasitic drag: unmeasured at race speed (>8 m/s) -> 0 nominal, DR-only.
+  drag_coeff: [0.0, 0.0, 0.0]
+  # linear rotor drag = D[0.52, 0.36, 0] * mass(0.65). The DOMINANT, lit-validated drag.
+  linear_drag_coeff: [0.338, 0.234, 0.0]
+  # weathervane (v_y -> yaw): SIGN validated destabilizing (tail-first). The pack's identified
+  # MAGNITUDE was ~10x too weak (k_q seeded low -> gave a falsely-stable drone), so this is
+  # calibrated to REPRODUCE THE OBSERVED real cam-forward divergence: -0.03 doubles sideslip in
+  # ~0.65 s (a strongly tail-first-unstable racing drone). DR spans mild..strong; refine against
+  # the measured real divergence rate as a follow-up.
+  weathervane_coeff: [0.0, 0.0, -0.03]
+  max_rpm: 31470.0
