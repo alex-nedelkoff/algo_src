@@ -69,9 +69,9 @@
     "thrust_form": {
       "value": "quadratic",
       "units": "g(u)",
-      "confidence": "med",
-      "source": "motor_model.json",
-      "notes": "quadratic g(u)=u^2; CONFLICTS with sim_dynamics power=1 (see consistency)"
+      "confidence": "high",
+      "source": "motor_model.json; CONFIRMED by collective sweep 2026-06-03",
+      "notes": "quadratic g(u)=u^2 confirmed: collective sweep T~u^1.64, quad R2=0.935 vs linear 0.851 (affine-quad T=a*u^2+b best, R2=0.958). sim_dynamics power=1 (rough 3-level early fit) SUPERSEDED."
     },
     "c_T": {
       "value": 9.946206428787926,

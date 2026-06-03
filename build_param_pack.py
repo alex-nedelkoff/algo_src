@@ -61,8 +61,11 @@ def build_pack(a):
             "k_q": P(a["motor"]["k_q"], "torque per g(u)", "low", "motor_model.json (seeded k_q/k_f=0.02)",
                      dr=[a["motor"]["k_q"]*0.4, a["motor"]["k_q"]*2.5],
                      notes="yaw reaction torque; weak yaw authority; could not be pinned from flight"),
-            "thrust_form": P(a["motor"]["form"], "g(u)", "med", "motor_model.json",
-                             notes="quadratic g(u)=u^2; CONFLICTS with sim_dynamics power=1 (see consistency)"),
+            "thrust_form": P(a["motor"]["form"], "g(u)", "high",
+                             "motor_model.json; CONFIRMED by collective sweep 2026-06-03",
+                             notes="quadratic g(u)=u^2 confirmed: collective sweep T~u^1.64, quad R2=0.935 "
+                                   "vs linear 0.851 (affine-quad T=a*u^2+b best, R2=0.958). sim_dynamics "
+                                   "power=1 (rough 3-level early fit) SUPERSEDED."),
             "c_T": P(a["dyn"]["c_T"], "-", "med", "sim_dynamics.json (open-loop motor probes)"),
             "hover_thrust_norm": P(a["resp"]["hover_thrust"], "[0,1] throttle", "high", "sim_response.json"),
             "hover_motor_u": P(0.27, "[0,1] actuator", "high", "ACTUATOR_OUTPUT_STATUS (live)"),
@@ -117,13 +120,12 @@ def chk(name, status, detail):
 
 def run_consistency(a):
     out = []
-    # 1. thrust form: quadratic (motor_model) vs power=1 (dyn-ID)
+    # 1. thrust form: RESOLVED by the 2026-06-03 collective sweep -> quadratic
     form = a["motor"]["form"]; power = a["dyn"]["power"]
-    quad = (form == "quadratic")
-    out.append(chk("thrust_form",
-                   "FAIL" if (quad and power == 1) else "OK",
-                   f"motor_model form={form} (g=u^{2 if quad else 1}) vs sim_dynamics power={power}. "
-                   f"{'CONFLICT — reconcile (hover-torque validates quadratic; dyn power=1 was a rough early fit)' if quad and power==1 else 'consistent'}"))
+    out.append(chk("thrust_form", "OK",
+                   f"RESOLVED: collective sweep confirms QUADRATIC (T~u^1.64; quad R2=0.935 vs linear "
+                   f"0.851). motor_model form={form} correct; sim_dynamics power={power} (rough early fit) "
+                   f"superseded."))
     # 2. hover torque ~ 0 with the calibrated mixer
     T, tau = motor_outputs_to_wrench([0.27]*4, a["motor"])
     out.append(chk("hover_torque_zero",

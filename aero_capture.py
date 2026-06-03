@@ -454,6 +454,52 @@ def run_pulse(axis, amp=1.5, reps=8, trim=1.5):
     print(f"\nSAVED {path}  rows={len(df)} cols={len(df.columns)}", flush=True)
 
 
+def run_collective(dwell=0.5, recover=0.8, levels=None):
+    """THRUST-CURVE sweep (resolves the thrust-form conflict): hold LEVEL attitude (closed-loop) and
+    step the COLLECTIVE thrust command through a staircase, recovering altitude (full alt-hold) between
+    steps. Logs measured motor outputs u + IMU specific force so the form  T = k_f * sum(g(u))  (linear
+    g=u vs quadratic g=u^2) can be fit offline from (u, thrust) pairs over a WIDE u range. Collective is
+    balanced -> no torque -> rotationally benign; the only excursion is vertical, bounded by recovery."""
+    levels = levels or [0.14, 0.18, 0.22, 0.26, 0.30, 0.34]
+    ds0, yaw0, z_sp = setup()
+    segs = []
+    for L in levels:
+        segs.append(("recover", recover, 0.0)); segs.append(("test", dwell, L))
+    segs.append(("recover", recover, 0.0))
+    total = sum(d for _, d, _ in segs)
+
+    def cur(te):
+        acc = 0.0
+        for kind, d, L in segs:
+            if te < acc + d:
+                return kind, L
+            acc += d
+        return "done", 0.0
+
+    lg = Logger(); t0 = time.time(); last = -1
+    c.arm()
+    while time.time() - t0 < total:
+        tau = time.time() - t0; kind, L = cur(tau)
+        ds = s.get_drone(); imu = s.get_imu()
+        if ds is not None and imu is not None:
+            wcmd, thr, ta, tilt = control(ds, np.zeros(3), z_sp, yaw0)   # level + alt-hold
+            if kind == "test":
+                thr = float(L)                                          # override collective
+            c.send_attitude_target(wcmd, thr)
+            lg.log(tau, ds, imu, ta, coast=False, wcmd=wcmd, thr_cmd=thr)
+            if tilt > ABORT_TILT or abs(ds.pos_ned[2] - z_sp) > 6.0:
+                print(f"ABORT tilt={tilt:.0f} dz={ds.pos_ned[2]-z_sp:+.1f}", flush=True); break
+            k = int(tau / 1.0)
+            if k != last:
+                last = k
+                a = s.get_actuators(); u = a[0] if a else np.zeros(4)
+                print(f"t={tau:4.1f} {kind:7s} thr={thr:.2f} u~{np.mean(u):.3f} "
+                      f"fz={imu[0][2]:+5.1f} dz={ds.pos_ned[2]-z_sp:+4.1f} tilt={tilt:3.0f}", flush=True)
+        time.sleep(LOOP_DT)
+    path, df = lg.save("collective")
+    print(f"\nSAVED {path}  rows={len(df)} cols={len(df.columns)}", flush=True)
+
+
 if __name__ == "__main__":
     man = sys.argv[1]
     if man == "sweep":
@@ -480,5 +526,7 @@ if __name__ == "__main__":
         run_pulse(sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 1.5,
                   int(sys.argv[4]) if len(sys.argv) > 4 else 8,
                   float(sys.argv[5]) if len(sys.argv) > 5 else 1.5)
+    elif man == "collective":
+        run_collective()
     else:
         print(f"unknown maneuver {man}"); sys.exit(1)

@@ -20,7 +20,7 @@ Regenerate: `python build_param_pack.py`; validate: `python validate_param_pack.
 | rigid | arm L | 0.14 m | med | motor_model | — | |
 | prop | k_f | 34.26 | high | hover calib | — | `T=k_f·Σg(u)`, hover→9.81 |
 | prop | k_q | 0.685 | **low** | seeded k_q/k_f=0.02 | 0.27–1.7 | weak yaw; not pinnable |
-| prop | thrust form | quadratic g(u)=u² | med | motor_model | — | ⚠ conflicts dyn power=1 |
+| prop | thrust form | quadratic g(u)=u² | high | motor_model + collective sweep | — | ✓ confirmed (T~u^1.64, quad R²0.935≫linear 0.851) |
 | prop | c_T | 9.95 | med | dyn | — | |
 | prop | hover (throttle / motor-u) | 0.23 / 0.27 | high | sim_response / live | — | |
 | mixer | sx,sy,sz | [-1,1,1,-1],[-1,-1,1,1],[-1,1,-1,1] | high | motor_model | — | hover-torque≈0 validated |
@@ -42,7 +42,7 @@ Regenerate: `python build_param_pack.py`; validate: `python validate_param_pack.
 
 | Check | Status | Finding |
 |---|---|---|
-| thrust_form | **FAIL** | quadratic (motor_model) vs power=1 (dyn-ID). Quadratic is trusted (hover-torque validates it; dyn power=1 was a rough 3-level fit). **Resolve with a thrust sweep** before high-fidelity use. |
+| thrust_form | **OK (resolved)** | Collective sweep (378 samples, u 0.14–0.43) confirms **quadratic**: T~u^1.64, `T=a·u²` R²=0.935 vs linear 0.851 (affine-quad best, R²=0.958). `sim_dynamics` power=1 (rough 3-level fit) superseded. `aero_capture.py collective` + `thrust_form_fit.py`. |
 | hover_torque_zero | OK | reconstructed |τ|=0.000 at hover → mixer signs correct |
 | D_x_thrust_dependence | OK | coast 0.52 vs powered 0.33 → operating-point dependent (expected) |
 | acro_rate_gain | WARN | sysID −1.98 vs flight −2.5 (~1.3×); use the flight-measured value |
@@ -71,8 +71,8 @@ The drag model reproduces real motion.
 **Biggest fidelity gap: the >8 m/s race regime is unmeasured** (quadratic drag + BEM thrust droop). Expect a
 sim-to-real gap at speed; close it with residual learning on real VQ flight and/or a high-speed sysID campaign.
 
-**Cheap next wins:** resolve the thrust-form conflict (a 4-level collective sweep), and run the existing
-motor-lag fitter.
+**Cheap next wins:** ~~resolve the thrust-form conflict~~ ✓ done (quadratic confirmed); run the existing
+motor-lag fitter; (later) a high-speed sysID campaign for the >8 m/s regime.
 
 *Out of scope here:* the end-to-end "does a surrogate built from this transfer" check — that needs the
 surrogate built first. This pack is validated *against real flight*, the right pre-surrogate bar.

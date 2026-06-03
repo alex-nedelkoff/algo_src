@@ -2,8 +2,8 @@
   "checks": [
     {
       "name": "thrust_form",
-      "status": "FAIL",
-      "detail": "motor_model form=quadratic (g=u^2) vs sim_dynamics power=1. CONFLICT \u2014 reconcile (hover-torque validates quadratic; dyn power=1 was a rough early fit)"
+      "status": "OK",
+      "detail": "RESOLVED: collective sweep confirms QUADRATIC (T~u^1.64; quad R2=0.935 vs linear 0.851). motor_model form=quadratic correct; sim_dynamics power=1 (rough early fit) superseded."
     },
     {
       "name": "hover_torque_zero",
