@@ -140,3 +140,46 @@ def fit_parametric_cl(V, W, T, a_force, a_moment, weights=None) -> dict:
         "r2_force":    _r2(yF0, PhiF0 @ thF),
         "r2_moment":   _r2(yM0, PhiM0 @ thM),
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-axis yaw moment fit (wv_z weathervane) — decoupled kappa
+# ---------------------------------------------------------------------------
+
+def fit_yaw_axis(W, WD, V, tau_motor_z, I_ratio, kappa=None) -> dict:
+    """Fit the yaw (z-axis) moment balance in isolation to recover the sideslip
+    weathervane wv_z, decoupled from the roll/pitch axes that dominate (and bias)
+    the joint kappa fit.
+
+    Yaw moment balance:
+        tau_motor_z = kappa*inertia_z + d_z*w_z - wv_z*v_y
+        inertia_z   = wd_z + (I_ratio_y - I_ratio_x)*w_x*w_y   (yaw gyroscopic coupling)
+
+    kappa is None -> fit [kappa, d_z, wv_z] jointly (design [inertia_z, w_z, -v_y]).
+    kappa given   -> fix it (move kappa*inertia_z to LHS), fit [d_z, wv_z]
+                     (design [w_z, -v_y]). This breaks the kappa/damping collinearity
+                     that washes wv_z out in the joint oscillatory-doublet fit.
+
+    Returns dict(kappa, d_z, wv_z, r2, cond, n) where cond is the design-matrix
+    condition number (high cond = collinear excitation, wv_z poorly determined).
+    """
+    W = np.asarray(W, float); WD = np.asarray(WD, float); V = np.asarray(V, float)
+    y = np.asarray(tau_motor_z, float).ravel()
+    I_ratio = np.asarray(I_ratio, float)
+    inertia_z = WD[:, 2] + (I_ratio[1] - I_ratio[0]) * W[:, 0] * W[:, 1]
+    w_z = W[:, 2]; v_y = V[:, 1]
+    if kappa is None:
+        Phi = np.stack([inertia_z, w_z, -v_y], axis=1)        # -> [kappa, d_z, wv_z]
+        th, *_ = np.linalg.lstsq(Phi, y, rcond=None)
+        kap, d_z, wv_z = float(th[0]), float(th[1]), float(th[2])
+        pred = Phi @ th
+    else:
+        kap = float(kappa)
+        Phi = np.stack([w_z, -v_y], axis=1)                   # -> [d_z, wv_z]
+        th, *_ = np.linalg.lstsq(Phi, y - kap * inertia_z, rcond=None)
+        d_z, wv_z = float(th[0]), float(th[1])
+        pred = Phi @ th + kap * inertia_z
+    ss = float(np.sum((y - pred) ** 2)); tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1.0 - ss / tot if tot > 0 else 0.0
+    cond = float(np.linalg.cond(Phi))
+    return {"kappa": kap, "d_z": d_z, "wv_z": wv_z, "r2": r2, "cond": cond, "n": int(len(y))}
