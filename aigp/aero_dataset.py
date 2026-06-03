@@ -69,3 +69,102 @@ def build_targets(df: pd.DataFrame, I_ratio) -> dict:
         "al_aero": aero_m,
         "coast": df["coast"].to_numpy().astype(bool),
     }
+
+
+def spline_deriv(t, w):
+    # Cubic-spline differentiation. Works for w (N,) or (N,3).
+    from scipy.interpolate import CubicSpline
+    t = np.asarray(t, float)
+    w = np.asarray(w, float)
+    cs = CubicSpline(t, w, axis=0)
+    return cs(t, 1)
+
+
+def leverarm_correct(a_imu, omega, omega_dot, r):
+    # Lever-arm correction: a_cg = a_imu - omega x (omega x r) - omega_dot x r
+    r = np.asarray(r, float).ravel()
+    a_imu = np.asarray(a_imu, float)
+    omega = np.asarray(omega, float)
+    omega_dot = np.asarray(omega_dot, float)
+    if np.all(r == 0.0):
+        return a_imu.copy()
+    centripetal = np.cross(omega, np.cross(omega, r))
+    euler = np.cross(omega_dot, r)
+    return a_imu - centripetal - euler
+
+
+def build_targets_cl(df, I_ratio, kappa, motor_params, r=None, lag=0):
+    # Closed-loop aero targets using measured motor outputs to reconstruct tau_motor.
+    # Returns dict: v_body, omega, omega_dot, tau_aero, a_aero, T
+    from .motor_model import motor_outputs_to_wrench
+
+    if r is None:
+        r = np.zeros(3)
+    r = np.asarray(r, float).ravel()
+
+    I_ratio = np.asarray(I_ratio, float).ravel()
+    assert I_ratio.shape == (3,), f'I_ratio must have 3 elements, got {I_ratio.shape}'
+
+    t = df['t'].to_numpy()
+    omega = df[['wx', 'wy', 'wz']].to_numpy()
+    f_imu = df[['fx', 'fy', 'fz']].to_numpy()
+    N = len(df)
+
+    # Body velocity: rotate each world velocity into body frame
+    v_body = np.zeros((N, 3))
+    for i in range(N):
+        q = df[['qw', 'qx', 'qy', 'qz']].iloc[i].to_numpy()
+        R = quat_to_R(q)
+        v_world = df[['vx', 'vy', 'vz']].iloc[i].to_numpy()
+        v_body[i] = world_to_body_vel(v_world, R)
+
+    # Angular acceleration via spline
+    omega_dot = spline_deriv(t, omega)
+
+    # Reconstruct motor torques and thrust per sample
+    tau_motor = np.zeros((N, 3))
+    T_arr = np.zeros(N)
+    u_cols = df[['u0', 'u1', 'u2', 'u3']].to_numpy()
+    for i in range(N):
+        T_i, tau_i = motor_outputs_to_wrench(u_cols[i], motor_params)
+        tau_motor[i] = tau_i
+        T_arr[i] = T_i
+
+    # Aero moment: kappa*(I_ratio*omega_dot + omega x (I_ratio*omega)) - tau_motor
+    gyro_term = np.cross(omega, I_ratio * omega)
+    tau_aero = kappa * (I_ratio * omega_dot + gyro_term) - tau_motor
+
+    # IMU lever-arm correction for specific force
+    a_cg = leverarm_correct(f_imu, omega, omega_dot, r)
+
+    # Latency alignment: positive lag -> v_body is lag samples later
+    if lag != 0:
+        if lag > 0:
+            v_body = v_body[lag:]
+            omega = omega[:N - lag]
+            omega_dot = omega_dot[:N - lag]
+            tau_aero = tau_aero[:N - lag]
+            a_cg = a_cg[:N - lag]
+            T_arr = T_arr[:N - lag]
+        else:
+            nl = -lag
+            v_body = v_body[:N - nl]
+            omega = omega[nl:]
+            omega_dot = omega_dot[nl:]
+            tau_aero = tau_aero[nl:]
+            a_cg = a_cg[nl:]
+            T_arr = T_arr[nl:]
+
+    assert np.isfinite(v_body).all(), 'NaN/Inf in v_body'
+    assert np.isfinite(tau_aero).all(), 'NaN/Inf in tau_aero'
+    assert np.isfinite(a_cg).all(), 'NaN/Inf in a_cg'
+    assert np.isfinite(T_arr).all(), 'NaN/Inf in T'
+
+    return {
+        'v_body': v_body,
+        'omega': omega,
+        'omega_dot': omega_dot,
+        'tau_aero': tau_aero,
+        'a_aero': a_cg,
+        'T': T_arr,
+    }
