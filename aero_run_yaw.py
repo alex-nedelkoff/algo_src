@@ -25,13 +25,20 @@ SKIP = ("195243", "195437",
 
 
 def _held_out_effort(g, res, kappa):
-    """Predict held-out yaw control effort tau_motor_z from the fitted model."""
+    """Predict held-out yaw control effort tau_motor_z from the fitted model.
+    Returns (rmse, r2, r2_demeaned). r2_demeaned removes the per-run constant
+    yaw-trim offset (a calibration nuisance) so it scores the sideslip-driven
+    VARIATION — the weathervane — which is what we are actually identifying."""
     W, WD, V, TZ = g["w"], g["wd"], g["v"], g["tau_motor"][:, 2]
     inertia_z = WD[:, 2] + (I_RATIO[1] - I_RATIO[0]) * W[:, 0] * W[:, 1]
-    pred = kappa * inertia_z + res["d_z"] * W[:, 2] - res["wv_z"] * V[:, 1]
+    pred = res.get("bias", 0.0) + kappa * inertia_z + res["d_z"] * W[:, 2] - res["wv_z"] * V[:, 1]
     rmse = float(np.sqrt(np.mean((TZ - pred) ** 2)))
     ss = np.sum((TZ - pred) ** 2); tot = np.sum((TZ - TZ.mean()) ** 2)
-    return rmse, (1 - ss / tot if tot > 0 else 0.0)
+    r2 = 1 - ss / tot if tot > 0 else 0.0
+    tzd = TZ - TZ.mean(); pdd = pred - pred.mean()
+    ssd = np.sum((tzd - pdd) ** 2); totd = np.sum(tzd ** 2)
+    r2_dm = 1 - ssd / totd if totd > 0 else 0.0
+    return rmse, r2, r2_dm
 
 
 def main():
@@ -66,28 +73,28 @@ def main():
     V = np.vstack([g["v"] for g in tr]); TZ = np.concatenate([g["tau_motor"][:, 2] for g in tr])
     print(f"\npooled train samples: {len(TZ)}")
 
-    # (1) FREE per-axis fit — kappa local to the yaw axis (decoupled from roll/pitch)
+    # (1) FREE per-axis fit — kappa local to the yaw axis (decoupled from roll/pitch).
+    # fit_intercept absorbs the constant yaw-trim torque (mixer-imbalance residual).
     free = fit_yaw_axis(W, WD, V, TZ, I_RATIO, kappa=None)
-    print(f"FREE kappa_z={free['kappa']:+.3f} d_z={free['d_z']:+.4f} "
-          f"wv_z={free['wv_z']:+.4f} R2={free['r2']:.3f} cond={free['cond']:.1f}")
+    print(f"FREE bias={free['bias']:+.4f} kappa_z={free['kappa']:+.4f} d_z={free['d_z']:+.4f} "
+          f"wv_z={free['wv_z']:+.5f} R2={free['r2']:.3f} cond={free['cond']:.1f}")
 
-    # (2) FIXED-kappa fit — use the joint-fit kappa if present, else the free kappa
-    kfix = free["kappa"]
-    try:
-        kfix = float(json.load(open("aero_data/sim_aero_cl.json"))["kappa"])
-    except Exception:
-        pass
+    # (2) FIXED-kappa fit at kappa=0 — sanity check. The free fit finds the yaw
+    # inertia term negligible (kappa_z~0): these heading-hold maneuvers barely
+    # excite yaw acceleration, and spline omega_dot_z is noise-dominated. Pinning
+    # kappa=0 should reproduce wv_z, confirming it does not lean on the inertia term.
+    kfix = 0.0
     fix = fit_yaw_axis(W, WD, V, TZ, I_RATIO, kappa=kfix)
-    print(f"FIX  kappa={kfix:+.3f}(fixed) d_z={fix['d_z']:+.4f} "
-          f"wv_z={fix['wv_z']:+.4f} R2={fix['r2']:.3f} cond={fix['cond']:.1f}")
+    print(f"FIX  bias={fix['bias']:+.4f} kappa={kfix:+.4f}(fixed) d_z={fix['d_z']:+.4f} "
+          f"wv_z={fix['wv_z']:+.5f} R2={fix['r2']:.3f} cond={fix['cond']:.1f}")
 
     # held-out control-effort prediction (the validation)
     print("\nHELD-OUT control-effort prediction:")
     g = ing[held]
     if g["kept"] > 0:
         for name, res, kap in (("free", free, free["kappa"]), ("fix", fix, kfix)):
-            rmse, r2 = _held_out_effort(g, res, kap)
-            print(f"  [{name}] tau_z RMSE={rmse:.4f} R2={r2:.3f}  "
+            rmse, r2, r2_dm = _held_out_effort(g, res, kap)
+            print(f"  [{name}] tau_z RMSE={rmse:.4f} R2={r2:.3f} R2_demeaned={r2_dm:.3f}  "
                   f"(|v_y|max={np.abs(g['v'][:, 1]).max():.2f}, n={g['kept']})")
     else:
         print("  held-out run had 0 samples after the envelope filter")

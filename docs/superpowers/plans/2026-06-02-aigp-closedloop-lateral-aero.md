@@ -173,3 +173,32 @@
   (r=[0.02,−0.023,0.196], lag=5). Commit c9fc5af. Linear COR-96 + COR-127 updated.
 - Weathervane wv_z STILL ~0 (signal-limited): lat sideslip too weak, yaw
   doublets destabilize, kappa/damping collinear in oscillatory data.
+
+
+---
+### T8 — weathervane moment wv_z CRACKED (2026-06-03)
+- Collected 7 GENTLE yaw doublets (`doublet211 yaw`, amp 0.3-0.5, dwell 1.0-1.5,
+  trims 1.5-3.0). amp ~0.4 sweeps sideslip to |v_y|~4 m/s in-envelope WITHOUT the
+  spin-up that destabilized the T6 amp-1.0+ batch (excluded at run level). Sim is
+  deterministic → trajectory diversity comes from amp/dwell, not trim.
+- New decoupled fit: `aigp/aero_fit.fit_yaw_axis` + `aero_run_yaw.py`. Regresses the
+  yaw moment balance tau_motor_z = bias + kappa*inertia_z + d_z*w_z − wv_z*v_y in
+  ISOLATION (kappa local to yaw / fixed), breaking the kappa/damping collinearity
+  that washed wv_z out of the joint 3-axis fit. TDD: 4 tests, suite 126 green.
+- ROOT CAUSE of the prior wv_z≈0 (found by systematic debugging, NOT the inertia
+  noise I first guessed): tau_motor_z carries a large CONSTANT yaw-trim offset
+  (mixer-imbalance residual; mean/std=0.54) and the fit had no intercept → the
+  no-origin lstsq drove R2 negative and biased wv_z to ~0 even though the de-meaned
+  corr(tau_z, v_y)=0.55 was strong. Fix = fit an intercept (absorbs the trim torque).
+- RESULT: **wv_z = −0.0033** (sideslip v_y → yaw), in-sample R²=0.32, held-out
+  de-meaned R²=0.18 (predicts unseen run's sideslip-driven yaw effort). FREE and
+  kappa=0 fixed fits agree → result does NOT lean on the noisy spline ω̇_z. Yaw
+  damping d_z and the inertia/kappa term are negligible in these heading-hold
+  maneuvers. Deliverable docs/sim_aero_cl.json (wv_z + wv_z_yawfit block).
+- CAVEATS: (1) ABSOLUTE magnitude scales with the uncalibrated k_q (seeded 2% of
+  k_f, never refined) — sign + significance are robust, magnitude is conditional.
+  (2) Sign (negative) reads as anti-weathervane / destabilizing in the CL FRD
+  convention, consistent with the tail-first instability — confirm the FRD sign
+  mapping before quantitative control use. (3) build_targets_cl uses unsmoothed
+  spline ω̇ (std 3.3 vs finite-diff(21) 1.1 on yaw) — fine here since the inertia
+  term is negligible, but smooth it before any yaw-inertia (kappa) identification.

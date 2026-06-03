@@ -48,3 +48,16 @@ def test_fit_yaw_axis_wv_z_positive_under_noise():
     res = fit_yaw_axis(W, WD, V, tau_z, I_RATIO, kappa=1.0)
     assert res["wv_z"] > 0, res["wv_z"]
     assert abs(res["wv_z"] - 0.08) < 0.02, res["wv_z"]
+
+
+def test_fit_yaw_axis_intercept_recovers_wv_z_despite_offset():
+    # tau_motor_z carries a constant yaw-trim offset (mixer-imbalance residual).
+    # Without an intercept the no-origin fit goes R2<0 and biases wv_z toward 0;
+    # fit_intercept must absorb the offset and recover the true wv_z.
+    W, WD, V, tau_z = _synth_yaw(kappa=1.0, d_z=0.05, wv_z=0.08)
+    tau_z = tau_z + 0.5                       # constant trim torque
+    res = fit_yaw_axis(W, WD, V, tau_z, I_RATIO, kappa=None, fit_intercept=True)
+    assert abs(res["bias"] - 0.5) < 1e-6, res.get("bias")
+    assert abs(res["wv_z"] - 0.08) < 1e-6, res["wv_z"]
+    assert abs(res["kappa"] - 1.0) < 1e-6, res["kappa"]
+    assert res["r2"] > 0.999, res["r2"]

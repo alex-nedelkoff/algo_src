@@ -39,11 +39,42 @@
     0.196
   ],
   "lag": 5,
-  "wv_z": 0.00038869842522065256,
+  "wv_z": -0.0033179169073254784,
   "d": [
     0.10714118182948945,
     0.3049733944939335,
     0.0023900364052178297
   ],
-  "note": "closed-loop 2-1-1 fit; D_y from powered horizontal force (thrust-independent); weathervane+damping from joint kappa/theta_M fit on measured tau_motor"
+  "note": "closed-loop 2-1-1 fit; D_y from powered horizontal force (thrust-independent); weathervane+damping from joint kappa/theta_M fit on measured tau_motor | wv_z (sideslip->yaw weathervane) identified by the dedicated yaw-axis fit = -0.00332 (negative = anti-weathervane/destabilizing in the CL FRD convention, consistent with the tail-first instability).",
+  "wv_z_method": "dedicated per-axis yaw fit (aero_run_yaw.py / fit_yaw_axis) on 7 gentle amp 0.3-0.5 yaw doublets; intercept absorbs the constant yaw-trim torque; kappa/inertia term negligible. Supersedes the joint-fit wv_z (~0, washed out by kappa/damping collinearity).",
+  "wv_z_yawfit": {
+    "free": {
+      "kappa": -0.00011406325303566032,
+      "d_z": -0.0007594680184585178,
+      "wv_z": -0.0033179169073254784,
+      "bias": 0.010914425859763523,
+      "r2": 0.3175838722994647,
+      "cond": 12.952373146958493,
+      "n": 6258
+    },
+    "fixed": {
+      "kappa": 0.0,
+      "d_z": -0.0007862361178815722,
+      "wv_z": -0.003319497828664086,
+      "bias": 0.01092088446352017,
+      "r2": 0.3138976654277431,
+      "cond": 10.28045553086607,
+      "n": 6258
+    },
+    "kappa_fixed": 0.0,
+    "held_out": "d211_yaw_20260603_080554.parquet",
+    "n_train": 6258,
+    "r": [
+      0.02,
+      -0.023,
+      0.196
+    ],
+    "lag": 5
+  },
+  "wv_z_caveat": "sign + significance robust; ABSOLUTE magnitude is conditional on the uncalibrated yaw-torque coeff k_q (seeded at 2% of k_f). In-sample R2=0.32, held-out de-meaned R2=0.18 (predicts unseen sideslip-driven yaw effort)."
 }
