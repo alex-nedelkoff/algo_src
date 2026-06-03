@@ -15,8 +15,9 @@ Regenerate: `python build_param_pack.py`; validate: `python validate_param_pack.
 | Group | Param | Value | Conf | Source | DR range | Note |
 |---|---|---|---|---|---|---|
 | rigid | mass | 0.65 kg | low | chassis-bbox prior | 0.45–0.85 | absolute scale degenerate |
-| rigid | I_ratio (Ixx:Iyy:Izz) | 3.7 : 1 : 1 | med | dyn + aero | — | roll is the slow axis |
-| rigid | I_z (mass-norm) | 0.0085 | med | kappa.json pitch-pulse | 0.005–0.013 | Iy=Iz=κ, Ix=3.7κ |
+| rigid | I_ratio (Ixx:Iyy:Izz) | 3.7 : 1 : **4.7** | med | aero + dyn3 reconcile | Izz/Iyy [1,22] | Ixx/Iyy=3.7 agreed; Izz under-identified |
+| rigid | I_y (pitch, mass-norm) | 0.0085 | med | kappa.json pitch-pulse | 0.005–0.013 | the pulse axis; Ix=3.7·Iy |
+| rigid | I_z (yaw, mass-norm) | 0.040 | low | ⊥-axis (Ix+Iy); dyn3 said 22× | 0.0085–0.187 | **under-identified** (weak yaw); weathervane ∝ wv_z/Izz |
 | rigid | arm L | 0.14 m | med | motor_model | — | |
 | prop | k_f | 34.26 | high | hover calib | — | `T=k_f·Σg(u)`, hover→9.81 |
 | prop | k_q | 0.685 | **low** | seeded k_q/k_f=0.02 | 0.27–1.7 | weak yaw; not pinnable |
@@ -61,9 +62,11 @@ The drag model reproduces real motion.
 
 **Ready for a first-cut parallel RL surrogate**, with two required extensions and domain randomization:
 
-1. **Add the aero terms PyBullet lacks**: `−D·v` drag (have D_x✓, D_y) and the **weathervane moment**
-   (`wv·v → yaw`) — the latter is the defining hard characteristic and is **not** in stock
-   `gym-pybullet-drones`. (`torch_quad` is the easier host: differentiable, already integrated.)
+1. ✅ **DONE — aero terms wired into `numpy_quad`**: `VehicleParams.linear_drag_coeff`
+   (`−D·v`) and `weathervane_coeff` (`v→moment`, the defining instability), DR-registered, TDD'd.
+   For the VQ drone set `linear_drag_coeff=[0.52, 0.36, 0]`; `weathervane_coeff` per the pack (sign/
+   magnitude k_q-conditional → DR + validate vs live flight). *Follow-ups:* `torch_quad` parity
+   (fitting twin, currently drag-less) + a VQ-drone config wiring the pack values.
 2. **Domain-randomize the unidentified params** (motor lag, angular damping, D_z, high-speed C,
    weathervane & k_q magnitude) over the DR ranges above — the Swift recipe: train in a randomized
    approximate sim, close the residual gap on real VQ flight.

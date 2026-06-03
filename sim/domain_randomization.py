@@ -16,7 +16,7 @@ from sim.dynamics.params import VehicleParams
 SCALAR_PARAMS = {"mass", "arm_length", "k_thrust", "k_torque", "tau_motor", "prop_radius", "max_rpm"}
 
 # Array parameters that can be randomized element-wise
-ARRAY_PARAMS = {"drag_coeff"}
+ARRAY_PARAMS = {"drag_coeff", "linear_drag_coeff", "weathervane_coeff"}
 
 # Matrix parameters: 'inertia' randomizes the diagonal elements
 MATRIX_PARAMS = {"inertia"}

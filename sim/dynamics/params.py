@@ -47,12 +47,27 @@ class VehicleParams:
     drag_coeff: NDArray[np.float64] = field(
         default_factory=lambda: np.array([0.0, 0.0, 0.0])
     )
+    # VQ-drone aero (param pack): linear rotor drag (-D*v) and weathervane moment.
+    # linear_drag_coeff [Dx,Dy,Dz] in 1/s; the dominant racing-speed drag (rotor drag),
+    # distinct from the quadratic parasitic `drag_coeff`.
+    linear_drag_coeff: NDArray[np.float64] = field(
+        default_factory=lambda: np.array([0.0, 0.0, 0.0])
+    )
+    # weathervane_coeff [wv_x,wv_y,wv_z]: body-velocity -> body moment coupling
+    # (v_y->roll, v_x->pitch, v_y->yaw), matching aero_model.moment_features_cl. The
+    # tail-first instability. Sign/magnitude are k_q-conditional + frame-dependent ->
+    # domain-randomize and validate against live VQ flight (residual learning).
+    weathervane_coeff: NDArray[np.float64] = field(
+        default_factory=lambda: np.array([0.0, 0.0, 0.0])
+    )
     max_rpm: float = 21702.0
 
     def __post_init__(self) -> None:
         """Validate and convert fields to numpy arrays."""
         self.inertia = np.asarray(self.inertia, dtype=np.float64)
         self.drag_coeff = np.asarray(self.drag_coeff, dtype=np.float64)
+        self.linear_drag_coeff = np.asarray(self.linear_drag_coeff, dtype=np.float64)
+        self.weathervane_coeff = np.asarray(self.weathervane_coeff, dtype=np.float64)
 
         # Accept 3-element diagonal shorthand: [Jxx, Jyy, Jzz] -> diag matrix
         if self.inertia.shape == (3,):
@@ -61,6 +76,10 @@ class VehicleParams:
             raise ValueError(f"inertia must have shape (3, 3) or (3,), got {self.inertia.shape}")
         if self.drag_coeff.shape != (3,):
             raise ValueError(f"drag_coeff must have shape (3,), got {self.drag_coeff.shape}")
+        if self.linear_drag_coeff.shape != (3,):
+            raise ValueError(f"linear_drag_coeff must have shape (3,), got {self.linear_drag_coeff.shape}")
+        if self.weathervane_coeff.shape != (3,):
+            raise ValueError(f"weathervane_coeff must have shape (3,), got {self.weathervane_coeff.shape}")
         if self.mass <= 0:
             raise ValueError(f"mass must be positive, got {self.mass}")
         if self.arm_length <= 0:

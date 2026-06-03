@@ -21,23 +21,34 @@
       "value": [
         3.7,
         1.0,
-        1.0
+        4.7
       ],
       "units": "Ixx:Iyy:Izz",
       "confidence": "med",
-      "source": "sim_dynamics + aero sysID",
-      "notes": "roll inertia 3.7x pitch/yaw (the slow axis)"
+      "source": "aero sysID + dyn3 reconcile (2026-06-03)",
+      "notes": "Ixx/Iyy=3.7 CONFIRMED by both efforts. Izz UNDER-IDENTIFIED (weak yaw authority): pack had assumed Izz=Iyy (unphysical); dyn3 fit Izz=22*Iyy (inflated, ~5x perpendicular-axis). Use perpendicular-axis Izz~=Ixx+Iyy=4.7*Iyy as center; DR Izz/Iyy in [1,22]."
     },
-    "I_z_massnorm": {
+    "I_y_massnorm": {
       "value": 0.008478984137848169,
       "units": "(N*m)/(rad/s^2) /mass",
       "confidence": "med",
       "source": "kappa.json (pitch sharp-pulse)",
-      "notes": "Iy=Iz=kappa; Ix=3.7*kappa",
       "dr_range": [
-        0.005087390482708901,
-        0.012718476206772253
-      ]
+        0.00509,
+        0.01272
+      ],
+      "notes": "PITCH inertia (the pulse axis); Ix=3.7*Iy"
+    },
+    "I_z_massnorm": {
+      "value": 0.0399,
+      "units": "(N*m)/(rad/s^2) /mass",
+      "confidence": "low",
+      "source": "perpendicular-axis (Ix+Iy); dyn3 cross-check 22x (inflated)",
+      "dr_range": [
+        0.00848,
+        0.1865
+      ],
+      "notes": "YAW inertia UNDER-IDENTIFIED; weathervane effect scales as wv_z/Izz"
     },
     "arm_length": {
       "value": 0.14,

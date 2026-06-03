@@ -131,7 +131,9 @@ class NumpyQuadDynamics:
         self._arm_length: NDArray[np.float64] = np.empty(0)
         self._tau_motor: NDArray[np.float64] = np.empty(0)
         self._max_omega: NDArray[np.float64] = np.empty(0)
-        self._drag_coeff: NDArray[np.float64] = np.empty(0)  # (N, 3)
+        self._drag_coeff: NDArray[np.float64] = np.empty(0)  # (N, 3) quadratic
+        self._linear_drag_coeff: NDArray[np.float64] = np.empty(0)  # (N, 3) linear rotor drag
+        self._weathervane_coeff: NDArray[np.float64] = np.empty(0)  # (N, 3) v->moment
         self._J_inv: NDArray[np.float64] = np.empty(0)       # (N, 3, 3)
         self._J_diag: NDArray[np.float64] = np.empty(0)      # (N, 3)
 
@@ -156,6 +158,8 @@ class NumpyQuadDynamics:
         self._tau_motor = np.full(n_envs, p.tau_motor)
         self._max_omega = np.full(n_envs, p.max_omega)
         self._drag_coeff = np.tile(p.drag_coeff, (n_envs, 1))           # (N, 3)
+        self._linear_drag_coeff = np.tile(p.linear_drag_coeff, (n_envs, 1))  # (N, 3)
+        self._weathervane_coeff = np.tile(p.weathervane_coeff, (n_envs, 1))  # (N, 3)
         self._J_inv = np.tile(np.linalg.inv(p.inertia), (n_envs, 1, 1)) # (N, 3, 3)
         self._J_diag = np.tile(np.diag(p.inertia), (n_envs, 1))         # (N, 3)
 
@@ -206,6 +210,8 @@ class NumpyQuadDynamics:
         tau_motor: NDArray[np.float64] | None = None,
         max_rpm: NDArray[np.float64] | None = None,
         drag_coeff: NDArray[np.float64] | None = None,
+        linear_drag_coeff: NDArray[np.float64] | None = None,
+        weathervane_coeff: NDArray[np.float64] | None = None,
     ) -> None:
         """Update physics params for specific environments.
 
@@ -231,6 +237,10 @@ class NumpyQuadDynamics:
             self._max_omega[env_indices] = max_rpm * 2.0 * np.pi / 60.0
         if drag_coeff is not None:
             self._drag_coeff[env_indices] = drag_coeff
+        if linear_drag_coeff is not None:
+            self._linear_drag_coeff[env_indices] = linear_drag_coeff
+        if weathervane_coeff is not None:
+            self._weathervane_coeff[env_indices] = weathervane_coeff
         if inertia is not None:
             # Batched inversion: np.linalg.inv supports (K, 3, 3) input
             self._J_inv[env_indices] = np.linalg.inv(inertia)
@@ -286,12 +296,20 @@ class NumpyQuadDynamics:
         force_body = np.zeros((n, 3), dtype=np.float64)
         force_body[:, 2] = total_thrust
 
-        # Body drag (quadratic, if drag_coeff nonzero)
-        if np.any(self._drag_coeff[:n] != 0.0):
+        # Aero needing body-frame velocity: quadratic drag, linear rotor drag, weathervane.
+        ld = self._linear_drag_coeff[:n]; wv = self._weathervane_coeff[:n]
+        need_vel_body = (np.any(self._drag_coeff[:n] != 0.0)
+                         or np.any(ld != 0.0) or np.any(wv != 0.0))
+        vel_body = None
+        if need_vel_body:
             R = quat_to_rotmat_batch(quat)  # (N, 3, 3)
             vel_body = np.einsum("nij,nj->ni", np.transpose(R, (0, 2, 1)), vel)
-            drag_force = -self._drag_coeff[:n] * vel_body * np.abs(vel_body)
-            force_body += drag_force
+            # quadratic parasitic drag -C*v|v|
+            if np.any(self._drag_coeff[:n] != 0.0):
+                force_body += -self._drag_coeff[:n] * vel_body * np.abs(vel_body)
+            # linear rotor drag -D*v (dominant at racing speed; the lit-validated term)
+            if np.any(ld != 0.0):
+                force_body += -ld * vel_body
 
         # --- Torques (per-env arm_length, k_thrust, k_torque) ---
         arm_k = self._arm_length[:n] * self._k_thrust[:n] * _SQRT2_INV  # (N,)
@@ -307,6 +325,13 @@ class NumpyQuadDynamics:
         )
 
         torques = np.stack([tau_roll, tau_pitch, tau_yaw], axis=1)  # (N, 3)
+
+        # --- Weathervane moment: body velocity -> body moment (v_y->roll, v_x->pitch, v_y->yaw),
+        #     matching aero_model.moment_features_cl. The tail-first instability. ---
+        if np.any(wv != 0.0):
+            torques[:, 0] += wv[:, 0] * vel_body[:, 1]   # roll  from v_y
+            torques[:, 1] += wv[:, 1] * vel_body[:, 0]   # pitch from v_x
+            torques[:, 2] += wv[:, 2] * vel_body[:, 1]   # yaw   from v_y (sideslip)
 
         # --- Gyroscopic torque: omega x (J * omega) ---
         J_omega = omega * self._J_diag[:n]               # (N, 3)

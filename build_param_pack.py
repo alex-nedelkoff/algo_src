@@ -49,10 +49,17 @@ def build_pack(a):
         "rigid_body": {
             "mass": P(0.65, "kg", "low", "chassis-bbox prior (VADR-TS-002 280x280x160mm, 5\" quad)",
                       dr=[0.45, 0.85], notes="absolute mass unobservable from flight; surrogate is mass-normalized"),
-            "I_ratio": P([3.7, 1.0, 1.0], "Ixx:Iyy:Izz", "med", "sim_dynamics + aero sysID",
-                         notes="roll inertia 3.7x pitch/yaw (the slow axis)"),
-            "I_z_massnorm": P(kap, "(N*m)/(rad/s^2) /mass", "med", "kappa.json (pitch sharp-pulse)",
-                              dr=[kap*0.6, kap*1.5], notes="Iy=Iz=kappa; Ix=3.7*kappa"),
+            "I_ratio": P([3.7, 1.0, 4.7], "Ixx:Iyy:Izz", "med", "aero sysID + dyn3 reconcile (2026-06-03)",
+                         notes="Ixx/Iyy=3.7 CONFIRMED by both efforts. Izz UNDER-IDENTIFIED (weak yaw "
+                               "authority): pack had assumed Izz=Iyy (unphysical); dyn3 fit Izz=22*Iyy "
+                               "(inflated, ~5x perpendicular-axis); use perpendicular-axis Izz~=Ixx+Iyy=4.7*Iyy "
+                               "as center, DR Izz/Iyy in [1,22]."),
+            "I_y_massnorm": P(kap, "(N*m)/(rad/s^2) /mass", "med", "kappa.json (pitch sharp-pulse)",
+                              dr=[kap*0.6, kap*1.5], notes="PITCH inertia (the pulse axis); Ix=3.7*Iy"),
+            "I_z_massnorm": P(round(4.7 * kap, 4), "(N*m)/(rad/s^2) /mass", "low",
+                              "perpendicular-axis (Ix+Iy); dyn3 cross-check gave 22x (inflated)",
+                              dr=[kap, 22 * kap],
+                              notes="YAW inertia under-identified; weathervane effect scales as wv_z/Izz"),
             "arm_length": P(a["motor"]["L"], "m", "med", "motor_model.json"),
         },
         "propulsion": {
