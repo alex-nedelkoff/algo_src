@@ -20,8 +20,9 @@ the same normalized units, and the rollout refiner (T5) cleans up any residual s
 from __future__ import annotations
 import numpy as np
 
-# placeholder quad-X geometry; the live calibration (T2 step 3) pins sx/sy/sz from single-axis inputs.
-DEFAULT_GEOM = dict(sx=[+1, -1, +1, -1], sy=[+1, +1, -1, -1], sz=[+1, -1, -1, +1], L=0.14)
+# quad-X geometry pinned by the T2 live calibration (de-meaned single-axis motor differentials):
+# roll left/right, pitch front/back, yaw = -(sx*sy) diagonal — verified by hover torque ~= 0.
+DEFAULT_GEOM = dict(sx=[-1, +1, +1, -1], sy=[-1, -1, +1, +1], sz=[-1, +1, -1, +1], L=0.14)
 
 
 def _g(u, form):
