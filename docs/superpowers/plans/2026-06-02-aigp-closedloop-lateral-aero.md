@@ -140,3 +140,10 @@
 - `Logger` now logs **24 cols**: + `u0..u3` (motor outputs from `get_actuators()`), `wcx,wcy,wcz` (commanded body-rate effort), `thr_cmd`. All existing maneuvers keep working (new cols default to actuators+zeros).
 - Verified: actuators vary during the doublet; yaw effort `wcz` ±0.28 (controller countering sideslip = the weathervane signal). **But lateral excitation was modest (`v_body_y`~1.2 m/s)** with dwell=0.5 — **T6 must tune dwell/amp/trim up** for stronger sideslip + weathervane signal.
 - Next: **T2** motor+mixer model + calibration (use the T0 motor-layout hint: +roll raised motor 1, lowered 0&2).
+
+---
+### T2 — DONE (2026-06-02), commits `…`(model) + calibration
+- `aigp/motor_model.py`: `motor_outputs_to_wrench(u, params) -> (T, tau_motor)`; per-rotor `f=k_f*g(u)`, `q=k_q*g(u)` (g quadratic); mixer `T=Σf`, `tau=[L·sx@f, L·sy@f, sz@q]`. 5 unit tests pass.
+- **Calibration (live):** de-meaned single-axis motor differentials (subtract the collective/altitude-loop component) → `sx=[-1,1,1,-1]` (roll), `sy=[-1,-1,1,1]` (pitch), `sz=[-1,1,-1,1]` (yaw) = **−(sx·sy) diagonal** — a consistent quad-X. **Validated: hover torque τ≈[0,0.02,0]** (alternating signs ⇒ pure-thrust hover). `k_f` from hover (`T=9.81`); `k_q` seeded (refine in T5). Saved `docs/motor_model.json`; baked into `DEFAULT_GEOM`.
+- Gotcha: a sustained roll/pitch/yaw rate command also shifts the collective (drone tilts → altitude loop raises all motors); must **de-mean** the per-motor delta to recover the differential sign pattern.
+- Next: **T3** (offline TDD) — `build_targets_cl`: aero moment `τ_aero = I·ω̇ + ω×(Iω) − τ_motor` (τ_motor from the calibrated model), lever-arm + latency correction, spline derivatives.
