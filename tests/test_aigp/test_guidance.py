@@ -83,3 +83,34 @@ def test_approach_advances_waypoint_when_close():
     # should have advanced to waypoint 1 (east) -> velocity points east
     assert sp.vy > 0.0
     assert pat.idx == 1
+
+
+from aigp.guidance import GoToWaypoint
+
+
+def test_goto_cruises_capped_toward_target():
+    g = GoToWaypoint(kp_pos=0.8, max_speed=2.5)
+    sp = g.update(np.zeros(3), np.zeros(3), np.array([10.0, 0.0, 0.0]))  # 10 m north
+    assert sp.vx > 0 and abs(sp.vy) < 1e-6
+    assert np.isclose(np.hypot(sp.vx, sp.vy), 2.5)   # 0.8*10=8 -> capped to max_speed
+    assert np.isclose(sp.yaw, 0.0)                    # facing the target (north)
+
+
+def test_goto_slows_on_approach():
+    g = GoToWaypoint(kp_pos=0.8, max_speed=2.5)
+    sp = g.update(np.zeros(3), np.zeros(3), np.array([1.0, 0.0, 0.0]))  # 1 m away
+    assert np.isclose(np.hypot(sp.vx, sp.vy), 0.8)   # 0.8*1 < cap -> proportional slowdown
+
+
+def test_goto_vertical_descent_ned():
+    sp = GoToWaypoint().update(np.zeros(3), np.zeros(3), np.array([0.0, 0.0, 2.0]))
+    assert sp.vz > 0                                  # target below (NED +z down)
+
+
+def test_goto_arrived_holds_yaw():
+    g = GoToWaypoint(arrival_radius=0.5)
+    tgt = np.array([0.2, 0.0, 0.0])
+    assert g.arrived(np.zeros(3), tgt)
+    assert not g.arrived(np.zeros(3), np.array([5.0, 0.0, 0.0]))
+    sp = g.update(np.zeros(3), np.zeros(3), tgt, hold_yaw=1.23)
+    assert np.isclose(sp.yaw, 1.23)                   # inside arrival_radius -> hold yaw, don't chase
