@@ -9,6 +9,8 @@ Two layers:
 Workflow: run `rerun` on the Mac, then run an instrumented controller on Windows with --viz.
 """
 from __future__ import annotations
+import threading
+import time as _time
 import numpy as np
 from aigp.geometry import quat_to_R
 
@@ -64,15 +66,22 @@ def along_cross(vel_ned, tangent_h):
 # Rerun sink
 # ---------------------------------------------------------------------------
 class FlightLog:
-    """Best-effort Rerun telemetry. Construct once; call step() each control iteration AFTER sending
-    the command. Logs at ~1/decimate of the call rate. Disabled (no-op) if Rerun can't connect."""
+    """Best-effort Rerun telemetry, fully OFF the control thread. The control loop calls push()
+    each iteration AFTER sending its command -- push() only stows the latest snapshot under a lock
+    (microseconds), so it can never jitter the loop. A daemon thread does ALL the Rerun I/O at `hz`,
+    naturally decimating from the (faster) control rate. Disabled (no-op) if Rerun can't connect.
 
-    def __init__(self, rate_gain=None, decimate=5, rrd_path=None, run_name="aigp-flight"):
+    Why threaded: ~15 rr.log calls/step cost ~3 ms on the control thread (measured) -- too much for a
+    250 Hz+ loop. Off-thread, push() is ~microseconds and the logging cost is borne by a background
+    thread that just drops frames if it can't keep up."""
+
+    def __init__(self, rate_gain=None, hz=40, rrd_path=None, run_name="aigp-flight"):
         self.ok = False
         self.rg = np.asarray(rate_gain, float) if rate_gain is not None else None
-        self.decimate = max(1, int(decimate))
-        self._i = 0
         self._trail = []
+        self._latest = None
+        self._lock = threading.Lock()
+        self._stop = False
         try:
             import rerun as rr
             self._rr = rr
@@ -84,6 +93,8 @@ class FlightLog:
             rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_DOWN, static=True)  # NED: z down
             self._send_blueprint()
             self.ok = True
+            self._th = threading.Thread(target=self._run, args=(max(1.0, float(hz)),), daemon=True)
+            self._th.start()
         except Exception as e:
             print(f"[flightlog] disabled: {e}", flush=True)
 
@@ -126,23 +137,42 @@ class FlightLog:
     def _scal(self, path, v):
         self._rr.log(path, self._rr.Scalars(float(v)))
 
-    def step(self, t_s, ds, dbg=None, nearest=None, tangent=None, cruise=None,
+    def push(self, t_s, ds, dbg=None, nearest=None, tangent=None, cruise=None,
              running=None, armed=None):
-        """t_s: seconds. ds: DroneState. dbg: {a(3), w_des(3 rad/s), q_des(4), thr} from cmd().
-        nearest/tangent/cruise/running/armed: optional context. Decimated + best-effort."""
+        """Stow the latest snapshot for the logging thread. ~microseconds -- safe every control loop.
+        dbg: {a(3), w_des(3 rad/s), q_des(4), thr} from cmd(). Other args are optional context."""
         if not self.ok:
             return
+        with self._lock:
+            self._latest = (float(t_s), ds, dbg, nearest, tangent, cruise, running, armed)
+
+    def close(self):
+        self._stop = True
+
+    def _run(self, hz):
+        period = 1.0 / hz
+        last_t = None
+        while not self._stop:
+            with self._lock:
+                snap = self._latest
+            if snap is not None and snap[0] != last_t:
+                last_t = snap[0]
+                try:
+                    self._log(*snap)
+                except Exception:
+                    pass
+            _time.sleep(period)
+
+    def _log(self, t_s, ds, dbg, nearest, tangent, cruise, running, armed):
+        """All Rerun I/O -- runs ONLY on the daemon thread, never the control loop."""
+        rr = self._rr
         pos = np.asarray(ds.pos_ned, float)
         self._trail.append(pos.copy())
         if len(self._trail) > 4000:
             self._trail = self._trail[-4000:]
-        self._i += 1
-        if self._i % self.decimate:
-            return
-        try:
-            rr = self._rr
-            rr.set_time("t", duration=float(t_s))
-            vel = np.asarray(ds.vel_ned, float)
+        rr.set_time("t", duration=float(t_s))
+        vel = np.asarray(ds.vel_ned, float)
+        if True:
             R = quat_to_R(np.asarray(ds.quat_wxyz, float))
             cam = -R[:, 0]                                  # nose (camera-forward) in world
             # --- 3D ---
@@ -188,5 +218,3 @@ class FlightLog:
                 self._scal("ctrl/running", 1.0 if running else 0.0)
             if armed is not None:
                 self._scal("ctrl/armed", 1.0 if armed else 0.0)
-        except Exception:
-            pass

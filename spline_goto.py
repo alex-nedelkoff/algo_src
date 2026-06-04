@@ -34,7 +34,7 @@ from aigp.commander import Commander
 from aigp.geometry import quat_to_R
 from aigp.control_math import (desired_attitude, mat_to_quat, attitude_error_quat,
                                collective_accel, accel_to_thrust_norm)
-from aigp.flight_telemetry import FlightLog
+from aigp.flight_telemetry import FlightLog, sideslip_deg
 from sim.spline import GateSpline
 
 KP_ATT = np.array([0.5, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3
@@ -152,7 +152,7 @@ def main():
         print(f"  max |dyaw| between samples = {mx:.1f}deg  (overshoot/wiggle if large)", flush=True)
         return
     c.arm()
-    flog = FlightLog(rate_gain=RG, decimate=5, rrd_path=rrd) if ("--viz" in sys.argv or rrd) else None
+    flog = FlightLog(rate_gain=RG, hz=40, rrd_path=rrd) if ("--viz" in sys.argv or rrd) else None
     if flog is not None:
         flog.set_path(spline._samples)
     t0 = time.time(); last = -1; left = False
@@ -182,25 +182,30 @@ def main():
             dyaw = ((yaw_tgt - yaw_cmd + np.pi) % (2 * np.pi)) - np.pi
             yaw_cmd += float(np.clip(dyaw, -YAW_SLEW * dt, YAW_SLEW * dt))
             tilt, dbg = cmd(ds, a2, float(nearest[2]), yaw_cmd)
-            if flog is not None:                      # log AFTER the command is sent (never delays it)
+            if flog is not None:                      # push AFTER the command is sent; logging is off-thread
                 _tb = time.perf_counter()
-                flog.step(time.time() - t0, ds, dbg, nearest=nearest, tangent=th,
+                flog.push(time.time() - t0, ds, dbg, nearest=nearest, tangent=th,
                           cruise=CRUISE, running=s.get_race_live(), armed=True)
                 _d = time.perf_counter() - _tb; viz_acc += _d; viz_max = max(viz_max, _d); viz_n += 1
             if tilt > ABORT_TILT:
-                print(f"ABORT tilt={tilt:.0f}", flush=True); return
-            k = int((time.time() - t0) / 2.0)
+                print(f"ABORT tilt={tilt:.0f}", flush=True); break
+            k = int((time.time() - t0) / 0.5)
             if k != last:
                 last = k
-                ctd = spline.distance_to_nearest(ds.pos_ned)
-                print(f"t={time.time()-t0:4.1f} d_spawn={d_spawn:5.1f} xtrack={ctd:4.1f} "
-                      f"spd={np.linalg.norm(ds.vel_ned[:2]):4.1f} tilt={tilt:3.0f}", flush=True)
+                beta = sideslip_deg(ds.quat_wxyz, ds.vel_ned)
+                wc = np.degrees(dbg["w_des"]); wa = np.degrees(ds.omega)
+                print(f"t={time.time()-t0:4.1f} spd={np.linalg.norm(ds.vel_ned[:2]):4.1f} tilt={tilt:3.0f} "
+                      f"beta={beta:+5.0f} | rate cmd/act  r={wc[0]:+5.0f}/{wa[0]:+5.0f}  "
+                      f"p={wc[1]:+5.0f}/{wa[1]:+5.0f}  y={wc[2]:+5.0f}/{wa[2]:+5.0f}", flush=True)
         time.sleep(LOOP_DT)
     else:
         print("MAX_T reached", flush=True)
+    if flog is not None:
+        flog.close()
     if viz_n:
-        print(f"viz overhead: avg {1e3*viz_acc/viz_n:.3f} ms, max {1e3*viz_max:.3f} ms over {viz_n} logs "
-              f"(loop budget {1e3*LOOP_DT:.0f} ms; decimate={flog.decimate})", flush=True)
+        print(f"push() control-thread cost: avg {1e3*viz_acc/viz_n:.4f} ms, max {1e3*viz_max:.4f} ms "
+              f"over {viz_n} calls (loop budget {1e3*LOOP_DT:.0f} ms; Rerun I/O is off-thread @40Hz)",
+              flush=True)
     print("done", flush=True)
 
 
