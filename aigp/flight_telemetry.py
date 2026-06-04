@@ -65,6 +65,34 @@ def along_cross(vel_ned, tangent_h):
 # ---------------------------------------------------------------------------
 # Rerun sink
 # ---------------------------------------------------------------------------
+def strip_viz_args(argv):
+    """Remove viz flags (--viz, --no-viz, --rrd <path>) so a controller can parse its positionals."""
+    out, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--viz", "--no-viz"):
+            i += 1
+        elif a == "--rrd":
+            i += 2
+        else:
+            out.append(a); i += 1
+    return out
+
+
+def from_args(argv, rate_gain=None, run_name="aigp-flight"):
+    """Build a FlightLog from CLI args. ON BY DEFAULT (every run feeds the dashboard); --no-viz
+    disables it, --rrd <path> records to a file instead of streaming live. Returns None if disabled."""
+    if "--no-viz" in argv:
+        return None
+    rrd = None
+    if "--rrd" in argv:
+        try:
+            rrd = argv[argv.index("--rrd") + 1]
+        except IndexError:
+            rrd = None
+    return FlightLog(rate_gain=rate_gain, hz=40, rrd_path=rrd, run_name=run_name)
+
+
 class FlightLog:
     """Best-effort Rerun telemetry, fully OFF the control thread. The control loop calls push()
     each iteration AFTER sending its command -- push() only stows the latest snapshot under a lock

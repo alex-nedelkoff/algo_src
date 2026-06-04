@@ -20,8 +20,9 @@ the attitude loop loses it. Path representation was never the blocker -- TURNING
 curved/looping nav needs the learned RL policy (training, learning) or a turn-coordinated cascaded
 attitude controller with feedforward, NOT more PID tuning. Kept as a documented artifact + the finding.
 
-Usage:
+Usage (the live dashboard is ON by default -> add --no-viz to disable, --rrd <path> to record):
   python spline_goto.py                    # safe default body box -> flown as a smooth closed loop
+  python spline_goto.py circle 6           # gentle radius-6 circle (continuous turn)
   python spline_goto.py body 6 0 0  6 5 0  0 5 0   # body (fwd,right,down) rel spawn heading
   python spline_goto.py world 8 0 0  0 8 0         # world NED offsets
 """
@@ -34,7 +35,8 @@ from aigp.commander import Commander
 from aigp.geometry import quat_to_R
 from aigp.control_math import (desired_attitude, mat_to_quat, attitude_error_quat,
                                collective_accel, accel_to_thrust_norm)
-from aigp.flight_telemetry import FlightLog, sideslip_deg
+from aigp.flight_telemetry import sideslip_deg
+import aigp.flight_telemetry as ftm
 from sim.spline import GateSpline
 
 KP_ATT = np.array([0.5, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3
@@ -114,10 +116,7 @@ def circle_offsets(R, n=8):
 
 
 def main():
-    argv = sys.argv[1:]
-    rrd = None
-    if "--rrd" in argv:                       # --rrd <path> saves a shareable recording instead of live
-        i = argv.index("--rrd"); rrd = argv[i + 1]; argv = argv[:i] + argv[i + 2:]
+    argv = ftm.strip_viz_args(sys.argv[1:])
     if any(a == "circle" for a in argv):
         nf = [a for a in argv if not a.startswith("--")]
         R = float(nf[nf.index("circle") + 1]) if len(nf) > nf.index("circle") + 1 else 6.0
@@ -152,7 +151,7 @@ def main():
         print(f"  max |dyaw| between samples = {mx:.1f}deg  (overshoot/wiggle if large)", flush=True)
         return
     c.arm()
-    flog = FlightLog(rate_gain=RG, hz=40, rrd_path=rrd) if ("--viz" in sys.argv or rrd) else None
+    flog = ftm.from_args(sys.argv, RG, "spline_goto")
     if flog is not None:
         flog.set_path(spline._samples)
     t0 = time.time(); last = -1; left = False

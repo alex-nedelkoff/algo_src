@@ -33,10 +33,12 @@ from aigp.commander import Commander
 from aigp.geometry import quat_to_R
 from aigp.control_math import (desired_accel, desired_attitude, mat_to_quat,
                                attitude_error_quat, collective_accel, accel_to_thrust_norm)
+import aigp.flight_telemetry as ftm
 
-DIR      = sys.argv[1] if len(sys.argv) > 1 else "fwd"
-DURATION = float(sys.argv[2]) if len(sys.argv) > 2 else 30.0
-SPEED    = float(sys.argv[3]) if len(sys.argv) > 3 else 1.8
+_args    = ftm.strip_viz_args(sys.argv[1:])      # live dashboard ON by default (--no-viz / --rrd <path>)
+DIR      = _args[0] if len(_args) > 0 else "fwd"
+DURATION = float(_args[1]) if len(_args) > 1 else 30.0
+SPEED    = float(_args[2]) if len(_args) > 2 else 1.8
 
 # --- Tuned gains (winning config 2026-06-02) ---
 KP_ATT = np.array([0.5, 1.6, 1.0])   # per-axis attitude P: [roll(soft, hi-inertia), pitch, yaw-unused]
@@ -95,6 +97,10 @@ travel = sign * np.array([np.cos(yaw0), np.sin(yaw0)])
 lat_hat = np.array([-travel[1], travel[0]])
 print(f"race_cruise DIR={DIR} SPEED={SPEED} DUR={DURATION}", flush=True)
 c.arm()
+flog = ftm.from_args(sys.argv, RG, "race_cruise")    # live dashboard on by default
+if flog is not None:
+    _L = max(SPEED * DURATION, 10.0)
+    flog.set_path(np.array([spawn, spawn + np.array([travel[0] * _L, travel[1] * _L, 0.0])]))
 t0 = time.time(); last = -1; max_tilt = 0.0; peak_lat = 0.0; bad = False
 while time.time() - t0 < DURATION:
     ds = s.get_drone()
@@ -117,6 +123,9 @@ while time.time() - t0 < DURATION:
         c.send_attitude_target(np.clip(w_des / RG, -WMAX, WMAX), thr)
         zb = Rc[:, 2]; tilt = np.degrees(np.arccos(max(-1, min(1, zb[2]))))
         max_tilt = max(max_tilt, tilt); peak_lat = max(peak_lat, abs(p_ct))
+        if flog is not None:                          # push AFTER the command is sent; logging is off-thread
+            flog.push(time.time() - t0, ds, {"a": a, "w_des": w_des, "q_des": q_des, "thr": thr},
+                      tangent=travel, cruise=SPEED, running=s.get_race_live(), armed=True)
         if tilt > 75:
             bad = True
         k = int((time.time() - t0) / 3.0)
@@ -126,6 +135,8 @@ while time.time() - t0 < DURATION:
                   f"roll={roll_deg(Rc):+4.0f} yaw={np.degrees(yaw_cur):+4.0f} "
                   f"spd={np.linalg.norm(ds.vel_ned[:2]):4.1f} tilt={tilt:3.0f}", flush=True)
     time.sleep(LOOP_DT)
+if flog is not None:
+    flog.close()
 d = s.get_drone().pos_ned - spawn
 print(f"\nRESULT[{DIR}]: fwd={float(d[:2]@travel):.0f}m lat={float(d[:2]@lat_hat):+.0f}m "
       f"peak_lat={peak_lat:.0f}m alt_err={d[2]:+.0f}m max_tilt={max_tilt:.0f} "

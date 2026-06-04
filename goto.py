@@ -6,7 +6,7 @@ weathervane-unstable camera-forward direction), then SETTLES (kills momentum) at
 before turning — arrival/stopping is the hard part on this platform, and momentum carried into a
 new leg excites the instability. Arrival-detected sequencing; per-waypoint timeout; tilt abort.
 
-Usage:
+Usage (the live dashboard is ON by default -> add --no-viz to disable, --rrd <path> to record):
   python goto.py                       # safe default: a small box out front (body frame)
   python goto.py body 6 0 0  6 4 0     # body-relative triples: (fwd, right, down) from spawn heading
   python goto.py world 8 0 0  0 8 0    # world-NED triples: (N, E, D) offsets from spawn
@@ -27,6 +27,7 @@ from aigp.commander import Commander
 from aigp.geometry import quat_to_R
 from aigp.control_math import (desired_attitude, mat_to_quat, attitude_error_quat,
                                collective_accel, accel_to_thrust_norm)
+import aigp.flight_telemetry as ftm
 
 KP_ATT = np.array([0.5, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3
 KP_CT = 0.5; KD_CT = 1.2; AL_MAX = 0.5; KD_AL = 1.2; KP_Z = 1.8; KD_Z = 3.0
@@ -40,6 +41,7 @@ IDLE = mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
 
 s = Store(); m = MavlinkIO(s); assert m.wait_heartbeat(10); m.start(); VisionIO(s).start()
 boot = int(time.time() * 1000); c = Commander(m.conn, boot)
+flog = None; T0 = 0.0    # live dashboard (set in main, ON by default); flight-start time for the timeline
 
 
 def idle():
@@ -89,8 +91,10 @@ def cmd(ds, a2, z_sp, yaw0):
     w_des = KP_ATT * attitude_error_quat(ds.quat_wxyz, q_des)
     w_des[2] = KP_YAW * ((yaw0 - yaw_cur + np.pi) % (2 * np.pi) - np.pi) - KD_YAW * float(ds.omega[2])
     thr = accel_to_thrust_norm(collective_accel(a, ds.quat_wxyz), HOVER, KA)
-    c.send_attitude_target(np.clip(w_des / RG, -WMAX, WMAX), thr)
-    zb = Rc[:, 2]; return float(np.degrees(np.arccos(max(-1, min(1, zb[2])))))
+    c.send_attitude_target(np.clip(w_des / RG, -WMAX, WMAX), thr)   # command sent BEFORE any telemetry
+    zb = Rc[:, 2]
+    tilt = float(np.degrees(np.arccos(max(-1, min(1, zb[2])))))
+    return tilt, {"a": a, "w_des": w_des, "q_des": q_des, "thr": thr}
 
 
 def fly_leg(target, leg_start, yaw0):
@@ -108,7 +112,10 @@ def fly_leg(target, leg_start, yaw0):
             spd = float(np.clip(0.6 * float(rel[:2] @ tv), 0.0, MAX_SPEED))   # ramp to a stop
             a_al = float(np.clip(KD_AL * (spd - float(ds.vel_ned[:2] @ tv)), -DECEL_MAX, AL_MAX))
             a_ct = -KP_CT * float((ds.pos_ned - leg_start)[:2] @ lat) - KD_CT * float(ds.vel_ned[:2] @ lat)
-            tilt = cmd(ds, a_al * tv + a_ct * lat, z_sp, yaw0)
+            tilt, dbg = cmd(ds, a_al * tv + a_ct * lat, z_sp, yaw0)
+            if flog is not None:
+                flog.push(time.time() - T0, ds, dbg, nearest=target, tangent=tv, cruise=spd,
+                          running=s.get_race_live(), armed=True)
             if tilt > ABORT_TILT:
                 print(f"  ABORT tilt={tilt:.0f}", flush=True); return "abort"
             k = int((time.time() - t_wp) / 2.0)
@@ -130,14 +137,18 @@ def settle(target, yaw0):
                 return
             err = (target - ds.pos_ned)[:2]
             a2 = np.clip(KP_CT * err, -1.0, 1.0) - KD_CT * ds.vel_ned[:2]   # pull to point + damp vel
-            tilt = cmd(ds, a2, z_sp, yaw0)
+            tilt, dbg = cmd(ds, a2, z_sp, yaw0)
+            if flog is not None:
+                flog.push(time.time() - T0, ds, dbg, nearest=target, cruise=0.0,
+                          running=s.get_race_live(), armed=True)
             if tilt > ABORT_TILT:
                 return
         time.sleep(LOOP_DT)
 
 
 def main():
-    body, wps = parse_args(sys.argv[1:])
+    global flog, T0
+    body, wps = parse_args(ftm.strip_viz_args(sys.argv[1:]))
     assert fresh_start(), "not live"
     ds0 = s.get_drone(); spawn = ds0.pos_ned.copy()
     yaw0 = float(np.arctan2(quat_to_R(ds0.quat_wxyz)[1, 0], quat_to_R(ds0.quat_wxyz)[0, 0]))
@@ -150,16 +161,23 @@ def main():
     targets = [spawn + o for o in offs]
     print(f"GOTO {len(wps)} waypoints ({'body fwd/right/down' if body else 'world NED'}): {wps}", flush=True)
     c.arm()
+    flog = ftm.from_args(sys.argv, RG, "goto"); T0 = time.time()    # live dashboard on by default
+    if flog is not None:
+        flog.set_path(np.vstack([spawn] + targets))
     leg_start = spawn.copy()
     for wi, target in enumerate(targets):
         print(f"-> wp{wi} {wps[wi]}", flush=True)
         res = fly_leg(target, leg_start, yaw0)
         print(f"   {res.upper()} wp{wi}", flush=True)
         if res == "abort":
+            if flog is not None:
+                flog.close()
             return
         settle(target, yaw0)
         ds = s.get_drone()
         leg_start = ds.pos_ned.copy() if ds is not None else target
+    if flog is not None:
+        flog.close()
     print("mission done", flush=True)
 
 
