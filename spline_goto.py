@@ -34,6 +34,7 @@ from aigp.commander import Commander
 from aigp.geometry import quat_to_R
 from aigp.control_math import (desired_attitude, mat_to_quat, attitude_error_quat,
                                collective_accel, accel_to_thrust_norm)
+from aigp.flight_telemetry import FlightLog
 from sim.spline import GateSpline
 
 KP_ATT = np.array([0.5, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3
@@ -99,8 +100,10 @@ def cmd(ds, a2, z_sp, yaw0):
     w_des = KP_ATT * attitude_error_quat(ds.quat_wxyz, q_des)
     w_des[2] = KP_YAW * ((yaw0 - yaw_cur + np.pi) % (2 * np.pi) - np.pi) - KD_YAW * float(ds.omega[2])
     thr = accel_to_thrust_norm(collective_accel(a, ds.quat_wxyz), HOVER, KA)
-    c.send_attitude_target(np.clip(w_des / RG, -WMAX, WMAX), thr)
-    zb = Rc[:, 2]; return float(np.degrees(np.arccos(max(-1, min(1, zb[2])))))
+    c.send_attitude_target(np.clip(w_des / RG, -WMAX, WMAX), thr)   # command sent BEFORE any telemetry
+    zb = Rc[:, 2]
+    tilt = float(np.degrees(np.arccos(max(-1, min(1, zb[2])))))
+    return tilt, {"a": a, "w_des": w_des, "q_des": q_des, "thr": thr}
 
 
 def circle_offsets(R, n=8):
@@ -112,6 +115,9 @@ def circle_offsets(R, n=8):
 
 def main():
     argv = sys.argv[1:]
+    rrd = None
+    if "--rrd" in argv:                       # --rrd <path> saves a shareable recording instead of live
+        i = argv.index("--rrd"); rrd = argv[i + 1]; argv = argv[:i] + argv[i + 2:]
     if any(a == "circle" for a in argv):
         nf = [a for a in argv if not a.startswith("--")]
         R = float(nf[nf.index("circle") + 1]) if len(nf) > nf.index("circle") + 1 else 6.0
@@ -146,8 +152,12 @@ def main():
         print(f"  max |dyaw| between samples = {mx:.1f}deg  (overshoot/wiggle if large)", flush=True)
         return
     c.arm()
+    flog = FlightLog(rate_gain=RG, decimate=5, rrd_path=rrd) if ("--viz" in sys.argv or rrd) else None
+    if flog is not None:
+        flog.set_path(spline._samples)
     t0 = time.time(); last = -1; left = False
     yaw_cmd = yaw0; t_prev = t0    # heading setpoint, slewed toward the tangent (starts at spawn heading)
+    viz_acc = 0.0; viz_max = 0.0; viz_n = 0
     while time.time() - t0 < MAX_T:
         ds = s.get_drone()
         if ds is not None:
@@ -171,7 +181,12 @@ def main():
             now = time.time(); dt = now - t_prev; t_prev = now
             dyaw = ((yaw_tgt - yaw_cmd + np.pi) % (2 * np.pi)) - np.pi
             yaw_cmd += float(np.clip(dyaw, -YAW_SLEW * dt, YAW_SLEW * dt))
-            tilt = cmd(ds, a2, float(nearest[2]), yaw_cmd)
+            tilt, dbg = cmd(ds, a2, float(nearest[2]), yaw_cmd)
+            if flog is not None:                      # log AFTER the command is sent (never delays it)
+                _tb = time.perf_counter()
+                flog.step(time.time() - t0, ds, dbg, nearest=nearest, tangent=th,
+                          cruise=CRUISE, running=s.get_race_live(), armed=True)
+                _d = time.perf_counter() - _tb; viz_acc += _d; viz_max = max(viz_max, _d); viz_n += 1
             if tilt > ABORT_TILT:
                 print(f"ABORT tilt={tilt:.0f}", flush=True); return
             k = int((time.time() - t0) / 2.0)
@@ -183,6 +198,9 @@ def main():
         time.sleep(LOOP_DT)
     else:
         print("MAX_T reached", flush=True)
+    if viz_n:
+        print(f"viz overhead: avg {1e3*viz_acc/viz_n:.3f} ms, max {1e3*viz_max:.3f} ms over {viz_n} logs "
+              f"(loop budget {1e3*LOOP_DT:.0f} ms; decimate={flog.decimate})", flush=True)
     print("done", flush=True)
 
 
