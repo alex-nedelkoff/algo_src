@@ -32,7 +32,7 @@ KP_ATT = np.array([0.7, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3
 KD_AL = 1.2; AL_MAX = 0.5; KD_LAT = 1.4; K_STRAFE = 4.0; VLAT_MAX = 1.2
 VZ_MAX = 2.2; FWD = 1.2; KP_Z = 1.8; KD_Z = 3.0
 SZ_LOCK = 100.0; EX_LOCK = 0.20
-WMAX = 4.0; LOOP_DT = 0.004; DURATION = 28.0
+WMAX = 4.0; LOOP_DT = 0.004; DURATION = 45.0; N_GATES = 2   # chain N gates (heading held throughout)
 TILTMAX = np.tan(np.radians(15)) * 9.81
 IDLE = mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
 P = load_params()
@@ -75,6 +75,7 @@ fwd = -np.array([np.cos(yaw0), np.sin(yaw0)]); lat = np.array([-fwd[1], fwd[0]])
 c.arm()
 print(f"SIGN_S={SIGN_S} K_VZ={K_VZ} SZ_LOCK={SZ_LOCK:.0f} rrd={RRD}", flush=True)
 t0 = time.time(); passed = False; logn = 0; trail = []; lastlog = -1; locked = False; tan_lock = 0.0
+prev_gi = gi0; target = gi0 + N_GATES
 while time.time()-t0 < DURATION:
     ds = s.get_drone()
     if ds is not None:
@@ -117,13 +118,15 @@ while time.time()-t0 < DURATION:
         thr = accel_to_thrust_norm(collective_accel(a, ds.quat_wxyz), HOVER, KA)
         c.send_attitude_target(np.clip(w/RG, -WMAX, WMAX), thr)
         gi = s.get_gate_idx()
-        if gi > gi0:
-            passed = True
+        if gi > prev_gi:
             if bgr is not None:
                 trail.append((ds.pos_ned - spawn).copy())
                 viz.log_step(time.time()-t0, ds.pos_ned - spawn, ds.vel_ned, bgr,
                              red_mask(bgr, P), draw_overlay(bgr, det), det, None, trail=trail)
-            print(f"*** GATE PASSED at t={time.time()-t0:.1f}s (idx {gi0}->{gi}) ***", flush=True); break
+            print(f"*** GATE PASSED at t={time.time()-t0:.1f}s (idx {prev_gi}->{gi}) ***", flush=True)
+            prev_gi = gi; locked = False                     # reset lock -> re-acquire the next gate
+            if gi >= target:
+                passed = True; break
         logn += 1
         if logn % 10 == 0 and bgr is not None:
             trail.append((ds.pos_ned - spawn).copy())
@@ -137,4 +140,5 @@ while time.time()-t0 < DURATION:
                   f"dDown={d[2]:+5.1f} zref={z_ref-spawn[2]:+4.1f} lk={int(locked)} fwd={d[:2]@fwd:+5.1f} gi={gi}", flush=True)
     time.sleep(LOOP_DT)
 d = s.get_drone().pos_ned - spawn
-print(f"\nRESULT: {'PASSED gate' if passed else 'did NOT pass'} | fwd={d[:2]@fwd:+.0f}m dDown={d[2]:+.0f}m over {time.time()-t0:.0f}s", flush=True)
+n_passed = s.get_gate_idx() - gi0
+print(f"\nRESULT: passed {n_passed}/{N_GATES} gate(s) | fwd={d[:2]@fwd:+.0f}m dDown={d[2]:+.0f}m over {time.time()-t0:.0f}s", flush=True)
