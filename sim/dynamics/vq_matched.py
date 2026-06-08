@@ -84,7 +84,7 @@ class VQMatchedDynamics:
     """
 
     def __init__(self, model: dict, dt: float = 1.0 / 72.0, roll_wv: bool = True,
-                 latency_s: float = 0.0) -> None:
+                 latency_s: float = 0.0, frame: str = "NED") -> None:
         rl = model["rate_loop"]
         self.tau = np.array([rl[n]["tau_ms"] / 1000.0 for n in ("roll", "pitch", "yaw")])
         self.Gax = np.array([rl[n]["gain_G"] for n in ("roll", "pitch", "yaw")])
@@ -98,6 +98,19 @@ class VQMatchedDynamics:
         self.dt = dt
         self.delay = int(round(latency_s / dt))
         self._buf: list[NDArray[np.float64]] = []  # actuation-delay FIFO of actions
+
+        # Frame. NED/FRD is the native (validated) convention; "ENU" is the env's z-up/FLU
+        # convention, related by B=diag(1,-1,-1) (180 deg about body-x, a PROPER rotation applied
+        # to BOTH world and body). Under B: rate gains, yaw-wv and drag are INVARIANT; only gravity-z,
+        # the thrust z-force, and the roll-wv signs flip. (This is the "flipped yaw torque sign" the
+        # port flagged — handled here, not by hand in the env.) Equivalence to NED is unit-tested.
+        if frame not in ("NED", "ENU"):
+            raise ValueError(f"frame must be 'NED' or 'ENU', got {frame!r}")
+        self.frame = frame
+        enu = frame == "ENU"
+        self._g_vec = np.array([0.0, 0.0, -GRAVITY if enu else GRAVITY])
+        self._thrust_z_sign = 1.0 if enu else -1.0   # f_body_z = sign * c  (c = -(f0+df*thr) > 0 hover)
+        self._roll_wv_sign = -1.0 if enu else 1.0
 
     def reset(self, n_envs: int) -> NDArray[np.float64]:
         """Hover initial state (level, at rest, z=0): (n_envs, 13)."""
@@ -129,8 +142,8 @@ class VQMatchedDynamics:
         a = np.exp(-dt / self.tau)
         om_new = a * om + (1.0 - a) * self.Gax * wcmd
         # --- weathervane moments (ang-accel * dt) ---
-        om_new[:, 0] += (self.roll_wv0 + self.roll_wv1 * vb[:, 0]) * vb[:, 1] * dt
-        om_new[:, 2] += self.yaw_wv * vb[:, 1] * dt
+        om_new[:, 0] += self._roll_wv_sign * (self.roll_wv0 + self.roll_wv1 * vb[:, 0]) * vb[:, 1] * dt
+        om_new[:, 2] += self.yaw_wv * vb[:, 1] * dt   # yaw-wv invariant under the NED<->ENU basis change
 
         # --- attitude integrate via axis-angle exp(0.5 om dt) ---
         ang = np.linalg.norm(om_new, axis=1) * dt
@@ -145,11 +158,11 @@ class VQMatchedDynamics:
         new_quat /= np.maximum(np.linalg.norm(new_quat, axis=1, keepdims=True), 1e-12)
         R = quat_to_rotmat_batch(new_quat)
 
-        # --- translational: thrust + body drag + gravity ---
-        # NED/FRD: thrust acts along body -z (up). c = -(f0+df*thr) > 0 at hover, so f_body_z = -c < 0.
+        # --- translational: thrust + body drag + gravity (frame-aware signs) ---
+        # c = -(f0+df*thr) > 0 at hover. Thrust along body-up: f_body_z = -c (NED/FRD) or +c (ENU/FLU).
         c = -(self.f0 + self.df * thr)
-        f_body = np.stack([-self.Dx * vb[:, 0], -self.Dy * vb[:, 1], -c], axis=1)
-        a_world = np.einsum("nij,nj->ni", R, f_body) + np.array([0.0, 0.0, GRAVITY])
+        f_body = np.stack([-self.Dx * vb[:, 0], -self.Dy * vb[:, 1], self._thrust_z_sign * c], axis=1)
+        a_world = np.einsum("nij,nj->ni", R, f_body) + self._g_vec
 
         new = np.empty_like(states)
         new[:, VEL] = vel + dt * a_world
