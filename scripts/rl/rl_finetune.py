@@ -1,13 +1,10 @@
-"""rl_finetune.py -- STEP 5: PPO fine-tune on the matched sim, warm-started from the FF/DAgger.
+"""rl_finetune.py -- PPO fine-tune on the matched sim, warm-started from FF/DAgger (COR-127 step 5).
 
-Pipeline (all SB3-native, no weight-folding):
-  1. matched-sim corridor VecEnv (GateRaceEnv action_mode=vq_rate, randomized corridors).
-  2. SB3 PPO MlpPolicy net_arch [128,128,128], log_std_init=-2.5 (exploration ~ the tiny rate-action
-     scale; default std=1 would swamp the warm-start), hover action bias on the thrust channel.
-  3. BC + DAgger warm-start the policy on FF demos (expert reads ground truth via adapter.env).
-  4. model.learn() with a gate-chaining reward (gate_passage/progress + heading + smoothness).
-  5. eval gates-passed before/after; save .zip.
-Usage: python -u rl_finetune.py [--steps 2000000] [--envs 64] [--dagger 2] [--bc_epochs 15]
+Flags: --steps --envs --dagger --bc_epochs --vdes --warmstart 0/1 --curve --recurrent --tag NAME
+Pipeline: matched-corridor VecEnv (vq_rate) -> (Recurrent)PPO (log_std_init -2.5 when warm so
+exploration ~ the tiny rate-action scale; hover thrust action-bias) -> BC+DAgger warm-start on FF
+demos (MLP only; expert reads ground truth via VecEnvAdapter.env) -> learn() with gate-chaining
+reward -> periodic gate-eval. Saves ft_<tag>.zip.
 """
 import sys, json
 import numpy as np
@@ -21,18 +18,25 @@ from sim.dynamics.numpy_quad import POS, VEL, QUAT, OMEGA, quat_to_rotmat_batch
 
 G = 9.81
 def argf(f, d): return float(sys.argv[sys.argv.index(f)+1]) if f in sys.argv else d
-STEPS = int(argf("--steps", 2_000_000)); NENV = int(argf("--envs", 64))
-DAGGER = int(argf("--dagger", 2)); BC_EPOCHS = int(argf("--bc_epochs", 15)); NG = 6
-VDES = 4.0
+def args(f, d): return sys.argv[sys.argv.index(f)+1] if f in sys.argv else d
+STEPS = int(argf("--steps", 5_000_000)); NENV = int(argf("--envs", 64))
+DAGGER = int(argf("--dagger", 4)); BC_EPOCHS = int(argf("--bc_epochs", 20)); NG = 6
+VDES = argf("--vdes", 4.0); WARM = int(argf("--warmstart", 1)); CURVE = "--curve" in sys.argv
+REC = "--recurrent" in sys.argv; TAG = args("--tag", "v1")
+if REC:
+    WARM = 0  # BC-into-LSTM not wired; recurrent variant leans on PPO
 M = json.load(open("sysid/vq_model.json"))
 GAIN = np.array([M["rate_loop"][n]["gain_G"] for n in ("roll", "pitch", "yaw")])
 F0 = M["thrust"]["f0"]; DF = M["thrust"]["df_dthr"]; MAXW = 17.45
 KP_POS = np.array([0.6, 0.6, 2.0]); KD_POS = np.array([1.2, 1.2, 3.0])
 KP_ATT = np.array([6.0, 6.0, 4.0]); KD_ATT = np.array([1.2, 1.2, 0.0]); KP_YAW = 4.0; KD_YAW = 0.5
 TILT_MAX = np.tan(np.radians(35)) * G
-HOVER_U0 = 2*((F0+G)/(-DF)) - 1   # thrust action at hover
+HOVER_U0 = 2*((F0+G)/(-DF)) - 1
+# Racing reward: gate_passage (per-gate, the objective) + delta gate_progress (loiter-safe guidance)
+# + small body-rate penalty + crash. NO dense per-step survival terms (heading_alignment/speed_bonus
+# are gameable on a finite course -> reward-hacking: survive+point-at-gate without threading).
 REWARD = {"gate_progress": 2.0, "gate_passage": 15.0, "gate_offset": 0.5,
-          "body_rate": 0.005, "crash_penalty": 10.0, "heading_alignment": 0.5}
+          "body_rate": 0.005, "crash_penalty": 10.0}
 
 
 def mat_to_quat_batch(m):
@@ -78,12 +82,25 @@ def aim(S, gates, gp):
     return gate, tv, np.arctan2(dxy[:, 1], dxy[:, 0])
 
 
+def _yaw_quat(th):
+    return np.array([np.cos(th/2), 0.0, 0.0, np.sin(th/2)])
+
+
 def make_env(n, seed):
     rng = np.random.default_rng(seed); tracks = []; G3 = []
     for _ in range(n):
         sp = rng.uniform(9, 13); amp = rng.uniform(1.0, 3.0); ph = rng.uniform(0, 6.28)
-        gs = [GateState(position=np.array([8.0+sp*i, amp*np.sin(i*0.9+ph), 1.0]),
-                        orientation=np.array([1.0, 0, 0, 0])) for i in range(NG)]
+        gs = []
+        if CURVE:
+            hd = 0.0; pos = np.array([8.0, 0.0, 1.0]); turn = rng.uniform(0.12, 0.28)*rng.choice([-1, 1])
+            for i in range(NG):
+                hd += turn; pos = pos + sp*np.array([np.cos(hd), np.sin(hd), 0.0])
+                z = 1.0 + 0.6*np.sin(i*0.7+ph)
+                gs.append(GateState(position=np.array([pos[0], pos[1], z]), orientation=_yaw_quat(hd)))
+        else:
+            for i in range(NG):
+                gs.append(GateState(position=np.array([8.0+sp*i, amp*np.sin(i*0.9+ph), 1.0]),
+                                    orientation=np.array([1.0, 0, 0, 0])))
         tracks.append(Track(gates=gs, name="c", start_position=np.array([0, 0, 1.0]))); G3.append([g.position for g in gs])
     env = GateRaceEnv(n_envs=n, dt=0.01, max_steps=1500, action_mode="vq_rate",
                       vq_model_path="sysid/vq_model.json", tracks=tracks, random_gate_start=False,
@@ -94,19 +111,21 @@ def make_env(n, seed):
 
 def policy_mean(model, obs_np):
     obs_t, _ = model.policy.obs_to_tensor(obs_np)
-    with torch.no_grad() if False else torch.enable_grad():
-        feat = model.policy.extract_features(obs_t)
-        latent_pi = model.policy.mlp_extractor.forward_actor(feat)
-        return model.policy.action_net(latent_pi)
+    feat = model.policy.extract_features(obs_t)
+    latent_pi = model.policy.mlp_extractor.forward_actor(feat)
+    return model.policy.action_net(latent_pi)
 
 
 def eval_gates(model, seed=7, NE=16):
-    env, gates = make_env(NE, seed)
-    venv = VecEnvAdapter(env); obs = venv.reset(); peak = np.zeros(NE, int); fr = np.zeros(NE, bool)
+    env, gates = make_env(NE, seed); venv = VecEnvAdapter(env); obs = venv.reset()
+    peak = np.zeros(NE, int); fr = np.zeros(NE, bool); lstm = None; starts = np.ones(NE, bool)
     for _ in range(2200):
-        act, _ = model.predict(obs, deterministic=True)
+        if REC:
+            act, lstm = model.predict(obs, state=lstm, episode_start=starts, deterministic=True)
+        else:
+            act, _ = model.predict(obs, deterministic=True)
         peak = np.maximum(peak, np.where(fr, peak, env._gates_passed))
-        obs, r, dones, infos = venv.step(act); fr |= dones
+        obs, r, dones, infos = venv.step(act); starts = dones; fr |= dones
         if fr.all():
             break
     return np.maximum(peak, env._gates_passed)
@@ -114,42 +133,47 @@ def eval_gates(model, seed=7, NE=16):
 
 def main():
     torch.manual_seed(0)
-    print(f"FT: build env (envs={NENV}) + PPO", flush=True)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
-    model = PPO("MlpPolicy", venv, n_steps=512, batch_size=8192, n_epochs=8, gamma=0.999,
-                gae_lambda=0.95, clip_range=0.2, ent_coef=0.004, learning_rate=3e-4,
-                policy_kwargs=dict(net_arch=[128, 128, 128], log_std_init=-2.5), device="cuda", verbose=1)
-    with torch.no_grad():            # hover thrust bias so the warm-start starts near trim
+    log_std = -2.5 if WARM else 0.0
+    if REC:
+        from sb3_contrib import RecurrentPPO
+        model = RecurrentPPO("MlpLstmPolicy", venv, n_steps=512, batch_size=8192, n_epochs=8, gamma=0.999,
+                             gae_lambda=0.95, clip_range=0.2, ent_coef=0.004, learning_rate=3e-4,
+                             policy_kwargs=dict(net_arch=[128, 128], log_std_init=log_std, lstm_hidden_size=128),
+                             device="cuda", verbose=1)
+    else:
+        model = PPO("MlpPolicy", venv, n_steps=512, batch_size=8192, n_epochs=8, gamma=0.999,
+                    gae_lambda=0.95, clip_range=0.2, ent_coef=0.004, learning_rate=3e-4,
+                    policy_kwargs=dict(net_arch=[128, 128, 128], log_std_init=log_std), device="cuda", verbose=1)
+    with torch.no_grad():
         model.policy.action_net.bias[:] = torch.tensor([HOVER_U0, 0, 0, 0], dtype=model.policy.action_net.bias.dtype)
-    print(f"  hover_u0={HOVER_U0:.3f} log_std_init=-2.5", flush=True)
 
-    # --- BC + DAgger warm-start on FF demos ---
-    print("FT: collecting FF demos + BC...", flush=True)
-    obs = venv.reset(); X = []; Yff = []
-    for _ in range(1500):
-        S = env._states; u = ff_batch(S, *aim(S, gates, env._gates_passed))
-        X.append(obs.copy()); Yff.append(u.copy()); obs, r, d, info = venv.step(u)
-    X = np.concatenate(X); Y = np.concatenate(Yff)
-    opt = torch.optim.Adam(model.policy.parameters(), 1e-3); lf = nn.MSELoss()
-    def bc(X, Y, epochs):
-        Xt = X; Yt = torch.tensor(Y, dtype=torch.float32, device=model.device); n = len(X); bs = 8192
-        for ep in range(epochs):
-            perm = np.random.permutation(n)
-            for j in range(0, n, bs):
-                idx = perm[j:j+bs]; opt.zero_grad()
-                l = lf(policy_mean(model, X[idx]), Yt[idx]); l.backward(); opt.step()
-        return l.item()
-    l = bc(X, Y, BC_EPOCHS); pk = eval_gates(model)
-    print(f"  BC: mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
-    for rd in range(1, DAGGER+1):
-        ed, gd = make_env(NENV, 100+rd); vd = VecEnvAdapter(ed); o = vd.reset(); Xn = []; Yn = []
+    if WARM:
+        print("FT: FF demos + BC...", flush=True)
+        obs = venv.reset(); X = []; Y = []
         for _ in range(1500):
-            S = ed._states; uff = ff_batch(S, *aim(S, gd, ed._gates_passed))
-            act, _ = model.predict(o, deterministic=True)
-            Xn.append(o.copy()); Yn.append(uff.copy()); o, r, dn, inf = vd.step(act)
-        X = np.concatenate([X, np.concatenate(Xn)]); Y = np.concatenate([Y, np.concatenate(Yn)])
+            S = env._states; u = ff_batch(S, *aim(S, gates, env._gates_passed))
+            X.append(obs.copy()); Y.append(u.copy()); obs, r, d, info = venv.step(u)
+        X = np.concatenate(X); Y = np.concatenate(Y)
+        opt = torch.optim.Adam(model.policy.parameters(), 1e-3); lf = nn.MSELoss()
+        def bc(X, Y, epochs):
+            Yt = torch.tensor(Y, dtype=torch.float32, device=model.device); n = len(X); bs = 8192
+            for ep in range(epochs):
+                perm = np.random.permutation(n)
+                for j in range(0, n, bs):
+                    idx = perm[j:j+bs]; opt.zero_grad(); l = lf(policy_mean(model, X[idx]), Yt[idx]); l.backward(); opt.step()
+            return l.item()
         l = bc(X, Y, BC_EPOCHS); pk = eval_gates(model)
-        print(f"  DAgger r{rd}: D={len(X)} mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
+        print(f"  BC: mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
+        for rd in range(1, DAGGER+1):
+            ed, gd = make_env(NENV, 100+rd); vd = VecEnvAdapter(ed); o = vd.reset(); Xn = []; Yn = []
+            for _ in range(1500):
+                S = ed._states; uff = ff_batch(S, *aim(S, gd, ed._gates_passed))
+                act, _ = model.predict(o, deterministic=True); Xn.append(o.copy()); Yn.append(uff.copy()); o, r, dn, inf = vd.step(act)
+            X = np.concatenate([X, np.concatenate(Xn)]); Y = np.concatenate([Y, np.concatenate(Yn)])
+            l = bc(X, Y, BC_EPOCHS); pk = eval_gates(model)
+            print(f"  DAgger r{rd}: D={len(X)} mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
 
     class GateEval(BaseCallback):
         def __init__(s, every): super().__init__(); s.every = every; s.last = 0
@@ -159,12 +183,12 @@ def main():
                 print(f"  [t={s.num_timesteps}] gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
             return True
 
-    print(f"FT: PPO learn {STEPS} steps...", flush=True)
+    print(f"FT[{TAG}]: learn {STEPS}...", flush=True)
     model.learn(total_timesteps=STEPS, progress_bar=False, callback=GateEval(500_000))
     pk = eval_gates(model)
-    print(f"FT DONE: gates {pk.mean():.1f}/{NG} max {pk.max()} fin {int((pk>=NG).sum())}/16 dist {np.bincount(np.clip(pk,0,NG),minlength=NG+1)}", flush=True)
-    model.save("ft_matched_vqrate")
-    print("saved ft_matched_vqrate.zip", flush=True)
+    print(f"FT[{TAG}] DONE: gates {pk.mean():.1f}/{NG} max {pk.max()} fin {int((pk>=NG).sum())}/16 dist {np.bincount(np.clip(pk,0,NG),minlength=NG+1)}", flush=True)
+    model.save(f"ft_{TAG}")
+    print(f"saved ft_{TAG}.zip", flush=True)
 
 
 if __name__ == "__main__":
