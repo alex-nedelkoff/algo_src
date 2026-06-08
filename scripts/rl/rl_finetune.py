@@ -135,16 +135,21 @@ def main():
     torch.manual_seed(0)
     print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
-    log_std = -2.5 if WARM else 0.0
+    # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
+    # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the
+    # warm-start. From-scratch (warm=0) needs real exploration, so log_std 0 + entropy + larger LR.
+    log_std = -4.0 if WARM else 0.0
+    LR = 1e-4 if WARM else 3e-4; ENT = 0.0 if WARM else 0.01
+    EPO = 4 if WARM else 8; CLIP = 0.1 if WARM else 0.2
     if REC:
         from sb3_contrib import RecurrentPPO
-        model = RecurrentPPO("MlpLstmPolicy", venv, n_steps=512, batch_size=8192, n_epochs=8, gamma=0.999,
-                             gae_lambda=0.95, clip_range=0.2, ent_coef=0.004, learning_rate=3e-4,
+        model = RecurrentPPO("MlpLstmPolicy", venv, n_steps=512, batch_size=8192, n_epochs=EPO, gamma=0.999,
+                             gae_lambda=0.95, clip_range=CLIP, ent_coef=ENT, learning_rate=LR,
                              policy_kwargs=dict(net_arch=[128, 128], log_std_init=log_std, lstm_hidden_size=128),
                              device="cuda", verbose=1)
     else:
-        model = PPO("MlpPolicy", venv, n_steps=512, batch_size=8192, n_epochs=8, gamma=0.999,
-                    gae_lambda=0.95, clip_range=0.2, ent_coef=0.004, learning_rate=3e-4,
+        model = PPO("MlpPolicy", venv, n_steps=512, batch_size=8192, n_epochs=EPO, gamma=0.999,
+                    gae_lambda=0.95, clip_range=CLIP, ent_coef=ENT, learning_rate=LR,
                     policy_kwargs=dict(net_arch=[128, 128, 128], log_std_init=log_std), device="cuda", verbose=1)
     with torch.no_grad():
         model.policy.action_net.bias[:] = torch.tensor([HOVER_U0, 0, 0, 0], dtype=model.policy.action_net.bias.dtype)
@@ -183,8 +188,11 @@ def main():
                 print(f"  [t={s.num_timesteps}] gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
             return True
 
-    print(f"FT[{TAG}]: learn {STEPS}...", flush=True)
-    model.learn(total_timesteps=STEPS, progress_bar=False, callback=GateEval(500_000))
+    if STEPS > 0:
+        print(f"FT[{TAG}]: learn {STEPS}...", flush=True)
+        model.learn(total_timesteps=STEPS, progress_bar=False, callback=GateEval(500_000))
+    else:
+        print(f"FT[{TAG}]: STEPS=0 -> save DAgger warm-start only (no PPO)", flush=True)
     pk = eval_gates(model)
     print(f"FT[{TAG}] DONE: gates {pk.mean():.1f}/{NG} max {pk.max()} fin {int((pk>=NG).sum())}/16 dist {np.bincount(np.clip(pk,0,NG),minlength=NG+1)}", flush=True)
     model.save(f"ft_{TAG}")
