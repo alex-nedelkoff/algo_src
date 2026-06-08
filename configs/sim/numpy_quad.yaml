@@ -18,6 +18,9 @@ esc_nonlinearity: 0.95
 n_lookahead_gates: 1
 
 action_mode: trpy
+# Path to the VQ-matched sysID model (sysid/vq_model.json) — used only when
+# action_mode=vq_rate. Use an absolute path under hydra (cwd is an output dir).
+vq_model_path: sysid/vq_model.json
 
 # Racing quad vehicle parameters (5" racing quad, sysid)
 params:
