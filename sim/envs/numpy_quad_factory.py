@@ -77,6 +77,7 @@ class NumpyQuadEnvFactory:
         n_lookahead_gates: int = 1,
         n_action_history: int = 0,
         action_mode: str = "motor_rpm",
+        vq_model_path: str = "sysid/vq_model.json",
     ) -> None:
         self.n_envs = n_envs
         self.dt = dt
@@ -98,6 +99,7 @@ class NumpyQuadEnvFactory:
         self._n_lookahead_gates = n_lookahead_gates
         self._n_action_history = n_action_history
         self.action_mode = action_mode
+        self.vq_model_path = vq_model_path
 
         # Resolve params: accept VehicleParams directly (Hydra recursive
         # instantiation) or DictConfig (manual construction).
@@ -294,6 +296,7 @@ class NumpyQuadEnvFactory:
             n_lookahead_gates=self._n_lookahead_gates,
             n_action_history=self._n_action_history,
             action_mode=self.action_mode,
+            vq_model_path=self.vq_model_path,
         )
 
         log.info(
