@@ -167,6 +167,20 @@ def test_17_state_passthrough():
     np.testing.assert_allclose(out17[:, 13:17], 7.0)  # motor slice preserved
 
 
+def test_first_order_thrust_lag():
+    """thrust_lag_s makes the applied thrust first-order toward the command (state in motor slot 13)."""
+    dt = 0.01; tau = 0.085
+    dyn = VQMatchedDynamics(MODEL, dt=dt, frame="ENU", thrust_lag_s=tau, roll_wv=False)
+    s = np.zeros((1, 17)); s[:, 6] = 1.0; s[0, 13] = THR_HOVER
+    a = np.array([[1.0, 0.0, 0.0, 0.0]])  # command max thrust
+    thr = []
+    for _ in range(40):
+        s = dyn.step(s, a); thr.append(s[0, 13])
+    thr = np.array(thr); a_thr = np.exp(-dt / tau)
+    assert abs(thr[0] - (a_thr * THR_HOVER + (1 - a_thr) * 1.0)) < 1e-6  # exact first-order step
+    assert thr[0] < thr[10] < thr[-1] and thr[-1] > 0.9                  # monotone rise, ~converged
+
+
 def test_directional_roll_weathervane_sign():
     """Forward sideslip (vbx>0, vby>0) produces a roll-rate moment (directional, COR-127)."""
     dyn = VQMatchedDynamics(MODEL, roll_wv=True)

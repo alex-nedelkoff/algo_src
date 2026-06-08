@@ -22,6 +22,7 @@ def args(f, d): return sys.argv[sys.argv.index(f)+1] if f in sys.argv else d
 STEPS = int(argf("--steps", 5_000_000)); NENV = int(argf("--envs", 64))
 DAGGER = int(argf("--dagger", 4)); BC_EPOCHS = int(argf("--bc_epochs", 20)); NG = 6
 VDES = argf("--vdes", 4.0); WARM = int(argf("--warmstart", 1)); CURVE = "--curve" in sys.argv
+LAT = argf("--latency", 0.0); TLAG = argf("--thrust_lag", 0.0)
 REC = "--recurrent" in sys.argv; TAG = args("--tag", "v1")
 if REC:
     WARM = 0  # BC-into-LSTM not wired; recurrent variant leans on PPO
@@ -105,7 +106,7 @@ def make_env(n, seed):
     env = GateRaceEnv(n_envs=n, dt=0.01, max_steps=1500, action_mode="vq_rate",
                       vq_model_path="sysid/vq_model.json", tracks=tracks, random_gate_start=False,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
-                      gate_collision=True, gate_passage_radius=1.0, arena_bounds=120.0, reward_weights=REWARD)
+                      gate_collision=True, gate_passage_radius=1.0, arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
     return env, np.array(G3)
 
 
@@ -133,7 +134,7 @@ def eval_gates(model, seed=7, NE=16):
 
 def main():
     torch.manual_seed(0)
-    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} steps={STEPS}", flush=True)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
     # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the

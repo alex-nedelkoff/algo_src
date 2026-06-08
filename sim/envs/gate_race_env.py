@@ -305,6 +305,8 @@ class GateRaceEnv(gym.Env):
         n_action_history: int = 0,
         action_mode: ActionMode | str = ActionMode.MOTOR_RPM,
         vq_model_path: str = "sysid/vq_model.json",
+        vq_latency_s: float = 0.0,
+        vq_thrust_lag_s: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -369,7 +371,8 @@ class GateRaceEnv(gym.Env):
         if action_mode == ActionMode.VQ_RATE:
             import json
             with open(vq_model_path) as f:
-                self._matched = VQMatchedDynamics(json.load(f), dt=dt, frame="ENU")
+                self._matched = VQMatchedDynamics(json.load(f), dt=dt, frame="ENU",
+                                                  latency_s=vq_latency_s, thrust_lag_s=vq_thrust_lag_s)
 
         # Gymnasium spaces — normalized action space [-1, 1] per MonoRace paper
         obs_high = np.full(self._obs_dim, np.inf, dtype=np.float32)
@@ -519,6 +522,10 @@ class GateRaceEnv(gym.Env):
         super().reset(seed=seed)
 
         self._states = self.dynamics.reset(self.n_envs)
+        if self._matched is not None:
+            self._matched._buf = []  # clear comms-delay FIFO
+            if self._matched.thrust_lag_s > 0.0:
+                self._states[:, 13] = 0.2675  # init first-order thrust-lag state at hover thrust
         self._step_counts[:] = 0
         self._prev_actions = np.zeros((self.n_envs, 4), dtype=np.float64)
         self._gates_passed[:] = 0

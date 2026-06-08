@@ -84,7 +84,7 @@ class VQMatchedDynamics:
     """
 
     def __init__(self, model: dict, dt: float = 1.0 / 72.0, roll_wv: bool = True,
-                 latency_s: float = 0.0, frame: str = "NED") -> None:
+                 latency_s: float = 0.0, frame: str = "NED", thrust_lag_s: float = 0.0) -> None:
         rl = model["rate_loop"]
         self.tau = np.array([rl[n]["tau_ms"] / 1000.0 for n in ("roll", "pitch", "yaw")])
         self.Gax = np.array([rl[n]["gain_G"] for n in ("roll", "pitch", "yaw")])
@@ -96,7 +96,11 @@ class VQMatchedDynamics:
         # directional roll weathervane (COR-127): roll_wv(vx) = c0 + c1*v_body_x
         self.roll_wv0, self.roll_wv1 = (-0.105, -0.019) if roll_wv else (0.0, 0.0)
         self.dt = dt
+        # latency_s = pure comms delay (whole command, FIFO); thrust_lag_s = first-order motor/thrust
+        # lag (measured tau~85ms, MOTOR-01) -- a pure delay is the wrong structure for it. The thrust
+        # lag state rides the 17-state motor slot [:,13] (env path); inactive on 13-state / when 0.
         self.delay = int(round(latency_s / dt))
+        self.thrust_lag_s = thrust_lag_s
         self._buf: list[NDArray[np.float64]] = []  # actuation-delay FIFO of actions
 
         # Frame. NED/FRD is the native (validated) convention; "ENU" is the env's z-up/FLU
@@ -128,18 +132,22 @@ class VQMatchedDynamics:
         since the rate loop subsumes motor dynamics.
         """
         dt = self.dt if dt is None else dt
-        if states.shape[1] > 13:
-            out = states.copy()
-            out[:, :13] = self.step(states[:, :13], actions, dt)
-            return out
-        # actuation latency buffer
+        wide = states.shape[1] > 13
+        # comms delay: whole command through a FIFO of `delay` steps
         if self.delay > 0:
             self._buf.append(actions.copy())
             act = self._buf.pop(0) if len(self._buf) > self.delay else np.zeros_like(actions)
         else:
             act = actions
-        thr = np.clip(act[:, 0], 0.0, 1.0)
+        thr_cmd = np.clip(act[:, 0], 0.0, 1.0)
         wcmd = act[:, 1:4]
+        # first-order thrust/motor lag (state in motor slot [:,13]); inactive on 13-state or when 0
+        if self.thrust_lag_s > 0.0 and wide:
+            a_thr = np.exp(-dt / self.thrust_lag_s)
+            thr_prev = np.clip(states[:, 13], 0.0, 1.0)
+            thr = a_thr * thr_prev + (1.0 - a_thr) * thr_cmd
+        else:
+            thr = thr_cmd
 
         pos = states[:, POS]; vel = states[:, VEL]; quat = states[:, QUAT]; om = states[:, OMEGA]
         R = quat_to_rotmat_batch(quat)
@@ -173,9 +181,11 @@ class VQMatchedDynamics:
         f_body = np.stack([-self.Dx * vb[:, 0], -self.Dy * vb[:, 1], self._thrust_z_sign * c], axis=1)
         a_world = np.einsum("nij,nj->ni", R, f_body) + self._g_vec
 
-        new = np.empty_like(states)
+        new = states.copy()  # preserves any trailing slots (17-state motor slice)
         new[:, VEL] = vel + dt * a_world
         new[:, POS] = pos + dt * new[:, VEL]
         new[:, QUAT] = new_quat
         new[:, OMEGA] = om_new
+        if self.thrust_lag_s > 0.0 and wide:
+            new[:, 13] = thr  # carry the lagged thrust state
         return new
