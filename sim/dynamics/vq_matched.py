@@ -121,8 +121,17 @@ class VQMatchedDynamics:
 
     def step(self, states: NDArray[np.float64], actions: NDArray[np.float64],
              dt: float | None = None) -> NDArray[np.float64]:
-        """Advance all envs one step. states (N,13), actions (N,4)=[thr,wx,wy,wz]."""
+        """Advance all envs one step. actions (N,4)=[thr,wx,wy,wz].
+
+        states is (N,13) [pos,vel,quat,omega], or (N,17) with a trailing motor-speed
+        slice (GateRaceEnv/NumpyQuadDynamics layout) — that slice is preserved untouched
+        since the rate loop subsumes motor dynamics.
+        """
         dt = self.dt if dt is None else dt
+        if states.shape[1] > 13:
+            out = states.copy()
+            out[:, :13] = self.step(states[:, :13], actions, dt)
+            return out
         # actuation latency buffer
         if self.delay > 0:
             self._buf.append(actions.copy())

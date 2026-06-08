@@ -155,6 +155,18 @@ def test_enu_hover_and_yaw_sense():
     assert np.sign(s3[0, 12]) == np.sign(dyn.Gax[2])
 
 
+def test_17_state_passthrough():
+    """GateRaceEnv uses a 17-wide state ([...,13:17]=motor); step must propagate 0:13 and
+    leave the motor slice untouched (rate loop subsumes motor dynamics)."""
+    dyn = VQMatchedDynamics(MODEL, frame="ENU")
+    s13 = np.zeros((4, 13)); s13[:, 6] = 1.0; s13[:, 3] = 1.5
+    s17 = np.zeros((4, 17)); s17[:, :13] = s13; s17[:, 13:17] = 7.0  # sentinel motor speeds
+    a = np.tile([THR_HOVER, 0.1, -0.2, 0.3], (4, 1))
+    out13 = dyn.step(s13, a); out17 = dyn.step(s17, a)
+    np.testing.assert_allclose(out17[:, :13], out13, atol=1e-12)
+    np.testing.assert_allclose(out17[:, 13:17], 7.0)  # motor slice preserved
+
+
 def test_directional_roll_weathervane_sign():
     """Forward sideslip (vbx>0, vby>0) produces a roll-rate moment (directional, COR-127)."""
     dyn = VQMatchedDynamics(MODEL, roll_wv=True)

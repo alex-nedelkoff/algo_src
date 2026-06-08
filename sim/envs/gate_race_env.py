@@ -54,6 +54,7 @@ from sim.dynamics.numpy_quad import (
 )
 from sim.domain_randomization import DomainRandomizer
 from sim.dynamics.params import VehicleParams
+from sim.dynamics.vq_matched import VQMatchedDynamics
 
 
 # Default observation dimension (n_lookahead_gates=1):
@@ -303,6 +304,7 @@ class GateRaceEnv(gym.Env):
         n_lookahead_gates: int = 1,
         n_action_history: int = 0,
         action_mode: ActionMode | str = ActionMode.MOTOR_RPM,
+        vq_model_path: str = "sysid/vq_model.json",
     ) -> None:
         super().__init__()
 
@@ -356,11 +358,18 @@ class GateRaceEnv(gym.Env):
             positions = np.array([g.position for g in t.gates])
             self._splines.append(GateSpline(positions) if len(positions) >= 2 else None)
 
-        # Dynamics
+        # Dynamics. NumpyQuadDynamics owns state bookkeeping (reset / params / obs slices)
+        # in all modes; VQ_RATE additionally propagates with the VQ-matched ACRO rate loop
+        # (sim/dynamics/vq_matched.py) for transfer-credible RL — see COR-127.
         self.params = params or VehicleParams()
         self.dynamics = NumpyQuadDynamics(params=self.params, dt=dt)
         if action_mode == ActionMode.TRPY:
             self._trpy_mixer = TRPYMixer(self.params)
+        self._matched: VQMatchedDynamics | None = None
+        if action_mode == ActionMode.VQ_RATE:
+            import json
+            with open(vq_model_path) as f:
+                self._matched = VQMatchedDynamics(json.load(f), dt=dt, frame="ENU")
 
         # Gymnasium spaces — normalized action space [-1, 1] per MonoRace paper
         obs_high = np.full(self._obs_dim, np.inf, dtype=np.float32)
@@ -582,6 +591,17 @@ class GateRaceEnv(gym.Env):
         physical[:, 1:4] = u[:, 1:4] * self.max_body_rate
         return self._trpy_mixer.mix_batch(physical)
 
+    def _vqrate_action(self, u: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Map normalized action [-1,1] to the VQ-matched rate-loop command.
+
+        u[0] in [-1,1] -> normalized collective thrust in [0,1] (the VQ thrust input)
+        u[1:4] in [-1,1] -> body rates in [-max_body_rate, max_body_rate] (rad/s)
+        """
+        phys = np.empty_like(u)
+        phys[:, 0] = (u[:, 0] + 1.0) / 2.0
+        phys[:, 1:4] = u[:, 1:4] * self.max_body_rate
+        return phys
+
     def step(
         self, action: NDArray[np.float32]
     ) -> tuple[NDArray[np.float32], NDArray[np.float64], NDArray[np.bool_], NDArray[np.bool_], dict[str, Any]]:
@@ -597,14 +617,16 @@ class GateRaceEnv(gym.Env):
         if action.ndim == 1:
             action = action[None, :]  # (1, 4)
 
-        # Map normalized [-1, 1] action to motor speeds in rad/s
-        if self.action_mode == ActionMode.TRPY:
-            action_rads = self._trpy_to_omega(action)
+        # Step dynamics. VQ_RATE propagates through the VQ-matched rate loop (thrust+body-rate
+        # command, no motor allocation); other modes map to motor speeds and use bare physics.
+        if self.action_mode == ActionMode.VQ_RATE:
+            self._states = self._matched.step(self._states, self._vqrate_action(action))
         else:
-            action_rads = self._esc_to_omega(action)
-
-        # Step dynamics
-        self._states = self.dynamics.step(self._states, action_rads)
+            if self.action_mode == ActionMode.TRPY:
+                action_rads = self._trpy_to_omega(action)
+            else:
+                action_rads = self._esc_to_omega(action)
+            self._states = self.dynamics.step(self._states, action_rads)
         self._step_counts += 1
 
         # Clamp state to prevent overflow propagating to observations (float32)

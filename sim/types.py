@@ -18,6 +18,7 @@ class ActionMode(Enum):
 
     MOTOR_RPM = "motor_rpm"
     TRPY = "trpy"  # thrust, roll, pitch, yaw
+    VQ_RATE = "vq_rate"  # thrust + body-rate cmd through the VQ-matched ACRO rate loop (transfer)
 
 
 @dataclass
