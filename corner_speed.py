@@ -24,7 +24,7 @@ from aigp.control_math import (desired_attitude, mat_to_quat, attitude_error_qua
                                collective_accel, accel_to_thrust_norm)
 from aigp.flight_telemetry import sideslip_deg, tilt_deg
 import aigp.flight_telemetry as ftm
-from corner_ff import body_vel, weathervane_ff
+from corner_ff import weathervane_ff
 
 G = 9.81
 # --- weathervane FF (WV-DYNAMIC-validated coeffs; sign/gain verified live) ---
@@ -103,7 +103,7 @@ def cmd(ds, a2, z_sp, yaw_sp, yaw_ff, pitch_ff=0.0):
     w_des[2] = float(np.clip(shape_yaw(yr_raw, time.time()), -YR_CAP, YR_CAP))
     wcmd = w_des / RG
     if WVFF:                                               # weathervane FF: cancel wv*v_body_y
-        vb = body_vel(Rc, ds.vel_ned)                      # Rc = quat_to_R(ds.quat_wxyz), already computed above
+        vb = np.asarray(ds.vel_ned, float)                 # ds.vel_ned IS body-frame (raw odometry; vq_model frame_conventions + frame_probe). Do NOT R^T it.
         roll_ff, yaw_ff_wv = weathervane_ff(float(vb[0]), float(vb[1]), ROLL_WV0, ROLL_WV1, YAW_WV,
                                             RG[0], RG[2], WVFF_GAIN, WVFF_SIGN)
         wcmd[0] += float(np.clip(roll_ff, -WVFF_CLIP, WVFF_CLIP))
