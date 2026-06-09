@@ -38,6 +38,7 @@ KV = 1.5; ACCEL_MAX = 0.6; DECEL_MAX = 2.0
 WMAX = 4.0; LOOP_DT = 0.004; ABORT_TILT = 80.0; T_ENTRY = 5.0; MAX_T = 60.0
 RAMP = 4.0                                     # s: smooth onset of ALL three FF terms (bank/yaw/pitch)
 PITCH_FF_SIGN = float(sys.argv[sys.argv.index("--pitch_sign") + 1]) if "--pitch_sign" in sys.argv else +1.0  # pitch-comp sign (flip if speed pumps)
+KD_ATT = float(sys.argv[sys.argv.index("--kd") + 1]) if "--kd" in sys.argv else 0.0  # roll/pitch rate damping (-KD*omega) -- the term the explosive rate loop lacks (field guide); 0=off (interface-consistent, stays on rate cmd)
 MAX_BANK_DEG = 70.0; TILT_MAX_ACC = np.tan(np.radians(MAX_BANK_DEG)) * G   # EXP-33: thrust allows ~80deg (TWR 4.3)
 TD2 = 0.055; _K = np.exp(-0.14*np.pi/np.sqrt(1-0.14**2)); _D = 1+2*_K+_K*_K
 ZVD_A = [1/_D, 2*_K/_D, _K*_K/_D]; ZVD_T = [0.0, TD2, 2*TD2]
@@ -99,6 +100,9 @@ def cmd(ds, a2, z_sp, yaw_sp, yaw_ff, pitch_ff=0.0):
     q_des = mat_to_quat(desired_attitude(a, yaw_sp))
     w_des = KP_ATT * attitude_error_quat(ds.quat_wxyz, q_des)
     w_des[1] += pitch_ff                                              # PITCH-COUPLING COMPENSATION (the new term)
+    if KD_ATT:                                                       # roll/pitch rate damping: -KD*omega (yaw has its own KD below)
+        w_des[0] -= KD_ATT * float(ds.omega[0])
+        w_des[1] -= KD_ATT * float(ds.omega[1])
     yr_raw = KP_YAW * ((yaw_sp - yaw_cur + np.pi) % (2*np.pi) - np.pi) - KD_YAW * float(ds.omega[2]) + yaw_ff
     w_des[2] = float(np.clip(shape_yaw(yr_raw, time.time()), -YR_CAP, YR_CAP))
     wcmd = w_des / RG
