@@ -37,6 +37,7 @@ WMAX = 4.0; LOOP_DT = 0.004
 TILT_BUDGET_DEG = 25.0; C_DRAG = 0.057; MARGIN = 0.6
 TILT_MAX_ACC = np.tan(np.radians(TILT_BUDGET_DEG)) * G
 AL_MAX = TILT_MAX_ACC                         # forward governor = tilt budget (was 0.6); planner caps v
+V_RAMP_RATE = 1.2                             # startup target-speed ramp (m/s^2): avoids a violent max-tilt launch
 LEAD = 2.5; ARRIVE = 1.5; CRUISE = 8.0; MAX_T = 90.0
 # ZVD yaw prefilter (EXP-20a)
 TD2 = 0.055; _K = np.exp(-0.14 * np.pi / np.sqrt(1 - 0.14 ** 2)); _D = 1 + 2 * _K + _K * _K
@@ -144,7 +145,8 @@ def main():
             d = ds.pos_ned - ref["pos"]
             v_al = float(ds.vel_ned[:2] @ travel); v_ct = float(ds.vel_ned[:2] @ lat_hat)
             p_ct = float(d[:2] @ lat_hat)
-            a_al = float(np.clip(KD_AL * (ref["v"] - v_al), -4.0, AL_MAX))     # pure speed governor
+            v_target = min(ref["v"], V_RAMP_RATE * t)         # gentle startup ramp: no violent max-tilt launch
+            a_al = float(np.clip(KD_AL * (v_target - v_al), -4.0, AL_MAX))     # speed governor (ramped target)
             # budget-aware cross-track: clamp lateral accel to the tilt budget LEFT after holding speed
             # (drag = C_DRAG*v_al^2). Limits the transient line-acquisition that triggered CRUISE-04.
             a_ct_max = max(0.0, TILT_MAX_ACC * MARGIN - C_DRAG * v_al * v_al)
