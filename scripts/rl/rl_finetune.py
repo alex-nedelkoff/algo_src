@@ -32,6 +32,7 @@ F0 = M["thrust"]["f0"]; DF = M["thrust"]["df_dthr"]; MAXW = 17.45
 DT = 1.0 / 72.0; EP_STEPS = 1080   # MIMO rate loop is dt-specific (fit 1/72); ~15 s episodes
 # weathervane-FF (corner_speed teacher term, WV-DYNAMIC coeffs), ENU env frame signs
 ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
+YR_CAP = 1.5   # rad/s yaw-rate cap (corner_speed)
 KP_POS = np.array([0.6, 0.6, 2.0]); KD_POS = np.array([1.2, 1.2, 3.0])
 KP_ATT = np.array([6.0, 6.0, 4.0]); KD_ATT = np.array([1.2, 1.2, 0.0]); KP_YAW = 4.0; KD_YAW = 0.5
 TILT_MAX = np.tan(np.radians(35)) * G
@@ -80,14 +81,20 @@ def ff_batch(S, tgt_pos, tgt_vel, tgt_yaw):
     cos_t = np.maximum(R[:, 2, 2], 0.5); c = (G + a[:, 2])/cos_t
     thr = np.clip((F0+c)/(-DF), 0.0, 1.0)
     u = np.empty((S.shape[0], 4)); u[:, 0] = np.clip(2*thr-1, -1, 1); u[:, 1:4] = np.clip(w/GAIN/MAXW, -1, 1)
+    cap = YR_CAP/abs(GAIN[2])/MAXW   # corner_speed yaw-rate cap (resonance guard)
+    u[:, 3] = np.clip(u[:, 3], -cap, cap)
     return u.astype(np.float32)
 
 
 def aim(S, gates, gp):
+    # anti-velocity yaw = camera-forward racing (corner_speed law); hold yaw while slow
     idx = np.clip(gp, 0, NG-1); gate = gates[np.arange(len(gp)), idx]
     dxy = (gate - S[:, POS])[:, :2]; dist = np.linalg.norm(dxy, axis=1, keepdims=True)+1e-6
     tv = np.zeros((len(gp), 3)); tv[:, :2] = VDES*dxy/dist
-    return gate, tv, np.arctan2(dxy[:, 1], dxy[:, 0])
+    vel = S[:, VEL][:, :2]; spd = np.linalg.norm(vel, axis=1)
+    R = quat_to_rotmat_batch(S[:, QUAT]); yaw_cur = np.arctan2(R[:, 1, 0], R[:, 0, 0])
+    yaw_av = np.arctan2(-vel[:, 1], -vel[:, 0])
+    return gate, tv, np.where(spd > 1.0, yaw_av, yaw_cur)
 
 
 def _yaw_quat(th):
