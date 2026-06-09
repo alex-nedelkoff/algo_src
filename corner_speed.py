@@ -37,7 +37,7 @@ KP_ATT = np.array([0.5, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3; KP_Z = 1.8; KD_Z
 KV = 1.5; ACCEL_MAX = 0.6; DECEL_MAX = 2.0
 WMAX = 4.0; LOOP_DT = 0.004; ABORT_TILT = 80.0; T_ENTRY = 5.0; MAX_T = 60.0
 RAMP = 4.0                                     # s: smooth onset of ALL three FF terms (bank/yaw/pitch)
-PITCH_FF_SIGN = +1.0                           # sign of the pitch-comp (verify empirically; flip if pump worsens)
+PITCH_FF_SIGN = float(sys.argv[sys.argv.index("--pitch_sign") + 1]) if "--pitch_sign" in sys.argv else +1.0  # pitch-comp sign (flip if speed pumps)
 MAX_BANK_DEG = 70.0; TILT_MAX_ACC = np.tan(np.radians(MAX_BANK_DEG)) * G   # EXP-33: thrust allows ~80deg (TWR 4.3)
 TD2 = 0.055; _K = np.exp(-0.14*np.pi/np.sqrt(1-0.14**2)); _D = 1+2*_K+_K*_K
 ZVD_A = [1/_D, 2*_K/_D, _K*_K/_D]; ZVD_T = [0.0, TD2, 2*TD2]
