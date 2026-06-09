@@ -196,11 +196,14 @@ def main():
             print(f"  DAgger r{rd}: D={len(X)} mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
 
     class GateEval(BaseCallback):
-        def __init__(s, every): super().__init__(); s.every = every; s.last = 0
+        def __init__(s, every): super().__init__(); s.every = every; s.last = 0; s.best = -1.0
         def _on_step(s):
             if s.num_timesteps - s.last >= s.every:
                 s.last = s.num_timesteps; pk = eval_gates(model)
                 print(f"  [t={s.num_timesteps}] gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
+                if pk.mean() > s.best:   # PPO can degrade the warm-start; keep the best-by-eval policy
+                    s.best = pk.mean(); model.save(f"ft_{TAG}_best")
+                    print(f"  [t={s.num_timesteps}] new best {s.best:.2f} -> ft_{TAG}_best.zip", flush=True)
             return True
 
     if STEPS > 0:
