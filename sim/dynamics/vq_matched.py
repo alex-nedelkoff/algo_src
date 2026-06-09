@@ -88,6 +88,14 @@ class VQMatchedDynamics:
         rl = model["rate_loop"]
         self.tau = np.array([rl[n]["tau_ms"] / 1000.0 for n in ("roll", "pitch", "yaw")])
         self.Gax = np.array([rl[n]["gain_G"] for n in ("roll", "pitch", "yaw")])
+        # MIMO rate loop (COR-127): om[k+1]=A@om+B@wcmd captures the roll<->yaw cross-coupling a
+        # coordinated turn excites, which the diagonal first-order loop MISSES (turn-region 1-step
+        # omega RMSE 4-10x lower, eig(A)<1; fit at dt=1/72 on collect_vq doublets + corner runs,
+        # weathervane-subtracted). Opt-in via model["rate_loop_mimo"]; falls back to the diagonal
+        # loop when absent. NOTE: A,B are dt-specific (fit dt=1/72); the env steps at 1/72.
+        _mimo = model.get("rate_loop_mimo")
+        self.A_rate = np.array(_mimo["A"], float) if _mimo else None
+        self.B_rate = np.array(_mimo["B"], float) if _mimo else None
         d = model["drag_linear_body"]
         self.Dx, self.Dy = d["Dx"], d["Dy"]
         t = model["thrust"]
@@ -115,6 +123,10 @@ class VQMatchedDynamics:
         self._g_vec = np.array([0.0, 0.0, -GRAVITY if enu else GRAVITY])
         self._thrust_z_sign = 1.0 if enu else -1.0   # f_body_z = sign * c  (c = -(f0+df*thr) > 0 hover)
         self._roll_wv_sign = -1.0 if enu else 1.0
+        if enu and self.A_rate is not None:          # conjugate MIMO matrices by B=diag(1,-1,-1): roll<->{pitch,yaw} cross terms flip, pitch<->yaw invariant
+            T = np.diag([1.0, -1.0, -1.0])
+            self.A_rate = T @ self.A_rate @ T
+            self.B_rate = T @ self.B_rate @ T
 
     def reset(self, n_envs: int) -> NDArray[np.float64]:
         """Hover initial state (level, at rest, z=0): (n_envs, 13)."""
@@ -156,8 +168,11 @@ class VQMatchedDynamics:
         # --- rate loop (first-order per axis, EXACT zero-order-hold discretization) ---
         # om[k+1] = a*om[k] + (1-a)*G*wcmd, a=exp(-dt/tau). Exact for held input and dt-correct;
         # plain Euler is wrong here (dt/tau ~ 0.5 at 72 Hz). Matches vq_model alpha (=exp(-dt_fit/tau)).
-        a = np.exp(-dt / self.tau)
-        om_new = a * om + (1.0 - a) * self.Gax * wcmd
+        if self.A_rate is not None:                  # MIMO rate loop (roll<->yaw turn coupling, COR-127; dt~=1/72)
+            om_new = om @ self.A_rate.T + wcmd @ self.B_rate.T
+        else:
+            a = np.exp(-dt / self.tau)
+            om_new = a * om + (1.0 - a) * self.Gax * wcmd
         # --- weathervane moments (ang-accel * dt) ---
         om_new[:, 0] += self._roll_wv_sign * (self.roll_wv0 + self.roll_wv1 * vb[:, 0]) * vb[:, 1] * dt
         om_new[:, 2] += self.yaw_wv * vb[:, 1] * dt   # yaw-wv invariant under the NED<->ENU basis change

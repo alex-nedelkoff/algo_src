@@ -190,3 +190,39 @@ def test_directional_roll_weathervane_sign():
     act = np.array([[THR_HOVER, 0.0, 0.0, 0.0]])
     s_on = dyn.step(s.copy(), act); s_off = off.step(s.copy(), act)
     assert s_on[0, 10] != s_off[0, 10]  # roll rate differs only via weathervane
+
+
+# --- MIMO rate loop (COR-127): roll<->yaw cross-coupling the diagonal loop misses in a turn ---
+MODEL_MIMO = {**MODEL, "rate_loop_mimo": {
+    "A": [[0.9, 0.0, 0.1], [0.0, 0.8, 0.0], [0.05, 0.0, 0.95]],
+    "B": [[-1.0, 0.0, 0.2], [0.0, 1.0, 0.0], [0.3, 0.0, -0.9]]}}
+
+
+def test_mimo_rate_loop_applied():
+    """When model has rate_loop_mimo, om[k+1] = A@om + B@wcmd (+weathervane); != the diagonal loop."""
+    A = np.array(MODEL_MIMO["rate_loop_mimo"]["A"]); B = np.array(MODEL_MIMO["rate_loop_mimo"]["B"])
+    dyn = VQMatchedDynamics(MODEL_MIMO, dt=1 / 72.0, roll_wv=True)
+    s = np.zeros((3, 13)); s[:, 6] = 1.0                          # level, vel=0 => vb=0 => weathervane=0
+    s[:, 10:13] = [[0.3, -0.2, 0.5], [0.0, 0.0, 0.0], [1.0, 1.0, -1.0]]
+    a = np.array([[0.27, 0.4, -0.3, 0.6], [0.27, 0.0, 0.0, 0.0], [0.27, -1.0, 0.5, 0.8]])
+    out = dyn.step(s, a)
+    np.testing.assert_allclose(out[:, 10:13], s[:, 10:13] @ A.T + a[:, 1:4] @ B.T, atol=1e-12)
+    diag = VQMatchedDynamics(MODEL, dt=1 / 72.0, roll_wv=True)    # diagonal loop gives a different result
+    assert not np.allclose(diag.step(s, a)[:, 10:13], out[:, 10:13])
+
+
+def test_mimo_ned_enu_equivalence():
+    """MIMO A,B conjugate correctly under B=diag(1,-1,-1): ENU == B(NED) step-for-step."""
+    ned = VQMatchedDynamics(MODEL_MIMO, frame="NED", roll_wv=True)
+    enu = VQMatchedDynamics(MODEL_MIMO, frame="ENU", roll_wv=True)
+    rng = np.random.default_rng(11)
+    s = np.zeros((16, 13))
+    s[:, 0:3] = rng.uniform(-3, 3, (16, 3)); s[:, 3:6] = rng.uniform(-4, 4, (16, 3))
+    q = rng.uniform(-1, 1, (16, 4)); s[:, 6:10] = q / np.linalg.norm(q, axis=1, keepdims=True)
+    s[:, 10:13] = rng.uniform(-2, 2, (16, 3))
+    a = np.column_stack([rng.uniform(0.1, 0.5, 16), rng.uniform(-1, 1, (16, 3))])
+    s_enu = _B_state(s)
+    for _ in range(20):
+        sn = ned.step(s, a); se = enu.step(s_enu, _B_action(a))
+        np.testing.assert_allclose(_B_state(sn), se, atol=1e-9)
+        s, s_enu = sn, se
