@@ -22,6 +22,10 @@ ROUNDS = int(argf("--rounds", 4)); EPOCHS = int(argf("--epochs", 20)); NG = 6
 MODEL = json.load(open("sysid/vq_model.json"))
 GAIN = np.array([MODEL["rate_loop"][n]["gain_G"] for n in ("roll", "pitch", "yaw")])
 F0 = MODEL["thrust"]["f0"]; DF = MODEL["thrust"]["df_dthr"]; MAXW = 17.45
+DT = 1.0 / 72.0; EP_STEPS = 1584   # MIMO rate loop is dt-specific (fit 1/72); ~22 s episodes
+# weathervane-FF (corner_speed teacher term, WV-DYNAMIC coeffs) in the ENU env frame:
+# under B=diag(1,-1,-1) the roll-wv sign flips, yaw-wv is invariant (vq_matched ENU port).
+ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
 KP_POS = np.array([0.6, 0.6, 2.0]); KD_POS = np.array([1.2, 1.2, 3.0])
 KP_ATT = np.array([6.0, 6.0, 4.0]); KD_ATT = np.array([1.2, 1.2, 0.0]); KP_YAW = 4.0; KD_YAW = 0.5
 TILT_MAX = np.tan(np.radians(35)) * G
@@ -75,6 +79,10 @@ def ff_batch(S, tgt_pos, tgt_vel, tgt_yaw):
     q_des = mat_to_quat_batch(desired_attitude_batch(a, tgt_yaw))
     w = KP_ATT*att_err_quat_batch(q, q_des) - KD_ATT*om
     w[:, 2] = KP_YAW*(((tgt_yaw-yaw+np.pi) % (2*np.pi))-np.pi) - KD_YAW*om[:, 2]
+    # weathervane-FF: cancel the sideslip moment (validated live in corner_speed; ENU signs)
+    vb = np.einsum("nji,nj->ni", R, vel)            # body velocity = R^T v
+    w[:, 0] += (ROLL_WV0 + ROLL_WV1*vb[:, 0]) * vb[:, 1]
+    w[:, 2] += -YAW_WV * vb[:, 1]
     cos_t = np.maximum(R[:, 2, 2], 0.5); c = (G + a[:, 2])/cos_t
     thr = np.clip((F0+c)/(-DF), 0.0, 1.0)
     u = np.empty((S.shape[0], 4))
@@ -98,7 +106,7 @@ def make_env(n, seed, vstd=0.0, astd=0.0, ostd=0.0):
                         orientation=np.array([1.0, 0, 0, 0])) for i in range(NG)]
         tracks.append(Track(gates=gs, name="c", start_position=np.array([0, 0, 1.0])))
         G3.append([g.position for g in gs])
-    env = GateRaceEnv(n_envs=n, dt=0.01, max_steps=2200, action_mode="vq_rate",
+    env = GateRaceEnv(n_envs=n, dt=DT, max_steps=EP_STEPS, action_mode="vq_rate",
                       vq_model_path="sysid/vq_model.json", tracks=tracks, random_gate_start=False,
                       start_behind_dist=1.0, start_vel_std=vstd, start_att_std=astd, start_omega_std=ostd,
                       gate_collision=False, gate_passage_radius=1.0, arena_bounds=120.0)
@@ -107,7 +115,7 @@ def make_env(n, seed, vstd=0.0, astd=0.0, ostd=0.0):
 
 def roll_ff(env, gates, record=True):
     obs, _ = env.reset(); OBS = []; ACT = []; fr = np.zeros(env.n_envs, bool)
-    for _ in range(2200):
+    for _ in range(EP_STEPS):
         g, tv, ty = aim(env._states, gates, env._gates_passed)
         u = ff_batch(env._states, g, tv, ty)
         if record:
@@ -121,7 +129,7 @@ def roll_ff(env, gates, record=True):
 def roll_student_relabel(env, gates, net, mu, sd, ystd):
     """Roll the student; record (obs it sees, FF-relabel of its state). DAgger aggregation."""
     obs, _ = env.reset(); OBS = []; ACT = []; fr = np.zeros(env.n_envs, bool)
-    for _ in range(2200):
+    for _ in range(EP_STEPS):
         with torch.no_grad():
             us = (net(torch.tensor((obs-mu)/sd, dtype=torch.float32)).numpy()*ystd)
         us = np.clip(us, -1, 1)
@@ -137,7 +145,7 @@ def roll_student_relabel(env, gates, net, mu, sd, ystd):
 def eval_student(net, mu, sd, ystd, seed=7, NE=16):
     env, gates = make_env(NE, seed)
     obs, _ = env.reset(seed=seed); peak = np.zeros(NE, int); fr = np.zeros(NE, bool)
-    for _ in range(2500):
+    for _ in range(EP_STEPS + 200):
         with torch.no_grad():
             u = np.clip(net(torch.tensor((obs-mu)/sd, dtype=torch.float32)).numpy()*ystd, -1, 1)
         peak = np.maximum(peak, np.where(fr, peak, env._gates_passed))

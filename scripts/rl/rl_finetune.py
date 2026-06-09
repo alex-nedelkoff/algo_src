@@ -29,6 +29,9 @@ if REC:
 M = json.load(open("sysid/vq_model.json"))
 GAIN = np.array([M["rate_loop"][n]["gain_G"] for n in ("roll", "pitch", "yaw")])
 F0 = M["thrust"]["f0"]; DF = M["thrust"]["df_dthr"]; MAXW = 17.45
+DT = 1.0 / 72.0; EP_STEPS = 1080   # MIMO rate loop is dt-specific (fit 1/72); ~15 s episodes
+# weathervane-FF (corner_speed teacher term, WV-DYNAMIC coeffs), ENU env frame signs
+ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
 KP_POS = np.array([0.6, 0.6, 2.0]); KD_POS = np.array([1.2, 1.2, 3.0])
 KP_ATT = np.array([6.0, 6.0, 4.0]); KD_ATT = np.array([1.2, 1.2, 0.0]); KP_YAW = 4.0; KD_YAW = 0.5
 TILT_MAX = np.tan(np.radians(35)) * G
@@ -70,6 +73,10 @@ def ff_batch(S, tgt_pos, tgt_vel, tgt_yaw):
     qe[qe[:, 0] < 0] *= -1
     w = KP_ATT*(2*qe[:, 1:4]) - KD_ATT*om
     w[:, 2] = KP_YAW*(((tgt_yaw-yaw+np.pi) % (2*np.pi))-np.pi) - KD_YAW*om[:, 2]
+    # weathervane-FF: cancel the sideslip moment (validated live in corner_speed; ENU signs)
+    vb = np.einsum("nji,nj->ni", R, vel)            # body velocity = R^T v
+    w[:, 0] += (ROLL_WV0 + ROLL_WV1*vb[:, 0]) * vb[:, 1]
+    w[:, 2] += -YAW_WV * vb[:, 1]
     cos_t = np.maximum(R[:, 2, 2], 0.5); c = (G + a[:, 2])/cos_t
     thr = np.clip((F0+c)/(-DF), 0.0, 1.0)
     u = np.empty((S.shape[0], 4)); u[:, 0] = np.clip(2*thr-1, -1, 1); u[:, 1:4] = np.clip(w/GAIN/MAXW, -1, 1)
@@ -103,7 +110,7 @@ def make_env(n, seed):
                 gs.append(GateState(position=np.array([8.0+sp*i, amp*np.sin(i*0.9+ph), 1.0]),
                                     orientation=np.array([1.0, 0, 0, 0])))
         tracks.append(Track(gates=gs, name="c", start_position=np.array([0, 0, 1.0]))); G3.append([g.position for g in gs])
-    env = GateRaceEnv(n_envs=n, dt=0.01, max_steps=1500, action_mode="vq_rate",
+    env = GateRaceEnv(n_envs=n, dt=DT, max_steps=EP_STEPS, action_mode="vq_rate",
                       vq_model_path="sysid/vq_model.json", tracks=tracks, random_gate_start=False,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
                       gate_collision=True, gate_passage_radius=1.0, arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
@@ -120,7 +127,7 @@ def policy_mean(model, obs_np):
 def eval_gates(model, seed=7, NE=16):
     env, gates = make_env(NE, seed); venv = VecEnvAdapter(env); obs = venv.reset()
     peak = np.zeros(NE, int); fr = np.zeros(NE, bool); lstm = None; starts = np.ones(NE, bool)
-    for _ in range(2200):
+    for _ in range(EP_STEPS + 200):
         if REC:
             act, lstm = model.predict(obs, state=lstm, episode_start=starts, deterministic=True)
         else:
@@ -158,7 +165,7 @@ def main():
     if WARM:
         print("FT: FF demos + BC...", flush=True)
         obs = venv.reset(); X = []; Y = []
-        for _ in range(1500):
+        for _ in range(EP_STEPS):
             S = env._states; u = ff_batch(S, *aim(S, gates, env._gates_passed))
             X.append(obs.copy()); Y.append(u.copy()); obs, r, d, info = venv.step(u)
         X = np.concatenate(X); Y = np.concatenate(Y)
@@ -174,7 +181,7 @@ def main():
         print(f"  BC: mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
         for rd in range(1, DAGGER+1):
             ed, gd = make_env(NENV, 100+rd); vd = VecEnvAdapter(ed); o = vd.reset(); Xn = []; Yn = []
-            for _ in range(1500):
+            for _ in range(EP_STEPS):
                 S = ed._states; uff = ff_batch(S, *aim(S, gd, ed._gates_passed))
                 act, _ = model.predict(o, deterministic=True); Xn.append(o.copy()); Yn.append(uff.copy()); o, r, dn, inf = vd.step(act)
             X = np.concatenate([X, np.concatenate(Xn)]); Y = np.concatenate([Y, np.concatenate(Yn)])

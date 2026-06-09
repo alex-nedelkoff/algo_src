@@ -96,6 +96,10 @@ class VQMatchedDynamics:
         _mimo = model.get("rate_loop_mimo")
         self.A_rate = np.array(_mimo["A"], float) if _mimo else None
         self.B_rate = np.array(_mimo["B"], float) if _mimo else None
+        if self.A_rate is not None and abs(dt - 1.0 / 72.0) > 1e-9:
+            raise ValueError(
+                f"rate_loop_mimo A,B are discrete-time at dt=1/72 s; got dt={dt}. "
+                "Run the env at dt=1/72 (or refit A,B for this dt).")
         d = model["drag_linear_body"]
         self.Dx, self.Dy = d["Dx"], d["Dy"]
         t = model["thrust"]

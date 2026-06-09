@@ -99,7 +99,7 @@ def build_corridor(n_gates, rng):
 
 def main():
     track = build_corridor(NG, np.random.default_rng(0))
-    env = GateRaceEnv(n_envs=NENV, dt=0.01, max_steps=2500, action_mode="vq_rate",
+    env = GateRaceEnv(n_envs=NENV, dt=1.0/72.0, max_steps=1800, action_mode="vq_rate",
                       vq_model_path="sysid/vq_model.json", track=track,
                       random_gate_start=False, start_behind_dist=1.0, start_vel_std=0.0,
                       start_att_std=0.0, start_omega_std=0.0, gate_collision=COLLIDE,
