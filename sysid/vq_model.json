@@ -1,0 +1,141 @@
+{
+  "source": "fit_model.py",
+  "n_train_rows": 21709,
+  "n_runs": 12,
+  "drag_linear_body": {
+    "Dx": 0.22873309222469504,
+    "Dy": 0.22873309222469504,
+    "Dz": 0.0,
+    "r2_x": 0.9703691093258373,
+    "r2_y": 0.040381394184816344
+  },
+  "thrust": {
+    "f0": 5.17486323616102,
+    "df_dthr": -56.01701968046062,
+    "dCacc_dthr": 56.01701968046062,
+    "thr_hover_pred": 0.2675055424519115,
+    "r2": 0.920222100318765
+  },
+  "rate_loop": {
+    "roll": {
+      "alpha": 0.5870654485764066,
+      "tau_ms": 26.07304812161453,
+      "gain_G": -2.5379593199394024,
+      "r2": 0.9869490842117893
+    },
+    "pitch": {
+      "alpha": 0.5668647436195735,
+      "tau_ms": 24.46468413984338,
+      "gain_G": 2.5321154109771684,
+      "r2": 0.9835299668504137
+    },
+    "yaw": {
+      "alpha": 0.7320369639291833,
+      "tau_ms": 44.52042170032796,
+      "gain_G": -2.2887612502525787,
+      "r2": 0.9951839433116322
+    }
+  },
+  "weathervane": {
+    "wv_coeff": -0.14881298718284616,
+    "method": "discrete yaw fit (g/dt)"
+  },
+  "frame_conventions": {
+    "qfix": "true_wxyz = stored[1,2,3,0]",
+    "wfix": [
+      1,
+      -1,
+      1
+    ],
+    "velocity": "ODOMETRY vel is BODY frame (world = R@v_body)",
+    "note": "data-side only; live io_layer/controllers unchanged"
+  },
+  "delays_measured": {
+    "comms_roundtrip_ms": 19.0,
+    "thrust_lag_ms_range": [
+      40,
+      90
+    ],
+    "state_cadence_hz": {
+      "odometry": 72,
+      "imu": 144,
+      "actuator": 73
+    }
+  },
+  "holdout_rmse_body_accel": {
+    "x": 1.7930689559739592,
+    "y": 3.9509350762284123,
+    "z": 1.7823796678319042
+  },
+  "notes": "rate interface; drag body-frame; weathervane (yaw moment vs sideslip) TODO (rotational).",
+  "rate_loop_mimo": {
+    "A": [
+      [
+        0.8440209823952773,
+        0.016206462955835388,
+        0.08599767890107675
+      ],
+      [
+        -0.009054134916833876,
+        0.6071004389758117,
+        0.003592511508197782
+      ],
+      [
+        0.03260318622818206,
+        0.0028942679671630223,
+        0.9534977280535956
+      ]
+    ],
+    "B": [
+      [
+        -0.44090103545328985,
+        -0.010958288662175672,
+        0.17558748373174943
+      ],
+      [
+        -0.02560108309307285,
+        0.9993884837451488,
+        0.014145631640285872
+      ],
+      [
+        0.15537504289892434,
+        0.000613195879840843,
+        -0.10769273346405209
+      ]
+    ],
+    "note": "om[k+1]=A@om+B@wcmd+weathervane; MIMO refit incl corner runs (roll<->yaw coupling); WFIX omega, raw cmd frame",
+    "n_transitions": 57856,
+    "source_runs": [
+      "20260605T173136_collect_vq",
+      "20260605T173242_collect_vq",
+      "20260605T173803_collect_vq",
+      "20260605T173841_collect_vq",
+      "20260605T173924_collect_vq",
+      "20260605T174335_collect_vq",
+      "20260605T174422_collect_vq",
+      "20260605T174502_collect_vq",
+      "20260605T174550_collect_vq",
+      "20260605T174638_collect_vq",
+      "20260605T181304_collect_vq",
+      "20260605T181356_collect_vq",
+      "20260605T181446_collect_vq",
+      "20260607T204325_collect_vq",
+      "20260607T204954_collect_vq",
+      "20260607T205115_collect_vq",
+      "20260607T215941_collect_vq",
+      "20260607T220028_collect_vq",
+      "20260607T220115_collect_vq",
+      "20260608T163444_collect_vq",
+      "20260608T170211_collect_vq",
+      "20260609T094012_collect_vq",
+      "20260609T123342_corner_speed",
+      "20260609T123740_corner_speed",
+      "20260609T124117_corner_speed",
+      "20260609T125746_corner_speed",
+      "20260609T130258_corner_speed",
+      "20260609T130721_corner_speed",
+      "20260609T135925_corner_speed",
+      "20260609T140352_corner_speed"
+    ]
+  }
+}
