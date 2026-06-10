@@ -24,7 +24,7 @@ DAGGER = int(argf("--dagger", 4)); BC_EPOCHS = int(argf("--bc_epochs", 20)); NG 
 VDES = argf("--vdes", 4.0); WARM = int(argf("--warmstart", 1)); CURVE = "--curve" in sys.argv
 VDES_WARM = argf("--vdes_warm", VDES)   # curriculum: BC/DAgger demos at an easier speed (teacher 48/48 @v4-curve)
 LAT = argf("--latency", 0.0); TLAG = argf("--thrust_lag", 0.0)
-REC = "--recurrent" in sys.argv; TAG = args("--tag", "v1")
+REC = "--recurrent" in sys.argv; TAG = args("--tag", "v1"); DR = "--dr" in sys.argv
 if REC:
     WARM = 0  # BC-into-LSTM not wired; recurrent variant leans on PPO
 M = json.load(open("sysid/vq_model.json"))
@@ -102,7 +102,7 @@ def _yaw_quat(th):
     return np.array([np.cos(th/2), 0.0, 0.0, np.sin(th/2)])
 
 
-def make_env(n, seed):
+def make_env(n, seed, vq_path="sysid/vq_model.json"):
     rng = np.random.default_rng(seed); tracks = []; G3 = []
     for _ in range(n):
         sp = rng.uniform(9, 13); amp = rng.uniform(1.0, 3.0); ph = rng.uniform(0, 6.28)
@@ -119,7 +119,7 @@ def make_env(n, seed):
                                     orientation=np.array([1.0, 0, 0, 0])))
         tracks.append(Track(gates=gs, name="c", start_position=np.array([0, 0, 1.0]))); G3.append([g.position for g in gs])
     env = GateRaceEnv(n_envs=n, dt=DT, max_steps=EP_STEPS, action_mode="vq_rate",
-                      vq_model_path="sysid/vq_model.json", tracks=tracks, random_gate_start=False,
+                      vq_model_path=vq_path, tracks=tracks, random_gate_start=False,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
                       gate_collision=True, gate_passage_radius=1.0, arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
     return env, np.array(G3)
@@ -195,8 +195,30 @@ def main():
             return l.item()
         l = bc(X, Y, BC_EPOCHS); pk = eval_gates(model)
         print(f"  BC: mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
+        def dr_model_path(rd):
+            # domain randomization: perturbed plant per DAgger round (policy must not exploit
+            # the nominal model's precision -- DEPLOY-01 transfer gap)
+            rng = np.random.default_rng(1000 + rd)
+            mv = json.loads(json.dumps(M))
+            mm = mv.get("rate_loop_mimo")
+            if mm is not None:
+                A = np.array(mm["A"]); Bm = np.array(mm["B"])
+                for _ in range(50):
+                    off = np.ones((3, 3)) + (rng.uniform(-0.4, 0.4, (3, 3)) * (1 - np.eye(3)))
+                    dia = 1 + rng.uniform(-0.08, 0.08, 3)
+                    A2 = A * off * dia[:, None]; B2 = Bm * off * (1 + rng.uniform(-0.2, 0.2, 3))[:, None]
+                    if np.abs(np.linalg.eigvals(A2)).max() < 0.995:
+                        break
+                mm["A"] = A2.tolist(); mm["B"] = B2.tolist()
+            mv["weathervane"]["wv_coeff"] *= 1 + rng.uniform(-0.3, 0.3)
+            mv["thrust"]["df_dthr"] *= 1 + rng.uniform(-0.08, 0.08)
+            path = f"/tmp/vq_dr_{rd}.json"
+            json.dump(mv, open(path, "w"))
+            return path
+
         for rd in range(1, DAGGER+1):
-            ed, gd = make_env(NENV, 100+rd); vd = VecEnvAdapter(ed); o = vd.reset(); Xn = []; Yn = []
+            vqp = dr_model_path(rd) if DR else "sysid/vq_model.json"
+            ed, gd = make_env(NENV, 100+rd, vq_path=vqp); vd = VecEnvAdapter(ed); o = vd.reset(); Xn = []; Yn = []
             for _ in range(EP_STEPS):
                 S = ed._states; uff = ff_batch(S, *aim(S, gd, ed._gates_passed))
                 act, _ = model.predict(o, deterministic=True); Xn.append(o.copy()); Yn.append(uff.copy()); o, r, dn, inf = vd.step(act)
