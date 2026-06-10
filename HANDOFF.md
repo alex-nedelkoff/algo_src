@@ -1,8 +1,15 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-10 ~01:00)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-10 ~03:00)
 
 > **#1 lesson (still true):** frames/conventions + sysID are SOLVED. Do NOT re-derive. Read the sources of truth below FIRST.
 
-## ★ NEXT = close the IMITATION gap on the honest plant (then PPO beyond teacher)
+## ★ NEXT = LIVE DEPLOY (Stage 2) — the imitation gap is CLOSED, student BEATS teacher
+**03:00 UPDATE (RL-MIMO-SYM-02):** standardized BC + `--vdes_warm 4` curriculum worked first try (ran on Mac CPU): DAgger r4 = **6.0/6, 16/16**; wide eval **73/80 fresh v6-curve tracks (91%), measured mean speed 5.83 m/s / peak 12.1** — beyond the teacher (14/48 @v6, 0/48 @v8) into the regime that kills the analytic law live. PPO eroded again (3rd time — that config subtracts from strong BC; killed, checkpoint kept). **Artifact: `ft_sym_v6c_std_best.zip`** (Mac repo root + sysid/). Next agent:
+1. **Live VQ deploy** via `vq_deploy*` bridge (laptop) — sim-to-live gap on a gated course; dashboard rule applies.
+2. First live flights double as data: **right-hand corner** (chirality discriminator) + divergent regime for refits.
+3. In-sim parallel: tight-curve curriculum toward R10; thrust_lag 0.085 / quadratic-drag training variants.
+4. PPO-beyond-BC needs a rethink before more spend (KL-limit? reward? BC-anchored distillation loop instead?).
+
+## (superseded 03:00 — kept for context) NEXT = close the IMITATION gap on the honest plant (then PPO beyond teacher)
 **TL;DR of tonight:** closed-loop sanity PASSED → pod RL launched → it exposed a **chirality bug in the MIMO fit** (one-handed corner data ⇒ left turns impossible in sim) → **fixed by mirror-symmetrizing A,B; re-validated (omega RMSE unchanged); baked into `sysid/vq_model.json` everywhere** → reran RL: **no more policy erosion, but PPO is flat at warm-start (best 2.62/6 on v6 curves; teacher = 3.58/6)**. Standalone `dagger_v2` (per-dim standardized BC targets) reached **teacher parity 5.9/6** at v4 — so the gap is **BC quality in `rl_finetune`, not the plant or PPO stability.** Next agent, in order:
 1. ~~Port standardization~~ **DONE (06-10 ~02:00, untested on pod):** `rl_finetune` BC now uses per-dim standardized MSE + `--vdes_warm` curriculum flag (demos/DAgger at v4, PPO at `--vdes`). **First pod action: rerun** `rl_finetune --vdes 6 --vdes_warm 4 --curve --tag sym_v6c_std` and compare to best 2.62/6.
 2. (was curriculum — implemented as `--vdes_warm`, see 1.)
