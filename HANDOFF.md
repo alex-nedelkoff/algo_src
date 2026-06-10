@@ -4,8 +4,8 @@
 
 ## ★ NEXT = close the IMITATION gap on the honest plant (then PPO beyond teacher)
 **TL;DR of tonight:** closed-loop sanity PASSED → pod RL launched → it exposed a **chirality bug in the MIMO fit** (one-handed corner data ⇒ left turns impossible in sim) → **fixed by mirror-symmetrizing A,B; re-validated (omega RMSE unchanged); baked into `sysid/vq_model.json` everywhere** → reran RL: **no more policy erosion, but PPO is flat at warm-start (best 2.62/6 on v6 curves; teacher = 3.58/6)**. Standalone `dagger_v2` (per-dim standardized BC targets) reached **teacher parity 5.9/6** at v4 — so the gap is **BC quality in `rl_finetune`, not the plant or PPO stability.** Next agent, in order:
-1. **Port `dagger_v2`'s action standardization into `rl_finetune`'s BC/DAgger warm-start** (or BC the dagger_v2 student straight into the SB3 policy). Its docstring explains why: rate channels ~0.02, abs-MSE under-weights them.
-2. **Curriculum v4→v6 curves** (teacher is 48/48 on v4 curves = perfect demos; v6 = 14/48 frontier; v8 = 0/48).
+1. ~~Port standardization~~ **DONE (06-10 ~02:00, untested on pod):** `rl_finetune` BC now uses per-dim standardized MSE + `--vdes_warm` curriculum flag (demos/DAgger at v4, PPO at `--vdes`). **First pod action: rerun** `rl_finetune --vdes 6 --vdes_warm 4 --curve --tag sym_v6c_std` and compare to best 2.62/6.
+2. (was curriculum — implemented as `--vdes_warm`, see 1.)
 3. PPO beyond teacher only AFTER student ≈ teacher. Keep best-by-eval saving (`ft_<tag>_best.zip`, already wired).
 4. Transfer fidelity backlog: `--thrust_lag 0.085` (measured τ~85 ms), **quadratic low-speed drag** in `vq_matched` (linear Dx overestimates at low v — REFIT-02 says c=0.057 quadratic; this is why the live-faithful entry stalls <2 m/s in the closed-loop script), broaden MIMO fit data (esp. **collect a live RIGHT-hand corner** — we have ZERO; if the real plant is chiral, sym under-models it).
 

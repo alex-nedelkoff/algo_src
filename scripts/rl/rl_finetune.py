@@ -22,6 +22,7 @@ def args(f, d): return sys.argv[sys.argv.index(f)+1] if f in sys.argv else d
 STEPS = int(argf("--steps", 5_000_000)); NENV = int(argf("--envs", 64))
 DAGGER = int(argf("--dagger", 4)); BC_EPOCHS = int(argf("--bc_epochs", 20)); NG = 6
 VDES = argf("--vdes", 4.0); WARM = int(argf("--warmstart", 1)); CURVE = "--curve" in sys.argv
+VDES_WARM = argf("--vdes_warm", VDES)   # curriculum: BC/DAgger demos at an easier speed (teacher 48/48 @v4-curve)
 LAT = argf("--latency", 0.0); TLAG = argf("--thrust_lag", 0.0)
 REC = "--recurrent" in sys.argv; TAG = args("--tag", "v1")
 if REC:
@@ -170,19 +171,26 @@ def main():
         model.policy.action_net.bias[:] = torch.tensor([HOVER_U0, 0, 0, 0], dtype=model.policy.action_net.bias.dtype)
 
     if WARM:
-        print("FT: FF demos + BC...", flush=True)
+        global VDES
+        vdes_run = VDES; VDES = VDES_WARM   # teacher demos/relabels at the curriculum speed
+        print(f"FT: FF demos + BC... (vdes_warm={VDES_WARM})", flush=True)
         obs = venv.reset(); X = []; Y = []
         for _ in range(EP_STEPS):
             S = env._states; u = ff_batch(S, *aim(S, gates, env._gates_passed))
             X.append(obs.copy()); Y.append(u.copy()); obs, r, d, info = venv.step(u)
         X = np.concatenate(X); Y = np.concatenate(Y)
-        opt = torch.optim.Adam(model.policy.parameters(), 1e-3); lf = nn.MSELoss()
+        opt = torch.optim.Adam(model.policy.parameters(), 1e-3)
         def bc(X, Y, epochs):
+            # per-dim standardized MSE (dagger_v2's fix): rate channels are ~0.02 vs thrust ~0.5;
+            # raw MSE under-weights them and the ~-2.5 rate-loop gain amplifies the error.
+            ystd = torch.tensor(Y.std(0) + 1e-6, dtype=torch.float32, device=model.device)
             Yt = torch.tensor(Y, dtype=torch.float32, device=model.device); n = len(X); bs = 8192
             for ep in range(epochs):
                 perm = np.random.permutation(n)
                 for j in range(0, n, bs):
-                    idx = perm[j:j+bs]; opt.zero_grad(); l = lf(policy_mean(model, X[idx]), Yt[idx]); l.backward(); opt.step()
+                    idx = perm[j:j+bs]; opt.zero_grad()
+                    l = (((policy_mean(model, X[idx]) - Yt[idx]) / ystd) ** 2).mean()
+                    l.backward(); opt.step()
             return l.item()
         l = bc(X, Y, BC_EPOCHS); pk = eval_gates(model)
         print(f"  BC: mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
@@ -194,6 +202,7 @@ def main():
             X = np.concatenate([X, np.concatenate(Xn)]); Y = np.concatenate([Y, np.concatenate(Yn)])
             l = bc(X, Y, BC_EPOCHS); pk = eval_gates(model)
             print(f"  DAgger r{rd}: D={len(X)} mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
+        VDES = vdes_run   # PPO + eval at the target speed
 
     class GateEval(BaseCallback):
         def __init__(s, every): super().__init__(); s.every = every; s.last = 0; s.best = -1.0
