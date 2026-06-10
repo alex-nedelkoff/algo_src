@@ -148,6 +148,7 @@ def eval_gates(model, seed=7, NE=16):
 
 
 def main():
+    global VDES
     torch.manual_seed(0)
     print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
@@ -172,7 +173,6 @@ def main():
         model.policy.action_net.bias[:] = torch.tensor([HOVER_U0, 0, 0, 0], dtype=model.policy.action_net.bias.dtype)
 
     if WARM:
-        global VDES
         vdes_run = VDES; VDES = VDES_WARM   # teacher demos/relabels at the curriculum speed
         print(f"FT: FF demos + BC... (vdes_warm={VDES_WARM})", flush=True)
         obs = venv.reset(); X = []; Y = []
