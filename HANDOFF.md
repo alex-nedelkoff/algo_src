@@ -1,8 +1,14 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-10 ~03:45)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-10 ~05:00)
 
 > **#1 lesson (still true):** frames/conventions + sysID are SOLVED. Do NOT re-derive. Read the sources of truth below FIRST.
 
-## ★ NEXT = REFIT the rate loop on the new HIGH-RATE deploy data, retrain with DR, re-gate offline
+## ★ NEXT = model the BRAKING-WEATHERVANE SNAP, then DR-retrain + refly
+**05:00 UPDATE (DEPLOY-02, flywheel turn 2 done):** right corner flown (live SYMMETRIC — chirality was fit artifact ✓); high-rate sysID collected (`collect_vq_hr.py`, 10.7k rows) + refit (HR regime now 0.3–0.4×|W|); **DR DAgger** (`rl_finetune --dr`) → `ft_hr_dr_v6c.zip` gates 6/6 offline incl. perturbed plants; live runs 5–8 improve steadily (survival 8.2 s, 5.8 m from gate 1, recovers an 87° upset, races camera-forward). **One gap left, precisely characterized: during braking the live nose SNAPS β 170→13 (uncommanded weathervane flip into the velocity vector) → tumble; matched sim holds β≈170.** The decel/velocity-reversal regime (v_body_x sweeping zero at speed) is unmodeled. Next agent:
+1. **Refit the weathervane/yaw+roll moment over (v_body_x, v_body_y)** — nonlinear in vbx around 0 — pooling deploy recordings 5–8 (`*_vq_deploy4*`, `*_vq_deploy5`; each captured the snap) + crab + corner data. Wire into `vq_matched` (replace the linear-in-vbx roll-wv + const yaw-wv).
+2. DR-retrain (`rl_finetune --vdes 6 --vdes_warm 4 --curve --steps 0 --dr --dagger 6`), gate with `closed_loop_policy.py` (nominal + perturbed + drift), refly `vq_deploy4.py --no-viz`.
+3. Don't fight: hover yaw-spins lethal; PPO config erodes BC (use --steps 0); Rerun close hangs w/o viewer (--no-viz unattended).
+
+## (superseded 05:00) NEXT = REFIT the rate loop on the new HIGH-RATE deploy data, retrain with DR, re-gate offline
 **03:45 UPDATE (DEPLOY-01):** flew the policy live 4×, 0 gates — but the gap is ISOLATED + the data to close it COLLECTED. The deploy chain itself is VERIFIED (offline harness `scripts/sysid/closed_loop_policy.py` runs the exact deploy obs/action code on the matched plant → races 5-6/6 even with lag+latency). Live findings: (a) 3 obs mismatches in old `vq_deploy` fixed (gate-yaw-relative frame, motor dims 0.5114, arena 12.0) → laptop `vq_deploy4.py` is the good one (no-flip camera-course geometry, recorder ON); (b) **hover 180° yaw-flips tumble the live plant whoever commands them** — forbidden regime; (c) best run drove at gate 1 (v→11) then over-rotated t5.3. **Quantified: 1-step omega RMSE ≈ |W| on roll+pitch in ALL bands on the deploy recording** — the linear rate loop has no predictive power at the policy's |ω|≈1-2 rad/s aggression (fit was |ω|≲1). Next agent:
 1. **Refit the rate loop pooling `vq_data/20260609T22*_vq_deploy{3,4}`** (high-rate regime; expect saturation/nonlinearity, not more linear MIMO). Keep the mirror-symmetrization.
 2. **Retrain with DR** (rate-loop gains/coupling/lag scatter) + action-aggression budget so the policy stops exploiting model precision.
