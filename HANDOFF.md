@@ -1,8 +1,15 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-10 ~03:00)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-10 ~03:45)
 
 > **#1 lesson (still true):** frames/conventions + sysID are SOLVED. Do NOT re-derive. Read the sources of truth below FIRST.
 
-## ★ NEXT = LIVE DEPLOY (Stage 2) — the imitation gap is CLOSED, student BEATS teacher
+## ★ NEXT = REFIT the rate loop on the new HIGH-RATE deploy data, retrain with DR, re-gate offline
+**03:45 UPDATE (DEPLOY-01):** flew the policy live 4×, 0 gates — but the gap is ISOLATED + the data to close it COLLECTED. The deploy chain itself is VERIFIED (offline harness `scripts/sysid/closed_loop_policy.py` runs the exact deploy obs/action code on the matched plant → races 5-6/6 even with lag+latency). Live findings: (a) 3 obs mismatches in old `vq_deploy` fixed (gate-yaw-relative frame, motor dims 0.5114, arena 12.0) → laptop `vq_deploy4.py` is the good one (no-flip camera-course geometry, recorder ON); (b) **hover 180° yaw-flips tumble the live plant whoever commands them** — forbidden regime; (c) best run drove at gate 1 (v→11) then over-rotated t5.3. **Quantified: 1-step omega RMSE ≈ |W| on roll+pitch in ALL bands on the deploy recording** — the linear rate loop has no predictive power at the policy's |ω|≈1-2 rad/s aggression (fit was |ω|≲1). Next agent:
+1. **Refit the rate loop pooling `vq_data/20260609T22*_vq_deploy{3,4}`** (high-rate regime; expect saturation/nonlinearity, not more linear MIMO). Keep the mirror-symmetrization.
+2. **Retrain with DR** (rate-loop gains/coupling/lag scatter) + action-aggression budget so the policy stops exploiting model precision.
+3. **Gate:** policy must race `closed_loop_policy.py` on the refit plant BEFORE flying. Then `vq_deploy4.py --policy X.zip`.
+4. Still pending: right-hand corner live run (chirality discriminator).
+
+## (superseded 03:45) NEXT = LIVE DEPLOY (Stage 2) — the imitation gap is CLOSED, student BEATS teacher
 **03:00 UPDATE (RL-MIMO-SYM-02):** standardized BC + `--vdes_warm 4` curriculum worked first try (ran on Mac CPU): DAgger r4 = **6.0/6, 16/16**; wide eval **73/80 fresh v6-curve tracks (91%), measured mean speed 5.83 m/s / peak 12.1** — beyond the teacher (14/48 @v6, 0/48 @v8) into the regime that kills the analytic law live. PPO eroded again (3rd time — that config subtracts from strong BC; killed, checkpoint kept). **Artifact: `ft_sym_v6c_std_best.zip`** (Mac repo root + sysid/). Next agent:
 1. **Live VQ deploy** via `vq_deploy*` bridge (laptop) — sim-to-live gap on a gated course; dashboard rule applies.
 2. First live flights double as data: **right-hand corner** (chirality discriminator) + divergent regime for refits.
