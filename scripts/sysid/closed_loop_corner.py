@@ -243,7 +243,7 @@ class Controller:
         return action, {"tilt": tilt, "tilt_cmd": tilt_deg(q_des), "beta": beta, "v": v}
 
 
-def run(R_turn, cruise, kd, wvff, use_mimo=True):
+def run(R_turn, cruise, kd, wvff, use_mimo=True, v0=0.0):
     model = json.load(open(ROOT / "sysid" / "vq_model.json"))
     if not use_mimo:
         model = {k: v for k, v in model.items() if k != "rate_loop_mimo"}
@@ -253,6 +253,10 @@ def run(R_turn, cruise, kd, wvff, use_mimo=True):
     ctl = Controller(R_turn, cruise, kd, wvff, rg, r["hover_thrust"], r["k_a"])
     s = dyn.reset(1)
     s[0, QUAT] = np.array([0.0, 0.0, 0.0, 1.0])  # true-frame yaw 180 = live-frame identity
+    if v0:
+        # spawn at speed (entry bypass: the sim's translational entry under-accelerates vs live --
+        # linear drag overestimates low-v drag -- so the engage threshold is never reached from rest)
+        s[0, VEL] = quat_to_R(s[0, QUAT]) @ np.array([v0, 0.0, 0.0])
     n_steps = int(MAX_T / DT)
     outcome = "MAX_T"
     last = -1
@@ -292,7 +296,8 @@ if __name__ == "__main__":
     R_turn = float(argv[0]) if len(argv) > 0 else 10.0
     cruise = float(argv[1]) if len(argv) > 1 else 6.0
     kd = float(sys.argv[sys.argv.index("--kd") + 1]) if "--kd" in sys.argv else 0.0
+    v0 = float(sys.argv[sys.argv.index("--v0") + 1]) if "--v0" in sys.argv else 0.0
     wvff = "--no-wvff" not in sys.argv
     use_mimo = "--diag" not in sys.argv
-    print(f"closed_loop_corner R={R_turn} CRUISE={cruise} kd={kd} wvff={wvff} mimo={use_mimo}")
-    run(R_turn, cruise, kd, wvff, use_mimo)
+    print(f"closed_loop_corner R={R_turn} CRUISE={cruise} kd={kd} wvff={wvff} mimo={use_mimo} v0={v0}")
+    run(R_turn, cruise, kd, wvff, use_mimo, v0)
