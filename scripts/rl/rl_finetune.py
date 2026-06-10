@@ -166,7 +166,8 @@ def main():
     else:
         model = PPO("MlpPolicy", venv, n_steps=512, batch_size=8192, n_epochs=EPO, gamma=0.999,
                     gae_lambda=0.95, clip_range=CLIP, ent_coef=ENT, learning_rate=LR,
-                    policy_kwargs=dict(net_arch=[128, 128, 128], log_std_init=log_std), device="cuda", verbose=1)
+                    policy_kwargs=dict(net_arch=[128, 128, 128], log_std_init=log_std),
+                    device="cuda" if torch.cuda.is_available() else "cpu", verbose=1)
     with torch.no_grad():
         model.policy.action_net.bias[:] = torch.tensor([HOVER_U0, 0, 0, 0], dtype=model.policy.action_net.bias.dtype)
 
