@@ -95,7 +95,7 @@ def argf(flag, d): return float(sys.argv[sys.argv.index(flag) + 1]) if flag in s
 
 DUMP = "--dump" in sys.argv                # save FPV frames every 0.4 s to frames_dump/
 SIGN_S = argf("--signs", -1.0); SIGN_Y = argf("--signy", -1.0)   # EMPIRICAL (attempt-33): +yaw_ref pans camera LEFT in this frame -> -1
-K_YAWVIS = argf("--kyaw", 1.2)            # visual yaw gain: ex (norm. pixel) -> yaw_ref rate
+K_YAWVIS = argf("--kyaw", 2.5)            # visual yaw gain: ex (norm. pixel) -> yaw_ref rate
 FWD = argf("--fwd", 1.2); N_GATES = int(argf("--ngates", 8)); DURATION = argf("--dur", 150.0)
 YAWRATE_MAX = 0.4                          # rad/s cap on yaw_ref slew (hover-spin = lethal regime)
 SCAN_RATE = 0.25; SCAN_AFTER = 5.0         # gate-lost: slow scan toward last-seen side (while MOVING only)
@@ -200,8 +200,14 @@ def main():
             if det is not None:
                 if u_tr is not None and abs(det.u - u_tr[0]) > 100.0:
                     det = None                                  # nothing near the track this frame
+                elif det.w_px < 0.5 * getattr(main, "_sz_mark", 0.0):
+                    det = None; main._u_track = None            # size watermark: a tracked gate can't
+                    # halve while approaching -> phantom handoff down the gate line (att-46). Keep the
+                    # mark (resetting it let the next frame re-acquire the same phantom, att-47);
+                    # the mark clears at takeoff/gate-pass/hunt transitions.
                 else:
                     main._u_track = (det.u, det.w_px)
+                    main._sz_mark = max(getattr(main, "_sz_mark", 0.0), det.w_px)
             # camera-forward speed in body terms. EMPIRICAL (run 123458): flying camera-forward
             # (gate visible, sz growing) reads vb[0] = +2.8 -> camera-forward speed = +vb[0] in this
             # io frame. (The -vb[0] guess silently blocked the scan + left speed at the AL_MAX
@@ -209,6 +215,9 @@ def main():
             v_al = float(ds.vel_ned[0])
             spd_h_prev = float(np.hypot(ds.vel_ned[0], ds.vel_ned[1]))
             takeoff = t < 2.5                                   # explicit liftoff: true-frame level
+            if takeoff:
+                main._u_track = None; main._sz_mark = 0.0       # ignore takeoff detections (platform
+                                                                # clutter starts phantom tracks, att-46)
             if takeoff:                                         # thrust is exactly hover (no warped
                 z_ref = float(spawn[2]) - 1.2                   # +6% boost) -> climb off the platform
                                                                 # first, no push/steer (attempt-32/31
@@ -233,7 +242,9 @@ def main():
             # fast) -> bidirectional crawl. Attempt-35 locked gate 2 at 3.9 m/s mid-swing and
             # overshot. True-frame control killed the brake-pump risk (4 runs, max tilt 18).
             if det is not None and not locked and det.w_px > 90:
-                a_al = float(np.clip(1.2 * (0.8 - spd_h_prev), -1.2, al_cap))
+                # brake on FORWARD speed only -- spd_h includes the strafe and pushed the drone
+                # backward off gate 2 at sz 268 (attempt-47)
+                a_al = float(np.clip(1.2 * (0.8 - v_al), -1.2, al_cap))
             # POST-PASS = the gate-1 recipe from rest: STOP fully -> hover-scan -> approach.
             # (Hover-yaw is SAFE in true-frame: probe2 turned 65 deg at tilt 0; the historical
             # lethality was the live-frame warp. Chasing at speed failed attempts 34-37.)
@@ -243,11 +254,16 @@ def main():
                 if det is not None and getattr(main, "_det_prev", False) is False:
                     main._det_streak_t0 = now
                 main._det_prev = det is not None
+                if det is not None:                              # remember the sighting bearing
+                    main._sight_t = now; main._sight_sign = np.sign((det.u - CX) / FX) or 1.0
                 if not stable_det:
                     if spd_h_prev > 0.5:                         # HUNT_BRAKE: kill all speed first
                         a_al = float(np.clip(1.2 * (0.0 - v_al), -1.2, 0.3))
-                    else:                                        # HUNT_SCAN: slow yaw in place
-                        a_al = 0.0
+                    elif (now - getattr(main, "_sight_t", -99.0)) < 3.0:
+                        a_al = 0.0                               # SIGHTING PURSUIT: turn hard toward
+                        yaw_ref += SIGN_Y * main._sight_sign * 0.4 * dt   # the last sighting (attempt-45:
+                    else:                                        # the sweep clock ignored a sighting)
+                        a_al = 0.0                               # HUNT_SCAN: slow yaw in place
                         yaw_ref += SIGN_Y * 0.2 * dt * (1.0 if int((t // 15)) % 2 == 0 else -1.0)
             moving = v_al > 0.3
 
@@ -306,15 +322,12 @@ def main():
                 main._recover_until = 0.0                       # never freeze yaw on a live target (attempt-34: safe mode pinned yaw while gate 2 escaped)
             main._in_safe = in_safe
             if in_safe:
-                # SAFE-SLOW: blind+fast = above the drag-tilt wall, unstabilizable wandering.
-                # Velocity damping on the pinned axes, vz-damping only (no z-position chase), yaw
-                # frozen; hold until slow for a full second; rebase z_ref (no post-recovery yank).
+                # SAFE-SLOW: blind+fast wandering recovery. Velocity damping, vz-damping only,
+                # yaw frozen; latch capped at 4 s (attempt-39 freefall) and released on detection.
                 if getattr(main, "_safe_t0", None) is None:
                     main._safe_t0 = now
                 if spd_h > 1.5 and (now - main._safe_t0) < 4.0:
                     main._recover_until = now + 1.0
-            if not in_safe:
-                main._safe_t0 = None
                 vw = v_al * fwd + v_lat * lat
                 a = np.zeros(3); a[:2] = -1.2 * vw
                 nrm = float(np.linalg.norm(a[:2]))
@@ -324,6 +337,7 @@ def main():
                 z_ref = float(ds.pos_ned[2])
                 yaw_ref = yaw_cur
             else:
+                main._safe_t0 = None
                 a_lat = float(np.clip(KD_LAT * (v_lat_sp - v_lat), -2.0, 2.0))
                 a = np.zeros(3); a[:2] = a_al * fwd + a_lat * lat; a[2] = a2
                 nrm = float(np.linalg.norm(a[:2]))
@@ -331,11 +345,11 @@ def main():
                     a[:2] = a[:2] / nrm * TILTMAX
             # desired attitude: BODY-x_true along s_cam*camera heading -> level at ANY yaw (true frame)
             yaw_body_t = yaw_ref if s_cam > 0 else yaw_ref + np.pi
-            # LATERAL INVERSION FIX (vel_probe2): the desired_attitude chain inverts the world-accel
-            # component perpendicular to the body heading in the true frame; flip it pre-call.
-            hd = np.array([np.cos(yaw_body_t), np.sin(yaw_body_t)]); pp = np.array([-hd[1], hd[0]])
-            a_par = float(a[:2] @ hd); a_perp = float(a[:2] @ pp)
-            a[:2] = a_par * hd - a_perp * pp
+            # LATERAL INVERSION FIX v2: the live chain mirrors WORLD-y (left-handed live world,
+            # cf. the canonical wfix y-flip) -- NOT the body-perp axis. The body-perp flip was
+            # calibrated at spawn yaw where the two coincide; at yaw -74 it anti-damped into a
+            # 6 m/s circle (attempt-43). Flip world-y pre-call; identical at spawn yaw.
+            a[1] = -a[1]
             q_des_t = mat_to_quat(desired_attitude(a, yaw_body_t))
             om_t = np.asarray(ds.omega, float) * WFIX
             w_t = KP_ATT * attitude_error_quat(q_t, q_des_t)
@@ -374,7 +388,7 @@ def main():
             gi = s.get_gate_idx()
             if gi > prev_gi:
                 print(f"*** GATE PASSED t={t:.1f}s (idx {prev_gi}->{gi}) ***", flush=True)
-                prev_gi = gi; locked = False; last_det_t = now; main._u_track = None
+                prev_gi = gi; locked = False; last_det_t = now; main._u_track = None; main._sz_mark = 0.0
                 main._post_pass = now                       # post-pass: descend to re-find the course
                 if gi >= target:
                     break
