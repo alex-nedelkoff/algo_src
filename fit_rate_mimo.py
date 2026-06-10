@@ -1,4 +1,8 @@
-"""fit_rate_mimo.py -- refit the VQ rate loop as a MIMO linear map (3x3 A,B) so it captures the
+"""fit_rate_mimo.py -- SUPERSEDED by fit_wv_v2.py (06-10): joint A,B + speed-dependent weathervane
+fit in one lstsq (subtract-then-refit double-counts the wv via vby<->omega collinearity). Kept for
+reference.
+
+refit the VQ rate loop as a MIMO linear map (3x3 A,B) so it captures the
 roll<->yaw cross-coupling the diagonal first-order loop misses in a coordinated turn (diag_coupling:
 linear rate+cmd -> R2 0.94-0.99; gyroscopic w x w negligible). Model: om[k+1] = A@om[k] + B@wcmd[k]
 + weathervane(v_body_y). Fit on the weathervane-SUBTRACTED target so the existing wv term stays.
@@ -59,7 +63,9 @@ RID = float(sys.argv[sys.argv.index("--ridge") + 1]) if "--ridge" in sys.argv el
 args = [a for a in sys.argv[1:] if not a.startswith("--") and a not in (str(RID),)]
 if args and args[0] == "AUTO":
     root = str(data_root())
-    runs = sorted(_glob.glob(root + "/*_collect_vq")) + sorted(_glob.glob(root + "/*_corner_speed"))
+    runs = (sorted(_glob.glob(root + "/*_collect_vq")) + sorted(_glob.glob(root + "/*_corner_speed"))
+            + sorted(_glob.glob(root + "/*_vq_deploy*"))    # deploy runs = the high-rate regime (DEPLOY-01)
+            + sorted(_glob.glob(root + "/*_collect_vq_hr")))  # dedicated high-rate doublet barrages
 else:
     runs = args
 TR = [transitions(r) for r in runs]
@@ -67,7 +73,11 @@ Xw = np.vstack([t[0] for t in TR]); Xc = np.vstack([t[1] for t in TR])
 Y = np.vstack([t[2] for t in TR]); tilt = np.concatenate([t[3] for t in TR])
 X = np.hstack([Xw, Xc])
 beta = solve(X, Y, RID)
-A = beta[:3].T; B = beta[3:].T                          # (3,3) each: om[k+1]=A@om+B@wcmd (+wv)
+A = beta[:3].T; B = beta[3:].T
+# mirror-symmetrize (M=diag(-1,1,-1)): chiral terms are one-handed-corner-data artifacts;
+# unsymmetrized A,B diverged in closed loop on mirrored turns (06-09)
+_M = np.diag([-1.0, 1.0, -1.0])
+A = (A + _M@A@_M)/2; B = (B + _M@B@_M)/2                          # (3,3) each: om[k+1]=A@om+B@wcmd (+wv)
 eig = np.abs(np.linalg.eigvals(A))
 print(f"ridge={RID}  |eig(A)| = {np.round(np.sort(eig)[::-1],4)}  (max {eig.max():.4f}; <1 = open-loop stable)", flush=True)
 print(f"diag(B) MIMO={np.round(np.diag(B),3)}  vs prior (1-a)G={np.round((1-a_diag)*G,3)}  (should be same ballpark/sign)", flush=True)
