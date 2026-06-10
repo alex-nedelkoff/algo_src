@@ -1,1 +1,1 @@
-{"h_lo1":0,"h_hi1":12,"h_lo2":165,"h_hi2":180,"s_min":110,"v_min":70,"min_area_px":80,"square_tol":0.5,"max_v_frac":0.72}
+{"max_v_frac": 0.97, "square_tol": 0.9, "min_area_px": 60}  
