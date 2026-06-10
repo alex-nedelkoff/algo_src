@@ -15,7 +15,9 @@ ODOMETRY velocity, not a model gap; confirmed by comparing model vs IMU vs d/dt-
 
 Model (per env, per step dt), VQ convention = NED world / FRD body, quat [w,x,y,z]:
     rate loop : a=exp(-dt/tau_i); om_i <- a*om_i + (1-a)*G_i*wcmd_i    (first-order ZOH, per axis)
-    weathervane moments (rate-space, ang-accel*dt):
+    weathervane moments (rate-space, ang-accel*dt), v2 when model["weathervane_v2"] present:
+        om_ax  += (a_ax + b_ax*min(|v|,vclip)) * v_body_y * dt         (ax = roll, yaw; 06-10 refit)
+    v1 fallback (older vq_model.json):
         om_roll += (roll_wv0 + roll_wv1*v_body_x) * v_body_y * dt      (directional, COR-127)
         om_yaw  += yaw_wv                          * v_body_y * dt
     attitude  : q <- q (x) exp(0.5*om*dt)
@@ -107,6 +109,20 @@ class VQMatchedDynamics:
         self.yaw_wv = model["weathervane"]["wv_coeff"]
         # directional roll weathervane (COR-127): roll_wv(vx) = c0 + c1*v_body_x
         self.roll_wv0, self.roll_wv1 = (-0.105, -0.019) if roll_wv else (0.0, 0.0)
+        # speed-dependent weathervane v2 (COR-127, 06-10 brake-data joint refit): per axis
+        # coeff(|v|) = a + b*min(|v|, vclip);  om_ax += coeff*v_body_y*dt  (roll & yaw). One curve
+        # unifies the directional-roll fit (its vbx term was this decay in disguise), the
+        # WV-DYNAMIC high-speed sign flip, and the const yaw wv (mid-curve value). Dedicated
+        # controlled-brake data REFUTED the hypothesized vbx~0 "braking-wv" blowup — the braking
+        # snap gap is the tilt-scaled disturbance field (model["dr_rate_disturbance"]), not a
+        # deterministic moment. Opt-in via model["weathervane_v2"]; v1 fallback when absent.
+        _wv2 = model.get("weathervane_v2")
+        if _wv2:
+            self.wv2 = (_wv2["roll"]["a"] if roll_wv else 0.0,
+                        _wv2["roll"]["b"] if roll_wv else 0.0,
+                        _wv2["yaw"]["a"], _wv2["yaw"]["b"], _wv2["vclip"])
+        else:
+            self.wv2 = None
         self.dt = dt
         # latency_s = pure comms delay (whole command, FIFO); thrust_lag_s = first-order motor/thrust
         # lag (measured tau~85ms, MOTOR-01) -- a pure delay is the wrong structure for it. The thrust
@@ -178,8 +194,14 @@ class VQMatchedDynamics:
             a = np.exp(-dt / self.tau)
             om_new = a * om + (1.0 - a) * self.Gax * wcmd
         # --- weathervane moments (ang-accel * dt) ---
-        om_new[:, 0] += self._roll_wv_sign * (self.roll_wv0 + self.roll_wv1 * vb[:, 0]) * vb[:, 1] * dt
-        om_new[:, 2] += self.yaw_wv * vb[:, 1] * dt   # yaw-wv invariant under the NED<->ENU basis change
+        if self.wv2 is not None:                     # v2: speed-dependent coeff (|v| basis-invariant)
+            a_r, b_r, a_y, b_y, vclip = self.wv2
+            spd = np.minimum(np.linalg.norm(vb, axis=1), vclip)
+            om_new[:, 0] += self._roll_wv_sign * (a_r + b_r * spd) * vb[:, 1] * dt
+            om_new[:, 2] += (a_y + b_y * spd) * vb[:, 1] * dt   # vby & om_yaw both flip under ENU -> invariant
+        else:                                        # v1 fallback (const yaw + linear-in-vbx roll)
+            om_new[:, 0] += self._roll_wv_sign * (self.roll_wv0 + self.roll_wv1 * vb[:, 0]) * vb[:, 1] * dt
+            om_new[:, 2] += self.yaw_wv * vb[:, 1] * dt   # yaw-wv invariant under the NED<->ENU basis change
 
         # --- attitude integrate via axis-angle exp(0.5 om dt) ---
         ang = np.linalg.norm(om_new, axis=1) * dt

@@ -226,3 +226,50 @@ def test_mimo_ned_enu_equivalence():
         sn = ned.step(s, a); se = enu.step(s_enu, _B_action(a))
         np.testing.assert_allclose(_B_state(sn), se, atol=1e-9)
         s, s_enu = sn, se
+
+
+# --- weathervane v2 (COR-127, 06-10): speed-dependent coeff, replaces const-yaw + vbx-roll ---
+MODEL_WV2 = {**MODEL, "weathervane_v2": {
+    "roll": {"a": -0.603, "b": 0.104}, "yaw": {"a": -0.128, "b": 0.047}, "vclip": 8.0}}
+
+
+def test_wv2_speed_dependent_coeff():
+    """v2 applies (a + b*min(|v|,vclip))*vby*dt on roll & yaw; coeff sign flips with speed."""
+    wv2 = MODEL_WV2["weathervane_v2"]
+    dyn = VQMatchedDynamics(MODEL_WV2, dt=1 / 72.0, roll_wv=True)
+    base = VQMatchedDynamics(MODEL_WV2, dt=1 / 72.0, roll_wv=True)
+    s = np.zeros((3, 13)); s[:, 6] = 1.0
+    s[0, 3:5] = [0.5, 1.0]            # slow: |v|~1.1 -> roll coeff ~-0.49 (negative)
+    s[1, 3:5] = [7.5, 3.0]            # fast: |v|~8.1 -> clipped at 8 -> roll coeff +0.229
+    s[2, 3:5] = [0.5, 1.0]
+    a = np.tile([0.27, 0.0, 0.0, 0.0], (3, 1))
+    out = dyn.step(s, a)
+    for i in range(2):                # level attitude: vb == vel; om started at 0
+        vb = s[i, 3:6]; spd = min(np.linalg.norm(vb), 8.0)
+        exp_r = (wv2["roll"]["a"] + wv2["roll"]["b"] * spd) * vb[1] / 72.0
+        exp_y = (wv2["yaw"]["a"] + wv2["yaw"]["b"] * spd) * vb[1] / 72.0
+        np.testing.assert_allclose(out[i, 10], exp_r, atol=1e-12)
+        np.testing.assert_allclose(out[i, 12], exp_y, atol=1e-12)
+    assert out[0, 10] < 0 < out[1, 10]        # roll wv flips sign low->high speed (vby>0 both)
+    # roll_wv=False zeroes the roll axis only
+    off = VQMatchedDynamics(MODEL_WV2, dt=1 / 72.0, roll_wv=False)
+    o2 = off.step(s, a)
+    np.testing.assert_allclose(o2[:, 10], 0.0, atol=1e-12)
+    np.testing.assert_allclose(o2[:, 12], out[:, 12], atol=1e-12)
+
+
+def test_wv2_ned_enu_equivalence():
+    """wv2 term is basis-correct: ENU == B(NED) step-for-step (|v| invariant, vby & yaw flip)."""
+    ned = VQMatchedDynamics(MODEL_WV2, frame="NED", roll_wv=True)
+    enu = VQMatchedDynamics(MODEL_WV2, frame="ENU", roll_wv=True)
+    rng = np.random.default_rng(7)
+    s = np.zeros((12, 13))
+    s[:, 0:3] = rng.uniform(-3, 3, (12, 3)); s[:, 3:6] = rng.uniform(-6, 6, (12, 3))
+    q = rng.uniform(-1, 1, (12, 4)); s[:, 6:10] = q / np.linalg.norm(q, axis=1, keepdims=True)
+    s[:, 10:13] = rng.uniform(-2, 2, (12, 3))
+    a = np.column_stack([rng.uniform(0.1, 0.5, 12), rng.uniform(-1, 1, (12, 3))])
+    s_enu = _B_state(s)
+    for _ in range(20):
+        sn = ned.step(s, a); se = enu.step(s_enu, _B_action(a))
+        np.testing.assert_allclose(_B_state(sn), se, atol=1e-9)
+        s, s_enu = sn, se
