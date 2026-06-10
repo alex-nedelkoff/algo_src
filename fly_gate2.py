@@ -32,9 +32,11 @@ def detect_tracked(bgr, p, u_track):
     largest-area pick bounces between similar-size gates at range (attempt-17: u 241<->402<->143).
     Falls back to largest when no track."""
     H, W = bgr.shape[:2]
-    cnts, _ = cv2.findContours(red_mask(bgr, p), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts, hier = cv2.findContours(red_mask(bgr, p), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     cands = []
-    for c in cnts:
+    for i, c in enumerate(cnts):
+        if hier[0][i][3] != -1:
+            continue                                    # children handled via their parent
         area = float(cv2.contourArea(c))
         if area < p["min_area_px"]:
             continue
@@ -43,7 +45,20 @@ def detect_tracked(bgr, p, u_track):
             continue
         if (y + h / 2.0) > p["max_v_frac"] * H:
             continue
-        cands.append(GateDetection(x + w / 2.0, y + h / 2.0, float(w), float(h), area, (x, y, w, h)))
+        # AIM AT THE APERTURE, not the ring centroid: this gate's wide top banner drags the
+        # centroid into solid structure (attempt-25 flew into the banner). Largest child contour
+        # of the red ring = the dark hole; use its center when meaningful.
+        u_t, v_t = x + w / 2.0, y + h / 2.0
+        best_hole = 0.0
+        j = hier[0][i][2]                               # first child
+        while j != -1:
+            ha = float(cv2.contourArea(cnts[j]))
+            if ha > best_hole and ha > 0.05 * area:
+                hx, hy, hw, hh = cv2.boundingRect(cnts[j])
+                u_t, v_t = hx + hw / 2.0, hy + hh / 2.0
+                best_hole = ha
+            j = hier[0][j][0]                           # next sibling
+        cands.append(GateDetection(u_t, v_t, float(w), float(h), area, (x, y, w, h)))
     if not cands:
         return None
     if u_track is None:
@@ -90,7 +105,7 @@ CX = 320.0; FX = 320.0; FY = 320.0; CY = 180.0
 KP_ATT = np.array([0.7, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3; KD_ATT = 0.3
 KD_AL = 1.2; AL_MAX = 0.4; KD_LAT = 1.4; K_STRAFE = 4.0; VLAT_MAX = 1.2
 K_VZ = 7.0; VZ_MAX = 2.2; KP_Z = 1.8; KD_Z = 3.0
-SZ_LOCK = 100.0; EX_LOCK = 0.20
+SZ_LOCK = 100.0; EX_LOCK = 0.12
 WMAX = 4.0; LOOP_DT = 0.004
 TILTMAX = np.tan(np.radians(15)) * 9.81; ABORT_TILT = 60.0
 IDLE = mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
@@ -191,16 +206,26 @@ def main():
             moving = v_al > 0.3
 
             if det is not None and not locked and det.w_px > SZ_LOCK and abs((det.u - CX) / FX) < EX_LOCK:
-                locked = True
+                locked = True; main._lock_t = now
                 print(f"LOCK t={t:.1f}s gi={s.get_gate_idx()}", flush=True)
-            if locked:                                           # ballistic: hold heading + elevation track
+            if locked and det is None and (now - last_det_t) > 2.5:
+                locked = False                                   # lock timeout: missed pass -> resume search
+                print(f"UNLOCK (timeout) t={t:.1f}s", flush=True)
+            v_lat_sp = 0.0
+            if locked:                                           # ballistic heading + elevation + u-STRAFE
                 if det is not None:
+                    last_det_t = now
+                    ex = (det.u - CX) / FX
+                    # strafe hard while there is range; FREEZE lateral for the final crossing
+                    # (attempt-24 clipped the frame: lateral motion at the gate plane)
+                    v_lat_sp = float(np.clip(2.0 * ex, -1.0, 1.0)) if det.w_px < 250 else 0.0
                     elev = gate_world_elev(CX, det.v, Rc)
                     z_ref += float(np.clip(-K_VZ * elev, -VZ_MAX, VZ_MAX)) * LOOP_DT
                     z_ref = float(np.clip(z_ref, spawn[2] - 8.0, spawn[2] + 5.0))   # NED: -8 = 8 m climb (gate 1 sits HIGH on this course; the old 2 m cap flew under it)
             elif det is not None:
                 ex = (det.u - CX) / FX
                 last_det_t = now; last_ex_sign = np.sign(ex) if abs(ex) > 0.05 else last_ex_sign
+                v_lat_sp = float(np.clip(2.0 * ex, -0.8, 0.8))   # strafe toward gate (lat=camera-RIGHT, pinned)
                 if moving:                                       # visual yaw steering (rate-capped)
                     yaw_ref += float(np.clip(K_YAWVIS * SIGN_Y * ex, -YAWRATE_MAX, YAWRATE_MAX)) * dt
                 elev = gate_world_elev(det.u, det.v, Rc)
@@ -241,7 +266,7 @@ def main():
                 z_ref = float(ds.pos_ned[2])
                 yaw_ref = yaw_cur
             else:
-                a_lat = float(np.clip(KD_LAT * (0.0 - v_lat), -2.0, 2.0))
+                a_lat = float(np.clip(KD_LAT * (v_lat_sp - v_lat), -2.0, 2.0))
                 a = np.zeros(3); a[:2] = a_al * fwd + a_lat * lat; a[2] = a2
                 nrm = float(np.linalg.norm(a[:2]))
                 if nrm > TILTMAX:
@@ -257,7 +282,10 @@ def main():
             # CLAMP collective: collective_accel divides by cos(tilt) (altitude hold), which at
             # tilt>45 becomes a 20+ m/s^2 HORIZONTAL accelerator = the wandering-pump energy source
             # (race_cruise never tilts enough to meet it). Altitude sags during upsets instead.
-            thr = accel_to_thrust_norm(min(collective_accel(a, ds.quat_wxyz), 11.5), HOVER, KA)
+            # tilt-CONDITIONAL: the flat clamp 11.5 starved normal z-recovery (needs ~14) and the
+            # drone sank 2.5 m/s^2 the whole approach (attempt-22 zdiag). Only clamp when tilted.
+            c_max = 10.0 if tilt_deg(ds.quat_wxyz) > 40.0 else 18.0
+            thr = accel_to_thrust_norm(min(collective_accel(a, ds.quat_wxyz), c_max), HOVER, KA)
             if in_safe and spd_h > 4.0:
                 # BALLISTIC BRAKE: blind+fast = above the drag-tilt wall, unstabilizable (REFIT-02
                 # ramp-wall limit cycle); any altitude-holding thrust at the resulting tilt re-feeds
