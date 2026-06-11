@@ -1,4 +1,11 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-11 afternoon)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-11 night)
+
+## ⚖ STRATEGY (06-11 night, RL-vs-analytic, with Alex): RL only for racing speed, only after capped-authority proves transfer
+1. **VQ1 (leads)**: pure analytic — scored 6/6 is within one session (dz ≈ −0.3 crossing target, exit-clip margins). RL adds nothing to a precision-waypoint reliability problem.
+2. **Course survey next** (cheap, static course): one slow corridor flight logging proximity-warning onsets + vision depth → static course map (gates + scoring volumes + obstacles). Feeds BOTH the analytic racing line AND a true-geometry RL env — the training env currently uses 2.0 m gates/r1.0 vs measured 2.72 outer/~0.95 clear/scoring edge dz≈+0.2, and fixing that is now data plumbing, not research.
+3. **RL = racing track only, gated on the capped-action-authority experiment** (★ below, twice-prescribed): the blocker is rate-loop sim-to-real at |ω| 2–5, not training data (students already gate 6/6 offline). Re-baseline analytic top speed first — WAYPOINT-02 reached v14 commanded/9.4 m/s sideslip; the old "RL needed past v3" premise is dead.
+4. **No VIO build** unless the organizer email says ODOMETRY is not guaranteed — position (ODOMETRY+LPN, 0.1 m validated) and gate geometry (vision + TRACK_INFO) are solved; VIO would re-derive them. Contingency only.
+
 
 ## 🔥 TRACK-WP-01 + GATE-WP-01 (06-11 afternoon): VQ1 pipeline BUILT — vision validated to 0.1 m, sim broadcasts the whole track, BUT the checkpoint counter never ticks
 Three results (exp-log GATE-WP-01, TRACK-WP-01):
