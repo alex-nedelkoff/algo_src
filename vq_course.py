@@ -267,6 +267,10 @@ def main():
     yaw_base = yaw0_t; scan_sd = 1.0
     arc_t0 = None; arc_dir = 1.0
     main._vis = {}; main._vfixed = {}
+    main._zcomp = 0.45     # adaptive motion-sag compensation (m): crossings track this far below
+                           # z_ref under motion; applied to z_ref on CROSSING legs only (waypoint
+                           # moves broke vision geometry / wandered) and updated from each
+                           # measured crossing dz
     # phase: A = vision anchor, B = course
     phase = "A"; anchor = None; wps = None; wp_r = None; wp_center = None
     wi = 0; wp_t0 = t0; crossings = 0; gate_events = 0; prox_events = 0
@@ -483,6 +487,8 @@ def main():
                                                           # beam z-slew -> pre-point settle stalls)
                     frac = np.clip((dist - 4.0) / 11.0, 0.0, 1.0)
                     z_ref = float(wp[2] + (z_hold - wp[2]) * frac)
+                if wi % 2 == 1:
+                    z_ref = float(z_ref - main._zcomp)   # lift the flight path through the gate
                 z_err = abs(pos[2] - wp[2])
             elif est.wp() is not None and not takeoff:
                 if (now - last_det_t) > 4.0:
@@ -615,6 +621,11 @@ def main():
                               f"(lat={lat_c:+.2f} dz={dz_c:+.2f}) "
                               f"({'INSIDE' if inside else 'OUTSIDE'} half=0.95) gi={gi}",
                               flush=True)
+                        if abs(dz_c) < 1.5:
+                            # dz_c is the residual sag THIS crossing (z_comp already applied);
+                            # fold it into the estimate for the next gate
+                            main._zcomp = float(np.clip(main._zcomp + 0.5 * dz_c, 0.0, 1.2))
+                            print(f"Z-COMP -> {main._zcomp:+.2f} after gate {g_i}", flush=True)
                     setattr(main, key, s_now)
                 ztol = 0.6 if wi % 2 == 0 else 1.5         # PRE point: SETTLE at gate altitude
                                                             # (run 4 crossed 1.1 m high + sinking
