@@ -127,7 +127,7 @@ def main():
     gyaws = []
     hd = hd0
     p = pe0.copy()
-    space = 10.0
+    space = argf("--space", 10.0)   # training first leg is 8+sp ~ 17-21 m; 10 is OOD-short (ENV-RT-01)
     for _ in range(NG):
         hd += turn
         p = p + space * np.array([np.cos(hd), np.sin(hd), 0.0])
