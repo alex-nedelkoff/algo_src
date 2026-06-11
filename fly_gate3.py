@@ -27,7 +27,7 @@ from aigp.control_math import (desired_attitude, mat_to_quat, attitude_error_qua
 from aigp.gate_detect import GateDetection, detect_gate, load_params, red_mask
 
 
-def detect_tracked(bgr, p, u_track):
+def detect_tracked(bgr, p, u_track, require_hole=False):
     """All gate candidates (same filters as detect_gate), pick NEAREST to the tracked u -- the
     largest-area pick bounces between similar-size gates at range (attempt-17: u 241<->402<->143).
     Falls back to largest when no track."""
@@ -58,6 +58,9 @@ def detect_tracked(bgr, p, u_track):
                 u_t, v_t = hx + hw / 2.0, hy + hh / 2.0
                 best_hole = ha
             j = hier[0][j][0]                           # next sibling
+        if require_hole and best_hole <= 0.0:
+            continue                                    # HUNT: billboards (JobsOhio!) are solid red
+                                                        # rectangles -- gates have an aperture (att-48)
         cands.append(GateDetection(u_t, v_t, float(w), float(h), area, (x, y, w, h)))
     if not cands:
         return None
@@ -95,7 +98,7 @@ def argf(flag, d): return float(sys.argv[sys.argv.index(flag) + 1]) if flag in s
 
 DUMP = "--dump" in sys.argv                # save FPV frames every 0.4 s to frames_dump/
 SIGN_S = argf("--signs", -1.0); SIGN_Y = argf("--signy", -1.0)   # EMPIRICAL (attempt-33): +yaw_ref pans camera LEFT in this frame -> -1
-K_YAWVIS = argf("--kyaw", 2.5)            # visual yaw gain: ex (norm. pixel) -> yaw_ref rate
+K_YAWVIS = argf("--kyaw", 1.0)            # visual yaw gain: ex (norm. pixel) -> yaw_ref rate
 FWD = argf("--fwd", 1.2); N_GATES = int(argf("--ngates", 8)); DURATION = argf("--dur", 150.0)
 YAWRATE_MAX = 0.4                          # rad/s cap on yaw_ref slew (hover-spin = lethal regime)
 SCAN_RATE = 0.25; SCAN_AFTER = 5.0         # gate-lost: slow scan toward last-seen side (while MOVING only)
@@ -196,7 +199,10 @@ def main():
             u_tr = getattr(main, "_u_track", None)
             if u_tr is not None and (now - last_det_t) > 2.5:
                 u_tr = None; main._u_track = None               # stale track -> free acquisition
-            det = detect_tracked(bgr, P, u_tr) if bgr is not None else None
+            det = detect_tracked(bgr, P, u_tr, require_hole=(prev_gi > gi0 and u_tr is None)) if bgr is not None else None
+            # hole required at ACQUISITION only: at close range the oblique view closes the visible
+            # aperture and the hole filter killed every approach at sz~80 (attempts 49/51); the
+            # track-continuity gate protects against billboard hijack once tracking.
             if det is not None:
                 if u_tr is not None and abs(det.u - u_tr[0]) > 100.0:
                     det = None                                  # nothing near the track this frame
@@ -248,15 +254,28 @@ def main():
             # POST-PASS = the gate-1 recipe from rest: STOP fully -> hover-scan -> approach.
             # (Hover-yaw is SAFE in true-frame: probe2 turned 65 deg at tilt 0; the historical
             # lethality was the live-frame warp. Chasing at speed failed attempts 34-37.)
-            hunt = prev_gi > gi0 and not locked and (now - getattr(main, "_post_pass", -99.0)) < 45.0
-            if hunt:
-                stable_det = det is not None and (now - getattr(main, "_det_streak_t0", now)) > 0.5
-                if det is not None and getattr(main, "_det_prev", False) is False:
-                    main._det_streak_t0 = now
-                main._det_prev = det is not None
-                if det is not None:                              # remember the sighting bearing
+            hunt = prev_gi > gi0 and not locked
+            if hunt and (now - last_det_t) > 5.0:
+                main._aligned = False                            # lost it -> re-align on next sighting
+            if hunt and not getattr(main, "_aligned", False):
+                # HUNT-ALIGN: bearing-only strafe+advance from an oblique sighting slings the drone
+                # PAST the gate (att-53: sz 95->49 during a 2 m/s strafe). Reuse the proven gate-1
+                # profile instead: STOP, yaw-align until centered 1 s, then straight-in approach.
+                if det is not None:
                     main._sight_t = now; main._sight_sign = np.sign((det.u - CX) / FX) or 1.0
-                if not stable_det:
+                    ex_h = (det.u - CX) / FX
+                    a_al = float(np.clip(1.2 * (0.0 - v_al), -1.2, 0.3))
+                    v_lat_sp = 0.0
+                    if abs(ex_h) < 0.1:
+                        if getattr(main, "_align_t0", None) is None:
+                            main._align_t0 = now
+                        elif now - main._align_t0 > 1.0:
+                            main._aligned = True                 # centered+still -> normal approach
+                            print(f"ALIGNED on target t={t:.1f}", flush=True)
+                    else:
+                        main._align_t0 = None
+            if hunt and not getattr(main, "_aligned", False) and det is None:
+                if (now - last_det_t) > 2.0:
                     if spd_h_prev > 0.5:                         # HUNT_BRAKE: kill all speed first
                         a_al = float(np.clip(1.2 * (0.0 - v_al), -1.2, 0.3))
                     elif (now - getattr(main, "_sight_t", -99.0)) < 3.0:
@@ -280,15 +299,20 @@ def main():
                     last_det_t = now
                     ex = (det.u - CX) / FX
                     # strafe hard while there is range; FREEZE lateral for the final crossing
-                    # (attempt-24 clipped the frame: lateral motion at the gate plane)
-                    v_lat_sp = float(np.clip(2.0 * ex, -1.0, 1.0)) if det.w_px < 250 else 0.0
+                    # (attempt-24 clipped the frame: lateral motion at the gate plane).
+                    # Stronger + slow yaw correction in-lock: att-54 drifted u 302->122 against
+                    # the capped strafe with heading frozen and slid past the aperture.
+                    v_lat_sp = float(np.clip(3.0 * ex, -1.5, 1.5)) if det.w_px < 250 else 0.0
+                    if det.w_px < 200:
+                        yaw_ref += float(np.clip(0.6 * SIGN_Y * ex, -0.15, 0.15)) * dt
                     elev = gate_world_elev(CX, det.v, Rc)
                     z_ref += float(np.clip(-K_VZ * elev, -VZ_MAX, VZ_MAX)) * LOOP_DT
                     z_ref = float(np.clip(z_ref, spawn[2] - 8.0, spawn[2] + 5.0))   # NED: -8 = 8 m climb (gate 1 sits HIGH on this course; the old 2 m cap flew under it)
             elif det is not None:
                 ex = (det.u - CX) / FX
                 last_det_t = now; last_ex_sign = np.sign(ex) if abs(ex) > 0.05 else last_ex_sign
-                v_lat_sp = float(np.clip(2.0 * ex, -0.8, 0.8))   # strafe toward gate (lat=camera-RIGHT, pinned)
+                v_lat_sp = float(np.clip(5.0 * ex, -2.0, 2.0))   # strafe DOMINATES: ambient ~1.3 m/s
+                                                                  # drift orbits the approach (att-44/52)
                 if moving and yerr_ok and not takeoff:           # visual yaw steering (rate-capped)
                     yaw_ref += float(np.clip(K_YAWVIS * SIGN_Y * ex, -YAWRATE_MAX, YAWRATE_MAX)) * dt
                 elev = gate_world_elev(det.u, det.v, Rc)
