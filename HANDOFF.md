@@ -1,6 +1,9 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-11 ~23:00)
 
-## ★ NEXT = RETRAIN on the fixed envelope (--dr), re-gate, refly
+## ★ NEXT = diverge-hunt the deploy-chain RIGHT-TURN defect (env rollout vs chain rollout, step-aligned)
+**06-11 ~00:45 (ENV-RT-01):** envelope retrain `ft_env_v6c_best` (pod `ft022hsdg5jxnv`, RUNNING) = DAgger 6.0/6 16/16; gate battery: **left/drift-left/dr1/dr3/dr5/dr5drift ALL 6/6** (drift-left was the old weak spot — clean now), but **right turns 1/6 (nominal AND drift), mean|β|=83 (sideways)**. In-env eval uses random curve signs and finishes 16/16 ⇒ right turns work in the training env. Failure exists ONLY through the `closed_loop_policy`/`vq_deploy2` adapter — and matches live (DEPLOY-03 right died t4–5, left ran). **Prime suspect: the command-side world-y mirror / yaw-sign empirical map in the deploy chain** (GATE2-IBVS-04 audit: single-evidence signs). Next agent: run the SAME right-curve course through (a) the training env (`GateRaceEnv._compute_obs` path) and (b) `closed_loop_policy.py`, step-aligned from identical state; print obs vectors + actions side by side; first diverging element = the bug. Then fix, re-gate, refly.
+
+## (done 06-11 ~00:45, see above) RETRAIN on the fixed envelope (--dr), re-gate, refly
 **06-11 ~00:00 (ENVELOPE-01): envelope FIXED + calibrated (`7c7bcd4`, tests 20/20).** `vq_matched` now has opt-in `drag_quadratic_body` (D_eff(v)=D+q·|v|) + `thrust.thr_floor`. Canonical (BOTH machines, backups `vq_model_pre_envelope.json`): **Dx=Dy=0.10, q=0.032, floor=0.0924**. Replay acceptance: sim vmax 35.7/24.2/12.8/9.5 vs live 36.1/23.8/13.0/11.4 (was 92.7/43/17/12.5). Steps:
 1. Retrain `rl_finetune --vdes 6 --vdes_warm 4 --curve --steps 0 --dr --dagger 6` on the new plant (pod stopped — recreate on vol `ygkhfer0p5` via `~/bin/runpodctl create pod ... --networkVolumeId`, scp the NEW vq_model.json — it must travel).
 2. Re-gate (`closed_loop_policy.py` battery incl. `--lag 0.085 --lat 0.019`, both turn signs), refly `vq_deploy4.py` (laptop aigp env).
