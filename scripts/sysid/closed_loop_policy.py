@@ -106,7 +106,7 @@ def main():
             h = np.tanh(Wt[f"mlp_extractor.policy_net.{i}.weight"] @ h + Wt[f"mlp_extractor.policy_net.{i}.bias"])
         return Wt["action_net.weight"] @ h + Wt["action_net.bias"]
 
-    model = json.load(open(ROOT / "sysid" / "vq_model.json"))
+    model = json.load(open(args_("--model", str(ROOT / "sysid" / "vq_model.json"))))
     lag = argf("--lag", 0.0); lat = argf("--lat", 0.0)
     dyn = VQMatchedDynamics(model, dt=DT, frame="NED", latency_s=lat, thrust_lag_s=lag)
     s = dyn.reset(1)
