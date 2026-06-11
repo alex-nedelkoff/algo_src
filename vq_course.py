@@ -42,6 +42,9 @@ def argf(flag, d): return float(sys.argv[sys.argv.index(flag) + 1]) if flag in s
 DUMP = "--dump" in sys.argv
 VMAX = argf("--v", 3.0); N_GATES = int(argf("--ngates", 8)); DURATION = argf("--dur", 360.0)
 AMAX = argf("--amax", 0.6); THRU = argf("--thru", 2.0); ZBIAS = argf("--zbias", 0.95)
+DTR = argf("--dtr", 0.0)                 # lateral detour bias (m) on the gate-3 transit leg --
+                                         # 10 collisions cluster ~5 m short of gate 3 on every
+                                         # chord; beam not visible there; probe around it
 GATE_AP = 1.5
 CX = 320.0; FX = 320.0; FY = 320.0; CY = 180.0
 EST_MIN = 6; EST_KEEP = 14; RATIO_MIN = 5
@@ -125,6 +128,22 @@ def detect_tracked(bgr, p, u_track, require_hole=False):
     return min(ok, key=lambda d: abs(d[0].u - u_tr) + 3.0 * abs(d[0].w_px - sz_tr))
 
 
+def detect_beam(bgr):
+    """Cyan course-spline centroid (u, v) in the lower 2/3 of the frame, or None
+    (fly_gate3.detect_beam + vertical centroid for the corridor z-slew)."""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array([80, 80, 120]), np.array([110, 255, 255]))
+    H = mask.shape[0]
+    mask[: H // 3] = 0
+    msum = float(mask.sum()) / 255.0
+    if msum < 150.0:
+        return None
+    cols = mask.sum(0).astype(float); rows = mask.sum(1).astype(float)
+    u = float((cols * np.arange(mask.shape[1])).sum() / cols.sum())
+    v = float((rows * np.arange(H)).sum() / rows.sum())
+    return u, v
+
+
 def idle():
     m.conn.mav.set_attitude_target_send(int(time.time() * 1000) - boot, m.conn.target_system,
                                         m.conn.target_component, IDLE, [1, 0, 0, 0], 0, 0, 0, 0)
@@ -170,6 +189,9 @@ class GateEstimator:
         return float(np.linalg.norm(ps.max(0) - ps.min(0)))
 
     def calibrate(self):
+        """H is PINNED to refl0 (world-y flip): proven by 4 independent runs + the in-flight
+        pixel discriminator. The scatter vote is kept as a CHECK only -- run 13 voted refl135
+        on marginal data and flew blind for 350 s."""
         if len(self.samples) < 20 or self.baseline() < ARC_BASE:
             return False
         best = None
@@ -178,8 +200,9 @@ class GateEstimator:
             sc = float(np.std(pts[:, :2], 0).sum())
             if best is None or sc < best[0]:
                 best = (sc, name, Hm)
-        self.H = best[2]; self.Hname = best[1]
-        print(f"H locked: {best[1]} (scatter {best[0]:.2f}, n={len(self.samples)})", flush=True)
+        self.Hname = "refl0"; self.H = H_CANDS[1][1]
+        note = "" if best[1] == "refl0" else f" (vote said {best[1]} {best[0]:.2f} -- OVERRIDDEN)"
+        print(f"H locked: refl0 (pinned){note}", flush=True)
         return True
 
     def point(self, pos, ray, Z):
@@ -361,9 +384,23 @@ def main():
                             wp_r.append(WP_R)
                         wps = np.array(wps)
                         main._course_pts = pts
-                        phase = "B"; wi = 0; wp_t0 = now
+                        phase = "B"; wi = 0; wp_t0 = now; main._zi = 0.0
                         print(f"ANCHOR t={t:.1f} gate0 [{anchor[0]:.1f},{anchor[1]:.1f},{anchor[2]:.1f}] "
                               f"-> course {len(wps)} wps", flush=True)
+
+            # ---------- beam (cyan spline) -- the proven-clear corridor ----------
+            beam = None
+            if phase == "B" and bgr is not None:
+                beam = detect_beam(bgr)
+                if beam is not None:
+                    main._beam_t = now
+            # BEAM MODE: transit legs (heading to a PRE point, still far) follow the spline
+            # instead of the chord -- every chord variant into gate 3 hit structure (8/8);
+            # gates 0-2 unaffected (gate ring takes priority as soon as it is tracked)
+            # beam mode OFF by default (--beam to enable): run 15 chased a cyan false positive
+            # 69 m off-course; the beam is invisible on the one leg (gate 2->3) that needs help
+            beam_mode = ("--beam" in sys.argv and phase == "B" and wi % 2 == 0
+                         and beam is not None and (det is None or det.w_px < 60.0))
 
             # ---------- guidance ----------
             a_al = 0.0; a_lat = 0.0
@@ -372,16 +409,34 @@ def main():
                 wp = wps[wi]
                 err = wp[:2] - pos[:2]
                 dist = float(np.linalg.norm(err))
+                if DTR != 0.0 and wi == 6 and dist > 12.0:
+                    ld = wps[6][:2] - wps[4][:2]; ld /= max(np.linalg.norm(ld), 1e-6)
+                    err = err + DTR * np.array([-ld[1], ld[0]]) * np.clip((dist - 12.0) / 10.0, 0.0, 1.0)
+                beam_mode = beam_mode and dist > 12.0   # hand the approach back to the waypoint
+                                                        # law early: beam z-slew left the settle
+                                                        # tolerance unmet (run-12 pre timeouts)
                 # transit altitude: hold the HIGHER of (leg-start, target) until 15 m out, then
                 # blend down, settled 4 m before the wp. Run 1: step-descend 25 m out = terrain;
                 # run 3: linear blend along the leg = structure below the high line, also terrain;
                 # run 2: hold-then-drop-in-8-m cleared the transit but hit the gate frame sinking.
-                leg_z = getattr(main, "_leg_z", wp[2])
-                z_hold = min(leg_z, wp[2])               # NED: min = higher altitude
-                frac = np.clip((dist - 4.0) / 11.0, 0.0, 1.0)
-                z_ref = float(wp[2] + (z_hold - wp[2]) * frac)
+                if beam_mode:
+                    vb_px = beam[1]
+                    # camera 20 deg up: beam sitting ~40 px below center = path level/down ahead;
+                    # slew gently toward it (corridor altitude comes from the spline, not the chord)
+                    z_ref = float(np.clip(z_ref + np.clip(1.5 * (vb_px - (CY + 40.0)) / FY,
+                                                          -1.0, 1.0) * dt,
+                                          wp[2] - 6.0, max(getattr(main, "_leg_z", wp[2]), wp[2]) + 2.0))
+                else:
+                    z_hold = min(pos[2], wp[2])          # NED: min = higher altitude; blending
+                                                          # from CURRENT alt is handoff-proof (the
+                                                          # recorded leg-start went stale after
+                                                          # beam z-slew -> pre-point settle stalls)
+                    frac = np.clip((dist - 4.0) / 11.0, 0.0, 1.0)
+                    z_ref = float(wp[2] + (z_hold - wp[2]) * frac)
                 z_err = abs(pos[2] - wp[2])
             elif est.wp() is not None and not takeoff:
+                if (now - last_det_t) > 4.0:
+                    est.samples = []           # stale cloud held a phantom hover target (run 13)
                 gw = est.wp()
                 wp = gw
                 err = gw[:2] - pos[:2]
@@ -408,6 +463,11 @@ def main():
                 calibrating = phase == "A" and est.H is None and s_yawu != 0.0
                 if calibrating and det is not None:
                     v_w_sp = ARC_A * arc_dir * lat_live
+                elif beam_mode:
+                    # ride the spline: forward along the camera axis (yaw is servoing onto the
+                    # beam), throttled by how centered the beam is
+                    exb = (beam[0] - CX) / FX
+                    v_w_sp = min(VMAX, 2.2) * max(0.3, 1.0 - abs(exb) / 0.5) * fwd_live
                 elif wp is not None:
                     stop_short = phase == "A" and det is not None and det.w_px >= 200.0
                     vcap = VMAX if phase == "B" else (0.0 if stop_short else 0.8 * VMAX)
@@ -437,6 +497,9 @@ def main():
                     if phase == "A" and det is not None and s_yawu != 0.0:
                         ex = (det.u - CX) / FX
                         yaw_base += float(np.clip(-s_yawu * 1.2 * ex, -YAWRATE_MAX, YAWRATE_MAX)) * dt
+                    elif phase == "B" and beam_mode and s_yawu != 0.0:
+                        exb = (beam[0] - CX) / FX
+                        yaw_base += float(np.clip(-s_yawu * 1.0 * exb, -YAWRATE_MAX, YAWRATE_MAX)) * dt
                     elif phase == "B" and wp is not None and dist > WP_R:
                         beta = float(np.arctan2(float(err @ (np.array([-fwd_live[1], fwd_live[0]]))),
                                                 float(err @ fwd_live)))
@@ -445,7 +508,15 @@ def main():
                         yaw_base += -s_lat * scan_sd * SCAN_RATE * dt
                     yaw_ref = yaw_base
 
-            a2 = float(np.clip(KP_Z * (z_ref - pos[2]) + KD_Z * (0.0 - ds.vel_ned[2]), -4.0, 4.0))
+            # z INTEGRAL trim: a constant ~1.2 m hang below z_ref (steady ~2.2 m/s^2 unmodeled
+            # collective deficit) stalled every pre-point settle AND was the ~1.2 m "crossing
+            # offset" on every gate -- run-16 diagnostics: zerr=+1.22 with full P command, no climb
+            ze = z_ref - pos[2]
+            if phase == "B" and abs(ze) < 1.5:           # conditional integration: run 17 wound
+                main._zi = float(np.clip(getattr(main, "_zi", 0.0) + 0.4 * ze * dt, -2.5, 2.5))
+                                                          # up through takeoff and hit gate 0 high
+            a2 = float(np.clip(KP_Z * ze + KD_Z * (0.0 - ds.vel_ned[2])
+                               + getattr(main, "_zi", 0.0), -4.0, 4.0))
             fwd = np.array([np.cos(yaw_cur), np.sin(yaw_cur)])
             lat = np.array([-fwd[1], fwd[0]])
             a = np.zeros(3); a[:2] = a_al * fwd + a_lat * lat; a[2] = a2
@@ -504,7 +575,8 @@ def main():
                     if wi >= len(wps):
                         break
                 elif now - wp_t0 > WP_TIMEOUT + dist / 1.0:
-                    print(f"WP {wi + 1} TIMEOUT t={t:.1f} dist={dist:.1f} -> skip", flush=True)
+                    print(f"WP {wi + 1} TIMEOUT t={t:.1f} dist={dist:.1f} zerr={pos[2] - wp[2]:+.2f} "
+                          f"zref-z={z_ref - pos[2]:+.2f} -> skip", flush=True)
                     wi += 1; wp_t0 = now
                     main._leg_z = float(pos[2])
                     if wi < len(wps):
@@ -543,7 +615,7 @@ def main():
                 uu = f"{det.u:.0f}" if det else "--"
                 print(f"t={t:5.1f} ph={phase} u={uu} wp={wi + 1 if phase == 'B' else '-'} "
                       f"dist={dist:4.1f} spd={np.linalg.norm(vel_w):4.1f} z={pos[2] - spawn[2]:+5.1f} "
-                      f"tilt={tilt_true:3.0f} gi={gi} x={crossings}", flush=True)
+                      f"tilt={tilt_true:3.0f} gi={gi} bm={int(beam_mode)} x={crossings}", flush=True)
             time.sleep(LOOP_DT)
     finally:
         idle(); rec.close()
