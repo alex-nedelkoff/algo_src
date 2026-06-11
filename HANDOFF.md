@@ -1,6 +1,13 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-11 ~23:00)
 
-## ★ NEXT = diverge-hunt the deploy-chain RIGHT-TURN defect (env rollout vs chain rollout, step-aligned)
+## ★ NEXT = close the RATE-RESPONSE gap at |ω| 2–5 (the last live blocker, now precisely measured)
+**06-11 ~01:30 (ENV-RT-02 / DEPLOY-04):** diverge hunt CLOSED — the right-turn "defect" was **OOD course spacing** (deploy/harness default `--space 10`; training first leg 17–21 m; space ≥12 → right 6/6). Chain obs+action EXONERATED (probe: obs identical to 1e-4; action maps equivalent under B). Re-gate at space 14: **all configs 6/6** (dr3R 1/6 = marginal single point). **Refly (space 14): still 0/6 both directions** — live tilt 22→87° within 2 s of handoff + runaway; same course races offline. **Quantified** (`onestep_omega.py` on runs `20260611T000346/000430`): 1-step omega RMSE/|W| ≈ 0.5–0.6 roll+pitch at |ω| 2–5 rad/s (yaw fine) — the linear MIMO loop is half-blind at policy aggression; integrates to the live tilt divergence. Next agent, pick:
+1. **Nonlinear/saturation rate-loop refit** pooling ALL deploy recordings (6 new from tonight, high-|ω| rich) — fit residual vs (ω, wcmd) for saturation/rate-limit structure beyond linear A,B.
+2. **Action-aggression budget in training** (penalize |Δcmd|/|wcmd| beyond the model's valid envelope) — cheapest path; policy stops commanding where the plant model is fiction.
+3. DR over the measured rate-response error itself (inject per-step omega noise matching the banded RMSE table).
+Use `--space 14` for ALL future gates/deploys (10 is OOD). Tools: `diverge_probe.py`, `onestep_omega.py`, `replay_cmds.py` (all in scripts/sysid/, committed).
+
+## (closed 06-11 ~01:30, see above) diverge-hunt the deploy-chain RIGHT-TURN defect
 **06-11 ~00:45 (ENV-RT-01):** envelope retrain `ft_env_v6c_best` (pod `ft022hsdg5jxnv`, RUNNING) = DAgger 6.0/6 16/16; gate battery: **left/drift-left/dr1/dr3/dr5/dr5drift ALL 6/6** (drift-left was the old weak spot — clean now), but **right turns 1/6 (nominal AND drift), mean|β|=83 (sideways)**. In-env eval uses random curve signs and finishes 16/16 ⇒ right turns work in the training env. Failure exists ONLY through the `closed_loop_policy`/`vq_deploy2` adapter — and matches live (DEPLOY-03 right died t4–5, left ran). **Prime suspect: the command-side world-y mirror / yaw-sign empirical map in the deploy chain** (GATE2-IBVS-04 audit: single-evidence signs). Next agent: run the SAME right-curve course through (a) the training env (`GateRaceEnv._compute_obs` path) and (b) `closed_loop_policy.py`, step-aligned from identical state; print obs vectors + actions side by side; first diverging element = the bug. Then fix, re-gate, refly.
 
 ## (done 06-11 ~00:45, see above) RETRAIN on the fixed envelope (--dr), re-gate, refly
