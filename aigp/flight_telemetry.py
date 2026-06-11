@@ -20,6 +20,12 @@ MAC_VIEWER = "rerun+http://100.101.13.126:9876/proxy"   # Mac Tailscale IP (matc
 # ---------------------------------------------------------------------------
 # Pure, testable signal math (NED world / FRD body; camera-forward = -body_x).
 # ---------------------------------------------------------------------------
+_T20 = np.radians(20.0)
+R_OPT_BODY = np.array([[0.0, -np.sin(_T20), -np.cos(_T20)],
+                       [-1.0, 0.0, 0.0],
+                       [0.0, np.cos(_T20), -np.sin(_T20)]])
+
+
 def tilt_deg(quat_wxyz) -> float:
     """Angle of the body-z axis from world-down, i.e. how far the drone is tilted from level."""
     R = quat_to_R(np.asarray(quat_wxyz, float))
@@ -79,9 +85,10 @@ def strip_viz_args(argv):
     return out
 
 
-def from_args(argv, rate_gain=None, run_name="aigp-flight"):
+def from_args(argv, rate_gain=None, run_name="aigp-flight", store=None):
     """Build a FlightLog from CLI args. ON BY DEFAULT (every run feeds the dashboard); --no-viz
-    disables it, --rrd <path> records to a file instead of streaming live. Returns None if disabled."""
+    disables it, --rrd <path> records to a file instead of streaming live. Returns None if disabled.
+    Pass `store` so the COLLISION flag is streamed too (hard rule: every sim run feeds the dashboard)."""
     if "--no-viz" in argv:
         return None
     rrd = None
@@ -90,7 +97,7 @@ def from_args(argv, rate_gain=None, run_name="aigp-flight"):
             rrd = argv[argv.index("--rrd") + 1]
         except IndexError:
             rrd = None
-    return FlightLog(rate_gain=rate_gain, hz=40, rrd_path=rrd, run_name=run_name)
+    return FlightLog(rate_gain=rate_gain, hz=40, rrd_path=rrd, run_name=run_name, store=store)
 
 
 class FlightLog:
@@ -103,9 +110,13 @@ class FlightLog:
     250 Hz+ loop. Off-thread, push() is ~microseconds and the logging cost is borne by a background
     thread that just drops frames if it can't keep up."""
 
-    def __init__(self, rate_gain=None, hz=40, rrd_path=None, run_name="aigp-flight"):
+    def __init__(self, rate_gain=None, hz=40, rrd_path=None, run_name="aigp-flight", store=None):
         self.ok = False
         self.rg = np.asarray(rate_gain, float) if rate_gain is not None else None
+        self._store = store        # if set, the COLLISION flag + FPV camera are streamed from it
+        self._last_seq = 0
+        self._last_frame_seq = -1
+        self._last_frame_t = 0.0
         self._trail = []
         self._latest = None
         self._lock = threading.Lock()
@@ -139,11 +150,15 @@ class FlightLog:
                 ts("att/yaw", "yaw sp/act (deg)"),
                 ts("track", "speed / cruise / cross / along (m/s)"),
                 ts("ctrl", "thrust cmd / state"),
+                ts("events/collision_count", "COLLISION count  <- crashes (step per hit)"),
                 grid_columns=2,
             )
             bp = rrb.Blueprint(
-                rrb.Horizontal(rrb.Spatial3DView(origin="world", name="3D actual vs commanded"),
-                               charts, column_shares=[1.1, 1.0]),
+                rrb.Horizontal(
+                    rrb.Vertical(rrb.Spatial3DView(origin="world", name="3D actual vs commanded"),
+                                 rrb.Spatial2DView(origin="camera", name="FPV camera"),
+                                 row_shares=[1.0, 0.8]),
+                    charts, column_shares=[1.1, 1.0]),
                 collapse_panels=True,
             )
             self._rr.send_blueprint(bp)
@@ -209,6 +224,15 @@ class FlightLog:
                 rr.log("world/trail", rr.LineStrips3D([np.array(self._trail)], colors=[255, 200, 0]))
             rr.log("world/vel", rr.Arrows3D(origins=[pos], vectors=[vel], colors=[0, 220, 120]))
             rr.log("world/nose", rr.Arrows3D(origins=[pos], vectors=[cam * 1.5], colors=[255, 80, 80]))
+            # --- camera FOV frustum (spec intrinsics: 640x360, fx=fy=320 -> 90 deg horizontal;
+            # camera tilted 20 deg UP off the nose). Pose = live-quat body->world x optical->body;
+            # same fidelity caveat as the nose arrow (live attitude reading warps in turns).
+            if not getattr(self, "_pinhole_sent", False):
+                self._pinhole_sent = True
+                rr.log("world/cam_fov", rr.Pinhole(resolution=[640, 360], focal_length=[320.0, 320.0],
+                                                   principal_point=[320.0, 180.0],
+                                                   image_plane_distance=3.0), static=True)
+            rr.log("world/cam_fov", rr.Transform3D(translation=pos, mat3x3=R @ R_OPT_BODY))
             if dbg is not None and dbg.get("a") is not None:
                 rr.log("world/accel_cmd", rr.Arrows3D(origins=[pos], vectors=[np.asarray(dbg["a"], float)],
                                                       colors=[180, 120, 255]))
@@ -246,3 +270,24 @@ class FlightLog:
                 self._scal("ctrl/running", 1.0 if running else 0.0)
             if armed is not None:
                 self._scal("ctrl/armed", 1.0 if armed else 0.0)
+            # --- COLLISION flag (hard rule: every sim run streams this so crashes are visible) ---
+            if self._store is not None:
+                ev, seq = self._store.get_collision()
+                self._scal("events/collision_count", float(seq))   # monotonic: steps up on each hit
+                if seq != self._last_seq:
+                    self._last_seq = seq
+                    rr.log("world/collision", rr.Points3D([pos], radii=0.7, colors=[255, 0, 0]))
+                    if ev is not None:
+                        rr.log("events/collision_log", rr.TextLog(
+                            f"COLLISION id={ev['id']} (1001=gate,1002=env) impulse={ev['impulse']:.2f}",
+                            level="ERROR"))
+            # --- FPV camera feed (hard rule: stream it so the view is observable on the dashboard) ---
+            if self._store is not None:
+                fr, fseq = self._store.get_frame()
+                if fr is not None and fseq != self._last_frame_seq and (_time.time() - self._last_frame_t) > 0.1:
+                    self._last_frame_seq = fseq
+                    self._last_frame_t = _time.time()
+                    try:
+                        rr.log("camera", rr.Image(fr[0][:, :, ::-1]))   # cv2 BGR -> RGB
+                    except Exception:
+                        pass
