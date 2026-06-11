@@ -29,6 +29,8 @@ class Store:
         self._race = None        # latest parsed race-status dict
         self._imu = None         # (acc(3), gyro(3), t_us) from HIGHRES_IMU
         self._act = None         # (outputs(4), t_us) from ACTUATOR_OUTPUT_STATUS (motors, normalized [0,1])
+        self._collision = None   # latest COLLISION event dict {id, threat, impulse}
+        self._collision_seq = 0  # increments on every COLLISION msg -> detect a fresh hit
 
     def set_drone(self, ds: DroneState) -> None:
         with self._lock:
@@ -93,3 +95,26 @@ class Store:
         """Returns (outputs(4), t_us) or None. Motors, normalized [0,1]."""
         with self._lock:
             return self._act
+
+    def set_lpn(self, pos, vel, t_ms) -> None:
+        with self._lock:
+            self._lpn = (pos, vel, int(t_ms))
+
+    def get_lpn(self):
+        """Returns (pos_ned(3), vel(3), time_boot_ms) from LOCAL_POSITION_NED, or None.
+        Position is chart-identical to ODOMETRY (verified to the mm); velocity frame is
+        presumed WORLD NED (MAVLink convention) -- verify in flight before trusting."""
+        with self._lock:
+            return getattr(self, "_lpn", None)
+
+    def set_collision(self, cid, threat, impulse) -> None:
+        with self._lock:
+            self._collision = {"id": int(cid), "threat": int(threat), "impulse": float(impulse)}
+            self._collision_seq += 1
+
+    def get_collision(self):
+        """Returns (latest_event | None, seq). seq increments on every COLLISION msg, so
+        compare seq across a window to detect a FRESH hit (events are transient).
+        Sim repurposes id: 1001=gate, 1002=environment; impulse = hit magnitude (kg m/s)."""
+        with self._lock:
+            return self._collision, self._collision_seq

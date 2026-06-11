@@ -41,7 +41,11 @@ def argf(flag, d): return float(sys.argv[sys.argv.index(flag) + 1]) if flag in s
 
 DUMP = "--dump" in sys.argv
 VMAX = argf("--v", 3.0); N_GATES = int(argf("--ngates", 8)); DURATION = argf("--dur", 360.0)
-AMAX = argf("--amax", 0.6); THRU = argf("--thru", 2.0); ZBIAS = argf("--zbias", 0.95)
+AMAX = argf("--amax", 0.6); THRU = argf("--thru", 2.0); ZBIAS = argf("--zbias", 0.45)
+# ZBIAS 0.95->0.45 (run-M scoring calibration): crossings at dz -0.4 vs the old centers TICK
+# gate_idx + stamp last_gate_time; dz ~0 does not -- the real aperture sits ~0.5 above the old
+# zbias-corrected estimate. Raising via zbias keeps vision/VIS-FIX geometry self-consistent
+# (the wp-lift variant broke close-range fixes and wandered laterally).
 DTR = argf("--dtr", 0.0)                 # lateral detour bias (m) on the gate-3 transit leg --
                                          # 10 collisions cluster ~5 m short of gate 3 on every
                                          # chord; beam not visible there; probe around it
@@ -280,6 +284,24 @@ def main():
                 vw_raw = (pos[:2] - pos_prev[:2]) / dt
                 vel_w = 0.85 * vel_w + 0.15 * vw_raw
             pos_prev = pos.copy()
+            # LPN native velocity: probe agreement vs the position derivative while moving;
+            # switch when verified (kills the ~6-frame lowpass lag in the guidance loop)
+            lpn = s.get_lpn()
+            if lpn is not None:
+                lv = lpn[1][:2]
+                if not getattr(main, "_lpn_ok", False):
+                    spd_now = float(np.linalg.norm(vel_w))
+                    if spd_now > 1.0:
+                        e = float(np.linalg.norm(lv - vel_w))
+                        main._lpn_n = getattr(main, "_lpn_n", 0) + 1
+                        main._lpn_e = getattr(main, "_lpn_e", 0.0) + e
+                        if main._lpn_n == 50:
+                            me = main._lpn_e / 50.0
+                            main._lpn_ok = me < 0.4
+                            print(f"LPN-VEL {'VERIFIED world-frame' if main._lpn_ok else 'REJECTED'}"
+                                  f" (mean |dv| {me:.2f} over 50 moving samples)", flush=True)
+                else:
+                    vel_w = lv.copy()
             v_lat_w = float(vel_w @ lat_course)
             takeoff = t < 2.5
             if takeoff:
@@ -399,7 +421,7 @@ def main():
                             # (lat -0.46/-0.66 across threads; 0.638-impulse graze of the
                             # left tube): bias the crossing +0.5 along course-perp
                             d3 = pts[3][:2] - pts[2][:2]; d3 /= max(np.linalg.norm(d3), 1e-6)
-                            p3 = np.array([-d3[1], d3[0]]) * 0.5
+                            p3 = np.array([-d3[1], d3[0]]) * 0.25  # 0.5 overshot to lat +0.51
                             wps[6][0] += p3[0]; wps[6][1] += p3[1]
                             wps[7][0] += p3[0]; wps[7][1] += p3[1]
                         main._course_pts = pts

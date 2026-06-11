@@ -73,9 +73,23 @@ class MavlinkIO:
                     np.array([m.xgyro, m.ygyro, m.zgyro]),
                     m.time_usec,
                 )
+            elif t == "LOCAL_POSITION_NED":
+                self.store.set_lpn(
+                    np.array([m.x, m.y, m.z], dtype=float),
+                    np.array([m.vx, m.vy, m.vz], dtype=float),
+                    m.time_boot_ms,
+                )
             elif t == "ACTUATOR_OUTPUT_STATUS":
                 # 4 motors on channels 0-3, normalized [0,1] (idle ~0.05, hover ~0.23)
                 self.store.set_actuators(np.array(m.actuator[:4], dtype=float), m.time_usec)
+            elif t == "COLLISION":
+                # sim repurposes the fields: id 1001=gate, 1002=environment; threat_level 1-2;
+                # horizontal_minimum_delta = collision impulse magnitude (kg m/s, NOT a delta).
+                self.store.set_collision(
+                    getattr(m, "id", -1),
+                    getattr(m, "threat_level", 0),
+                    getattr(m, "horizontal_minimum_delta", 0.0),
+                )
             elif t == "DATA_TRANSMISSION_HANDSHAKE":
                 self._track_chunks[m.width] = {}
                 self._track_expected[m.width] = m.packets
