@@ -256,7 +256,9 @@ def main():
     pos_prev = spawn.copy(); vel_w = np.zeros(2)
     z_ref = float(spawn[2])
     est = GateEstimator()
-    ratio_samples = []; ratio = None
+    ratio_samples = []; ratio = argf("--ratio", 1.62) or None   # pinned: per-run auto-cal drew
+                                                                  # 1.38-1.74 (run-20 gate-0 strike,
+                                                                  # run-22 gate-1 strike); 0 = auto
     u_track = None; sz_mark = 0.0; last_det_t = t0; last_ex_sign = 1.0
     yaw_base = yaw0_t; scan_sd = 1.0
     arc_t0 = None; arc_dir = 1.0
@@ -383,6 +385,12 @@ def main():
                             wps.append(np.array([gp[0] + THRU * d[0], gp[1] + THRU * d[1], gp[2]]))
                             wp_r.append(WP_R)
                         wps = np.array(wps)
+                        if "--high" in sys.argv and len(wps) > 7:
+                            # cross gate 3 through the UPPER aperture: 16 collision impacts span
+                            # 0.3-1.2 m BELOW gate center (obstacle top ~center height); +0.9 m
+                            # stays inside the 1.36 m half-aperture
+                            wps[6][2] -= 0.7; wps[7][2] -= 0.7   # 0.9 cleared the obstacle but
+                                                                  # clipped the upper rim at -0.4 m
                         main._course_pts = pts
                         phase = "B"; wi = 0; wp_t0 = now; main._zi = 0.0
                         print(f"ANCHOR t={t:.1f} gate0 [{anchor[0]:.1f},{anchor[1]:.1f},{anchor[2]:.1f}] "
@@ -409,9 +417,11 @@ def main():
                 wp = wps[wi]
                 err = wp[:2] - pos[:2]
                 dist = float(np.linalg.norm(err))
-                if DTR != 0.0 and wi == 6 and dist > 12.0:
+                if DTR != 0.0 and wi == 6 and dist > 6.0:
+                    # bias holds to 6 m: the obstacle face is 5.3 m before gate 3 (collision
+                    # mining) -- the old 12 m decay put every "detour" back on the chord by then
                     ld = wps[6][:2] - wps[4][:2]; ld /= max(np.linalg.norm(ld), 1e-6)
-                    err = err + DTR * np.array([-ld[1], ld[0]]) * np.clip((dist - 12.0) / 10.0, 0.0, 1.0)
+                    err = err + DTR * np.array([-ld[1], ld[0]]) * np.clip((dist - 6.0) / 8.0, 0.0, 1.0)
                 beam_mode = beam_mode and dist > 12.0   # hand the approach back to the waypoint
                                                         # law early: beam z-slew left the settle
                                                         # tolerance unmet (run-12 pre timeouts)
@@ -471,6 +481,8 @@ def main():
                 elif wp is not None:
                     stop_short = phase == "A" and det is not None and det.w_px >= 200.0
                     vcap = VMAX if phase == "B" else (0.0 if stop_short else 0.8 * VMAX)
+                    if phase == "B" and wi >= 6 and wi <= 7:
+                        vcap = min(vcap, 1.3)            # slow precise crossing at gate 3
                     if phase == "B" and dist < 15.0:
                         ze = abs(pos[2] - wp[2])
                         if ze > 1.5:
