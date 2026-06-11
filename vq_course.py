@@ -621,6 +621,14 @@ def main():
                               f"(lat={lat_c:+.2f} dz={dz_c:+.2f}) "
                               f"({'INSIDE' if inside else 'OUTSIDE'} half=0.95) gi={gi}",
                               flush=True)
+                        gt = np.asarray(gates[g_i].pos_ned, float)
+                        lat_t = float((pos[:2] - gt[:2]) @ np.array([-dh[1], dh[0]]))
+                        dz_t = float(pos[2] - gt[2])
+                        print(f"    TRUTH-REL gate {g_i}: lat={lat_t:+.2f} dz={dz_t:+.2f} "
+                              f"perp={float(np.hypot(lat_t, dz_t)):.2f} "
+                              f"(est-vs-truth off=[{main._course_pts[g_i][0]-gt[0]:+.2f},"
+                              f"{main._course_pts[g_i][1]-gt[1]:+.2f},"
+                              f"{main._course_pts[g_i][2]-gt[2]:+.2f}])", flush=True)
                         if abs(dz_c) < 1.5:
                             # dz_c is the residual sag THIS crossing (z_comp already applied);
                             # fold it into the estimate for the next gate
