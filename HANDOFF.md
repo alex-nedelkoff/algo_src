@@ -1,5 +1,8 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-11 night)
 
+## 🎯 OPEN CALIBRATION HYPOTHESIS (06-11 night, Alex's catch): the 20° camera pitch was NEVER PROBED
+All vision rays assume the spec's 20° up-tilt (R_OPT). A Δpitch error ⇒ vertical estimate error = Z·tan(Δ) — RANGE-PROPORTIONAL, which a constant ZBIAS can never fit. This elegantly explains: the zbias saga (no constant worked everywhere), AND the per-gate scoring-volume variance (each gate's VIS-FIX samples a different range mix ⇒ different bias). Principal-point CY error has the same signature; both fold into one elevation-offset calibration. **NEXT SESSION OPENER (before the dz −0.3 shortcut): 2-range pitch probe — track gate 0 at ~12 m and ~4 m, slope of est-z vs Z = tan(elevation error); bake into R_OPT; per-gate offsets should collapse.** Does NOT explain the control z-hang (direct measurement) or lateral wander (yaw chase).
+
 ## ⚖ STRATEGY (06-11 night, RL-vs-analytic, with Alex): RL only for racing speed, only after capped-authority proves transfer
 1. **VQ1 (leads)**: pure analytic — scored 6/6 is within one session (dz ≈ −0.3 crossing target, exit-clip margins). RL adds nothing to a precision-waypoint reliability problem.
 2. **Course survey next** (cheap, static course): one slow corridor flight logging proximity-warning onsets + vision depth → static course map (gates + scoring volumes + obstacles). Feeds BOTH the analytic racing line AND a true-geometry RL env — the training env currently uses 2.0 m gates/r1.0 vs measured 2.72 outer/~0.95 clear/scoring edge dz≈+0.2, and fixing that is now data plumbing, not research.
