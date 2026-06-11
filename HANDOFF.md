@@ -1,6 +1,13 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-11 ~23:00)
 
-## ★ NEXT = REFLY `ft_dr_field_v6c_best` (retrain + gate DONE), then chase the right-turn-drift gap
+## ★ NEXT = the snap gap is NOT the disturbance field — replay the runaway, fit braking/high-v, rethink
+**06-10 ~23:10 (DEPLOY-03):** refly DONE, 0/6 ×4. CONTROL run (predecessor `ft_hr_dr_v6c`, same session) = 0/6 t7.5 with the textbook braking β-snap at 5.1 m from gate 1 ⇒ sim unchanged, wall unchanged, **disturbance-field DR REFUTED as the missing ingredient** (offline 5–6/6 on wv2 plant, live 0/6). New: (1) left-course run = **throttle runaway v→35.6 m/s** (high-v sysID gold, run `20260610T230939`); (2) both policies live at the action clip edge (raw |u0|→1.7). Next agent, in order:
+1. **Replay run 230939's recorded cmds through `vq_matched`** — does sim v reach 35? If NOT → thrust/drag model wrong at high |u|/high v (simpler than any wv story) → refit there first.
+2. Fit the braking transient + clip-saturation regime on the 4 new recordings (`vq_data/20260610T2308*-2310*`).
+3. Consider an action-magnitude budget / clip-penalty in training (policy lives at saturation; the plant was never fit there).
+4. The right-turn-drift offline gap (below) is secondary until live survives braking.
+
+## (done 06-10 night — see DEPLOY-03 above) REFLY `ft_dr_field_v6c_best` (retrain + gate DONE), then chase the right-turn-drift gap
 **06-10/11 night (DR-FIELD-RT-01):** ★ steps (a)+(b)+(c-gate) done on a fresh pod (RTX 4090 `wn7uesgmk2xjyt`, vol `ygkhfer0p5`, now STOPPED — `~/bin/runpodctl` works, ssh config updated by migration #5).
 1. **Retrain DONE:** `ft_dr_field_v6c_best.zip` (Mac `sysid/` + pod) — DAgger 6.0/6, 16/16. Run 1's r6 COLLAPSED to 0/6 and the old code saved it → **best-by-eval now saved every DAgger round** (`19e68e4`); collapse was stochastic (clean rerun), recurs ⇒ suspect extreme DR draw poisoning the relabel round.
 2. **Offline gate** (`closed_loop_policy.py`, new `--model` flag; perturbed plants = `/tmp/vq_dr_*.json` from the DR rounds): nominal 5/6, left 6/6, dr1/dr3 5/6, dr5drift 6/6 — but **drift (--lag 0.085 --lat 0.019) on RIGHT turns 0–1/6 vs LEFT 5–6/6 (both retrain variants!)**. Lag-in-training (`ft_dr_field_lag_v6c_best`) did NOT fix it. Chirality-under-lag: plant A,B sym, wv2 sym ⇒ suspect deploy-chain adapter sign × lag interaction, or the genuinely harder branch. n=1 per cell — sweep more before believing details.
