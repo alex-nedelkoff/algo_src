@@ -376,18 +376,13 @@ def main():
                         if Z_now < 40.0 and det.w_px < 260.0:
                             est.add(pos, ray_t, Z_now)
                         if PPROBE and est.H is not None and pp_station < 2:
-                            lo, hi = pp_bands[pp_station]
-                            pp_hold = lo <= det.w_px <= hi
-                            if pp_hold:
-                                pp_samples.append((pp_station, Z_now,
+                            # continuous sweep: sample every detection across the approach
+                            if 2.0 < Z_now < 20.0:
+                                pp_samples.append((0, Z_now,
                                                    est.point(pos, ray_t, Z_now).copy()))
-                                n_st = sum(1 for s_ in pp_samples if s_[0] == pp_station)
-                                if n_st >= 60:
-                                    print(f"PPROBE station {pp_station} done "
-                                          f"({n_st} samples, Z~{Z_now:.1f})", flush=True)
-                                    pp_station += 1; pp_hold = False
-                        elif PPROBE:
-                            pp_hold = False
+                            if det.w_px >= 215.0 and len(pp_samples) >= 60:
+                                print(f"PPROBE sweep done ({len(pp_samples)} samples)", flush=True)
+                                pp_station = 2
                 # phase-B per-gate vision refinement: translation-only anchoring leaves a
                 # chart-rotation error that GROWS with distance (crossing offsets 1.15->1.35
                 # over gates 0-2; gate 3 at 88 m = frame strike x4). The track shape is the
@@ -430,7 +425,7 @@ def main():
                     est.calibrate()
                 # ANCHOR: calibrated + close enough (ring big) -> lock the course
                 if (phase == "A" and est.H is not None and det is not None
-                        and det.w_px >= ANCHOR_RING):
+                        and det.w_px >= ANCHOR_RING and not PPROBE):
                     g0 = est.wp(last=10)
                     if g0 is not None:
                         anchor = g0.copy(); anchor[2] += ZBIAS
@@ -563,8 +558,11 @@ def main():
                 calibrating = phase == "A" and est.H is None and s_yawu != 0.0
                 if calibrating and det is not None:
                     v_w_sp = ARC_A * arc_dir * lat_live
-                elif PPROBE and pp_hold:
-                    v_w_sp = np.zeros(2)               # probe station hold
+                elif PPROBE and wp is not None:
+                    v_w_sp = 0.7 * err
+                    nv = float(np.linalg.norm(v_w_sp))
+                    if nv > 1.2:
+                        v_w_sp *= 1.2 / nv             # slow sweep = dense range coverage
                 elif beam_mode:
                     # ride the spline: forward along the camera axis (yaw is servoing onto the
                     # beam), throttled by how centered the beam is
@@ -619,6 +617,9 @@ def main():
             if phase == "B" and abs(ze) < 1.5:           # conditional integration: run 17 wound
                 main._zi = float(np.clip(getattr(main, "_zi", 0.0) + 0.4 * ze * dt, -2.5, 2.5))
                                                           # up through takeoff and hit gate 0 high
+            if PPROBE:
+                z_ref = float(np.clip(z_ref, spawn[2] - 4.0, spawn[2] + 2.0))
+                ze = z_ref - pos[2]
             a2 = float(np.clip(KP_Z * ze + KD_Z * (0.0 - ds.vel_ned[2])
                                + getattr(main, "_zi", 0.0), -4.0, 4.0))
             fwd = np.array([np.cos(yaw_cur), np.sin(yaw_cur)])
