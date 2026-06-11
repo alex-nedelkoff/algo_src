@@ -21,9 +21,21 @@ MAC_VIEWER = "rerun+http://100.101.13.126:9876/proxy"   # Mac Tailscale IP (matc
 # Pure, testable signal math (NED world / FRD body; camera-forward = -body_x).
 # ---------------------------------------------------------------------------
 _T20 = np.radians(20.0)
-R_OPT_BODY = np.array([[0.0, -np.sin(_T20), -np.cos(_T20)],
-                       [-1.0, 0.0, 0.0],
-                       [0.0, np.cos(_T20), -np.sin(_T20)]])
+
+
+def _qfix(q):
+    """live shuffled quat (wxyz) -> TRUE attitude quat (canonical: q_true = q_live[[1,2,3,0]])."""
+    q = np.asarray(q, float)
+    return q[[1, 2, 3, 0]]
+
+
+def _r_opt_body_true(s_cam):
+    """optical (x right, y down, z view) -> TRUE body, camera = s_cam*body_x pitched 20 deg up.
+    s_cam=-1 reproduces fly_gate3's live-frame matrix exactly."""
+    S, C = np.sin(_T20), np.cos(_T20)
+    return np.array([[0.0, s_cam * S, s_cam * C],
+                     [s_cam, 0.0, 0.0],
+                     [0.0, C, -S]])
 
 
 def tilt_deg(quat_wxyz) -> float:
@@ -225,14 +237,21 @@ class FlightLog:
             rr.log("world/vel", rr.Arrows3D(origins=[pos], vectors=[vel], colors=[0, 220, 120]))
             rr.log("world/nose", rr.Arrows3D(origins=[pos], vectors=[cam * 1.5], colors=[255, 80, 80]))
             # --- camera FOV frustum (spec intrinsics: 640x360, fx=fy=320 -> 90 deg horizontal;
-            # camera tilted 20 deg UP off the nose). Pose = live-quat body->world x optical->body;
-            # same fidelity caveat as the nose arrow (live attitude reading warps in turns).
+            # camera tilted 20 deg UP off the nose). Pose from the TRUE attitude (qfix) -- the raw
+            # live quat is a shuffled chart, NOT a rotation; using it made the frustum drift in
+            # motion (the canonical fake-tilt warp). Camera sign s_cam calibrated once at the first
+            # sample against the proven live camera heading (fly_gate3 recipe).
+            R_t = quat_to_R(_qfix(ds.quat_wxyz))
             if not getattr(self, "_pinhole_sent", False):
                 self._pinhole_sent = True
+                yaw_live = float(np.arctan2(R[1, 0], R[0, 0]))
+                cam_live = -np.array([np.cos(yaw_live), np.sin(yaw_live)])
+                self._s_cam = 1.0 if float(R_t[:2, 0] @ cam_live) > 0 else -1.0
+                self._r_opt = _r_opt_body_true(self._s_cam)
                 rr.log("world/cam_fov", rr.Pinhole(resolution=[640, 360], focal_length=[320.0, 320.0],
                                                    principal_point=[320.0, 180.0],
                                                    image_plane_distance=3.0), static=True)
-            rr.log("world/cam_fov", rr.Transform3D(translation=pos, mat3x3=R @ R_OPT_BODY))
+            rr.log("world/cam_fov", rr.Transform3D(translation=pos, mat3x3=R_t @ self._r_opt))
             if dbg is not None and dbg.get("a") is not None:
                 rr.log("world/accel_cmd", rr.Arrows3D(origins=[pos], vectors=[np.asarray(dbg["a"], float)],
                                                       colors=[180, 120, 255]))
