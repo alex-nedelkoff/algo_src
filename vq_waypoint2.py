@@ -41,6 +41,13 @@ VMAX = argf("--v", 2.2); LEG = argf("--leg", 12.0); TURN = argf("--turn", 0.25)
 NWP = int(argf("--nwp", 5)); DURATION = argf("--dur", 120.0)
 AMAX = argf("--amax", 0.6)   # fwd accel cap: 0.6 -> terminal ~3 m/s vs live drag; raise to go faster
 DZ = argf("--dz", 0.0)       # alternate wp z by +-DZ (vertical-channel stress)
+YAWSWING = argf("--yawswing", 0.0)  # WV-FRAME-01: sinusoidal yaw_ref swing (rad) about the course
+                                    # bearing at speed -- aero-wv lethality probe in the TRUE frame
+FRAME = "live" if "--frame" in sys.argv and sys.argv[sys.argv.index("--frame") + 1] == "live" else "true"
+# --frame live (WV-FRAME-01 B-side): IDENTICAL guidance, but the attitude/yaw chain runs in the
+# LIVE chart exactly like race_cruise/fly_gate2 (desired_attitude on the raw quat, no world-y
+# mirror, yaw_ref = spawn live yaw + swing, NO bearing steer). Warp prediction: commanded real
+# tilt ~ 1 deg per deg of yaw-from-spawn -> dies under swing at speeds the true frame shrugs off.
 WP_R = argf("--wpr", 1.5); WP_TIMEOUT = 30.0
 KP_ATT = np.array([0.7, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3; KD_ATT = 0.3
 KD_AL = 1.2; KD_LAT = 1.4; VLAT_MAX = 1.5
@@ -196,12 +203,16 @@ def main():
                 if nv > VMAX:
                     v_w_sp *= VMAX / nv
                 a_w = np.clip(KD_AL * (v_w_sp - vel_w), -TILTMAX, TILTMAX)
+                main._a_w = a_w.copy()
                 a_al = float(np.clip(a_w @ fwd_live, -0.5 * TILTMAX, AMAX))
                 a_lat = float(np.clip(a_w @ lat_live, -TILTMAX, TILTMAX))
                 beta = float(np.arctan2(float(err @ (np.array([-fwd_live[1], fwd_live[0]]))),
                                         float(err @ fwd_live)))
-                if abs(wrap(yaw_ref - yaw_cur)) < 0.12 and dist > WP_R:
-                    yaw_ref += float(np.clip(1.0 * s_lat * beta, -YAWRATE_MAX, YAWRATE_MAX)) * dt
+                if abs(wrap(yaw_ref - yaw_cur)) < (0.45 if YAWSWING > 0 else 0.12) and dist > WP_R:
+                    main._yaw_base = getattr(main, "_yaw_base", yaw_ref) + \
+                        float(np.clip(1.0 * s_lat * beta, -YAWRATE_MAX, YAWRATE_MAX)) * dt
+                    swing = YAWSWING * np.sin(2 * np.pi * 0.15 * t)
+                    yaw_ref = main._yaw_base + swing
 
             a2 = float(np.clip(KP_Z * (z_ref - pos[2]) + KD_Z * (0.0 - ds.vel_ned[2]), -4.0, 4.0))
             fwd = np.array([np.cos(yaw_cur), np.sin(yaw_cur)])   # TRUE-frame heading coords
@@ -211,17 +222,37 @@ def main():
             if nrm > TILTMAX:
                 a[:2] = a[:2] / nrm * TILTMAX
 
-            # desired attitude in the TRUE frame; world-y mirror fix (fly_gate3 v2, verbatim)
-            yaw_body_t = yaw_ref if s_cam > 0 else yaw_ref + np.pi
-            a[1] = -a[1]
-            q_des_t = mat_to_quat(desired_attitude(a, yaw_body_t))
-            om_t = np.asarray(ds.omega, float) * WFIX
-            w_t = KP_ATT * attitude_error_quat(q_t, q_des_t)
-            w_t[0] = float(np.clip(w_t[0] - KD_ATT * om_t[0], -2.0, 2.0))
-            w_t[1] = float(np.clip(w_t[1] - KD_ATT * om_t[1], -2.0, 2.0))
-            yaw_cur_b = float(np.arctan2(R_t[1, 0], R_t[0, 0]))
-            w_t[2] = float(np.clip(KP_YAW * wrap(yaw_body_t - yaw_cur_b) - KD_YAW * om_t[2], -1.5, 1.5))
-            w = w_t * WFIX
+            if FRAME == "live":
+                # ---- B-side: live-chart attitude law (race_cruise/fly_gate2 family) ----
+                # a must be LIVE-world coords: pos_ned's chart IS the live world, so use the
+                # vector-loop accel directly (no true-frame decomposition, no mirror).
+                if getattr(main, "_a_w", None) is not None and not takeoff:
+                    a = np.array([main._a_w[0], main._a_w[1], a2])
+                    nrm = float(np.linalg.norm(a[:2]))
+                    if nrm > TILTMAX:
+                        a[:2] = a[:2] / nrm * TILTMAX
+                swing = YAWSWING * np.sin(2 * np.pi * 0.15 * t) if not takeoff else 0.0
+                yaw_ref_live = yaw0 + swing
+                Rc = quat_to_R(ds.quat_wxyz)
+                yaw_cur_live = float(np.arctan2(Rc[1, 0], Rc[0, 0]))
+                q_des = mat_to_quat(desired_attitude(a, yaw_ref_live))
+                w = KP_ATT * attitude_error_quat(ds.quat_wxyz, q_des)
+                w[0] = float(np.clip(w[0] - KD_ATT * float(ds.omega[0]), -2.0, 2.0))
+                w[1] = float(np.clip(w[1] - KD_ATT * float(ds.omega[1]), -2.0, 2.0))
+                w[2] = float(np.clip(KP_YAW * wrap(yaw_ref_live - yaw_cur_live) - KD_YAW * float(ds.omega[2]), -1.5, 1.5))
+                q_des_t = q_des
+            else:
+                # desired attitude in the TRUE frame; world-y mirror fix (fly_gate3 v2, verbatim)
+                yaw_body_t = yaw_ref if s_cam > 0 else yaw_ref + np.pi
+                a[1] = -a[1]
+                q_des_t = mat_to_quat(desired_attitude(a, yaw_body_t))
+                om_t = np.asarray(ds.omega, float) * WFIX
+                w_t = KP_ATT * attitude_error_quat(q_t, q_des_t)
+                w_t[0] = float(np.clip(w_t[0] - KD_ATT * om_t[0], -2.0, 2.0))
+                w_t[1] = float(np.clip(w_t[1] - KD_ATT * om_t[1], -2.0, 2.0))
+                yaw_cur_b = float(np.arctan2(R_t[1, 0], R_t[0, 0]))
+                w_t[2] = float(np.clip(KP_YAW * wrap(yaw_body_t - yaw_cur_b) - KD_YAW * om_t[2], -1.5, 1.5))
+                w = w_t * WFIX
             c_max = 10.0 if tilt_true > 40.0 else 18.0
             thr = accel_to_thrust_norm(min(collective_accel(a, q_t), c_max), HOVER, KA)
             w_cmd = np.clip(w / RG, -WMAX, WMAX)
