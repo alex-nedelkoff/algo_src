@@ -1,5 +1,8 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-11)
 
+## ⚡ WAYPOINT-02 (06-11 ~01:45): envelope probed — ZERO tumbles to tilt 44°/9.4 m/s SIDESLIP
+13-mission stress battery: precision 0.5 m ✓, dz ±5 ✓, 24-wp endurance ✓, turn 1.4 ✓, **tilt 50/v14 → 5/5 at 9.4 m/s sustained sideslip**. **The 2.8–3 m/s weathervane wall is a HEADING-HOLD pathology, not a vehicle limit** — free-crab velocity-vector control doesn't excite it. RACING-track implication: re-baseline analytic speed with this architecture before assuming RL is needed for v6. Only break (reproducible): 150°/leg brake-reversal at v8 → collision via braking altitude-sag (collective clamp, ~1.8 m; same course clean at v2.2) — mitigate with alt margin ≥3 m or brake z-priority. Stress flags `--amax --dz --wpr --tilt` (laptop `47c3535`); FOV frustum fixed to true-frame (`9d2c7b3`).
+
 ## ★ VQ1 TRACK = WAYPOINT TRAVERSAL WORKS (06-11 ~01:05, WAYPOINT-01) — next: gates→waypoints
 `vq_waypoint2.py` (laptop `fa39111`): **5/5 straight, 5/5 turning, 8/8 stress (turn 0.35, v3) — max tilt 18°, zero tumbles.** fly_gate3 true-frame core + ODOMETRY-position guidance; lateral push sign PROBED in flight (don't trust convention chains — run 1 failed on exactly that); s_lat determines the full live-world↔push map M2 (mission 2). Avg ~2.1 m/s ⇒ 8-min budget ≈ 960 m. **Next: gate-detect → range-from-size+bearing → world waypoint (1.5 m aperture, fx=320) feeding this flier; camera-forward yaw discipline tuning (it crabs/reverses when the 0.35 yaw cap lags — fine for wps, not for gate crossing); then full-course missions.** Exp-log row WAYPOINT-01.
 
