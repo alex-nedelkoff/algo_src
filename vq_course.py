@@ -64,7 +64,10 @@ WMAX = 4.0; LOOP_DT = 0.004
 TILTMAX = np.tan(np.radians(argf("--tilt", 15.0))) * 9.81; ABORT_TILT = 60.0
 IDLE = mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
 P = load_params()
-T20 = np.radians(20.0)
+T20 = np.radians(argf("--campitch", 20.0))
+# --campitch: R_OPT camera elevation (deg, + = up). Spec said 20 up; the 2-range pitch probe
+# measured a -32.3 deg elevation-chain error => effective true pitch ~ -12 deg. Probe with
+# --pitchprobe; slope ~0 when correct.
 
 r = json.load(open("sysid/sim_response.json"))
 HOVER = r["hover_thrust"]; KA = r["k_a"]
@@ -284,6 +287,13 @@ def main():
     u_track = None; sz_mark = 0.0; last_det_t = t0; last_ex_sign = 1.0
     yaw_base = yaw0_t; scan_sd = 1.0
     arc_t0 = None; arc_dir = 1.0
+    # --pitchprobe: hold at two ranges on the gate-0 approach, regress est-z vs Z.
+    # slope = sin(elevation error: R_OPT camera pitch + principal-point CY combined);
+    # intercept = gate z + constant (banner) aim offset. ring 60-80 ~ Z 11-13;
+    # ring 175-215 ~ Z 3.7-4.3 (ratio 1.62).
+    PPROBE = "--pitchprobe" in sys.argv
+    pp_bands = [(60.0, 80.0), (175.0, 215.0)]; pp_station = 0; pp_samples = []
+    pp_hold = False
     main._vis = {}; main._vfixed = {}
     main._zcomp = 0.45     # adaptive motion-sag compensation (m): crossings track this far below
                            # z_ref under motion; applied to z_ref on CROSSING legs only (waypoint
@@ -365,6 +375,19 @@ def main():
                         Z_now = FX * GATE_AP / ap_px
                         if Z_now < 40.0 and det.w_px < 260.0:
                             est.add(pos, ray_t, Z_now)
+                        if PPROBE and est.H is not None and pp_station < 2:
+                            lo, hi = pp_bands[pp_station]
+                            pp_hold = lo <= det.w_px <= hi
+                            if pp_hold:
+                                pp_samples.append((pp_station, Z_now,
+                                                   est.point(pos, ray_t, Z_now).copy()))
+                                n_st = sum(1 for s_ in pp_samples if s_[0] == pp_station)
+                                if n_st >= 60:
+                                    print(f"PPROBE station {pp_station} done "
+                                          f"({n_st} samples, Z~{Z_now:.1f})", flush=True)
+                                    pp_station += 1; pp_hold = False
+                        elif PPROBE:
+                            pp_hold = False
                 # phase-B per-gate vision refinement: translation-only anchoring leaves a
                 # chart-rotation error that GROWS with distance (crossing offsets 1.15->1.35
                 # over gates 0-2; gate 3 at 88 m = frame strike x4). The track shape is the
@@ -512,6 +535,9 @@ def main():
                 if (now - last_det_t) > 4.0:
                     est.samples = []           # stale cloud held a phantom hover target (run 13)
                 gw = est.wp()
+                if gw is None:
+                    err = np.zeros(2); dist = 0.0
+                    time.sleep(LOOP_DT); continue
                 wp = gw
                 err = gw[:2] - pos[:2]
                 dist = float(np.linalg.norm(err))
@@ -537,6 +563,8 @@ def main():
                 calibrating = phase == "A" and est.H is None and s_yawu != 0.0
                 if calibrating and det is not None:
                     v_w_sp = ARC_A * arc_dir * lat_live
+                elif PPROBE and pp_hold:
+                    v_w_sp = np.zeros(2)               # probe station hold
                 elif beam_mode:
                     # ride the spline: forward along the camera axis (yaw is servoing onto the
                     # beam), throttled by how centered the beam is
@@ -730,6 +758,22 @@ def main():
                     main._dump_t = now
                     os.makedirs("frames_dump", exist_ok=True)
                     cv2.imwrite(f"frames_dump/c{t:06.1f}.jpg", fr2[0])
+            if PPROBE and pp_station >= 2:
+                arr = np.array([(z, p[0], p[1], p[2]) for st, z, p in pp_samples])
+                Zs, ys, zs = arr[:, 0], arr[:, 2], arr[:, 3]
+                A2 = np.vstack([Zs, np.ones_like(Zs)]).T
+                mz, cz = np.linalg.lstsq(A2, zs, rcond=None)[0]
+                my, cy2 = np.linalg.lstsq(A2, ys, rcond=None)[0]
+                zA = zs[Zs > 8].mean(); zB = zs[Zs < 8].mean()
+                print(f"\nPPROBE RESULT ({len(pp_samples)} samples, Z {Zs.min():.1f}-{Zs.max():.1f}):",
+                      flush=True)
+                print(f"  est-z slope {mz:+.4f}/m => ELEVATION ERROR "
+                      f"{np.degrees(np.arcsin(np.clip(mz, -1, 1))):+.2f} deg", flush=True)
+                print(f"  est-z intercept {cz:+.2f} (gate z + banner const)", flush=True)
+                print(f"  est-y slope {my:+.4f}/m => AZIMUTH ERROR "
+                      f"{np.degrees(np.arcsin(np.clip(my, -1, 1))):+.2f} deg", flush=True)
+                print(f"  far est-z {zA:+.2f} vs near {zB:+.2f} (delta {zA - zB:+.2f})", flush=True)
+                break
             k = int(t / 2.0)
             if k != lastlog:
                 lastlog = k
