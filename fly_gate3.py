@@ -413,6 +413,9 @@ def main():
             if gi > prev_gi:
                 print(f"*** GATE PASSED t={t:.1f}s (idx {prev_gi}->{gi}) ***", flush=True)
                 prev_gi = gi; locked = False; last_det_t = now; main._u_track = None; main._sz_mark = 0.0
+                yaw_ref = yaw0 + 0.42                       # seed the hunt toward the course bend:
+                main._aligned = False                       # every gate-2 sighting sat at yaw0+~25 deg
+                                                            # (runs 52-55); scan refines from there
                 main._post_pass = now                       # post-pass: descend to re-find the course
                 if gi >= target:
                     break
