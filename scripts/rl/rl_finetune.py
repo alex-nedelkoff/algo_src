@@ -211,6 +211,14 @@ def main():
                         break
                 mm["A"] = A2.tolist(); mm["B"] = B2.tolist()
             mv["weathervane"]["wv_coeff"] *= 1 + rng.uniform(-0.3, 0.3)
+            if "weathervane_v2" in mv:               # scatter the ACTIVE wv surface (speed-dependent, 06-10)
+                for ax in ("roll", "yaw"):
+                    for k in ("a", "b"):
+                        mv["weathervane_v2"][ax][k] *= 1 + rng.uniform(-0.3, 0.3)
+            if "dr_rate_disturbance" in mv:          # inject the MEASURED unmodeled-moment field
+                # (tilt-scaled sustained rate biases, BRAKE-WV-01) -- the DEPLOY-02 snap mechanism;
+                # scale randomized so the policy tolerates the field's magnitude range, not a value
+                mv["dr_rate_disturbance"]["scale"] = float(rng.uniform(0.6, 1.4))
             mv["thrust"]["df_dthr"] *= 1 + rng.uniform(-0.08, 0.08)
             path = f"/tmp/vq_dr_{rd}.json"
             json.dump(mv, open(path, "w"))

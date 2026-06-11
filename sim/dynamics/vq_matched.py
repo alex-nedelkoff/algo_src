@@ -123,6 +123,21 @@ class VQMatchedDynamics:
                         _wv2["yaw"]["a"], _wv2["yaw"]["b"], _wv2["vclip"])
         else:
             self.wv2 = None
+        # measured unmodeled-moment field (COR-127 BRAKE-WV-01): sustained per-axis rate biases,
+        # RMS scaled by TRUE tilt, ~block_s correlation. This is the field the live plant has and
+        # the nominal sim lacks (the DEPLOY-02 snap mechanism). Injected as piecewise-constant
+        # per-env bias resampled every block_s, sigma interpolated from the tilt-binned table.
+        # ACTIVATION: model["dr_rate_disturbance"]["scale"] > 0 (absent in the canonical file ->
+        # off everywhere by default; rl_finetune's per-round DR copies set it).
+        _dd = model.get("dr_rate_disturbance") or {}
+        self._dist_scale = float(_dd.get("scale", 0.0))
+        if self._dist_scale > 0.0:
+            bins = _dd["bins"]
+            self._dist_lo = np.array([b["tilt_deg"][0] for b in bins], float)
+            self._dist_sig = np.array([b["sigma"] for b in bins], float)   # (nbins, 3) rad/s^2
+            self._dist_steps = max(1, int(round(float(_dd.get("block_s", 0.5)) / dt)))
+        self._dist_bias: NDArray[np.float64] | None = None
+        self._dist_k = 0
         self.dt = dt
         # latency_s = pure comms delay (whole command, FIFO); thrust_lag_s = first-order motor/thrust
         # lag (measured tau~85ms, MOTOR-01) -- a pure delay is the wrong structure for it. The thrust
@@ -153,6 +168,8 @@ class VQMatchedDynamics:
         s = np.zeros((n_envs, 13))
         s[:, 6] = 1.0  # quat w
         self._buf = []
+        self._dist_bias = None
+        self._dist_k = 0
         return s
 
     def step(self, states: NDArray[np.float64], actions: NDArray[np.float64],
@@ -202,6 +219,18 @@ class VQMatchedDynamics:
         else:                                        # v1 fallback (const yaw + linear-in-vbx roll)
             om_new[:, 0] += self._roll_wv_sign * (self.roll_wv0 + self.roll_wv1 * vb[:, 0]) * vb[:, 1] * dt
             om_new[:, 2] += self.yaw_wv * vb[:, 1] * dt   # yaw-wv invariant under the NED<->ENU basis change
+        # --- measured disturbance field (DR): tilt-scaled correlated rate bias ---
+        if self._dist_scale > 0.0:
+            n = states.shape[0]
+            if self._dist_bias is None or self._dist_bias.shape[0] != n:
+                self._dist_bias = np.zeros((n, 3)); self._dist_k = 0
+            if self._dist_k % self._dist_steps == 0:
+                tilt = np.degrees(np.arccos(np.clip(np.abs(R[:, 2, 2]), -1.0, 1.0)))
+                idx = np.searchsorted(self._dist_lo, tilt, side="right") - 1
+                sig = self._dist_sig[np.clip(idx, 0, len(self._dist_sig) - 1)]
+                self._dist_bias = np.random.normal(0.0, 1.0, (n, 3)) * sig * self._dist_scale
+            self._dist_k += 1
+            om_new += self._dist_bias * dt
 
         # --- attitude integrate via axis-angle exp(0.5 om dt) ---
         ang = np.linalg.norm(om_new, axis=1) * dt

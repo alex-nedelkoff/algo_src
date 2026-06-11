@@ -273,3 +273,41 @@ def test_wv2_ned_enu_equivalence():
         sn = ned.step(s, a); se = enu.step(s_enu, _B_action(a))
         np.testing.assert_allclose(_B_state(sn), se, atol=1e-9)
         s, s_enu = sn, se
+
+
+# --- DR disturbance field (COR-127 BRAKE-WV-01): tilt-scaled correlated rate bias ---
+MODEL_DIST = {**MODEL, "dr_rate_disturbance": {
+    "bins": [{"tilt_deg": [0, 10], "sigma": [1.0, 0.5, 0.6]},
+             {"tilt_deg": [10, 90], "sigma": [4.0, 1.2, 3.0]}],
+    "block_s": 0.5, "scale": 1.0}}
+
+
+def test_disturbance_off_by_default():
+    """Canonical file carries no 'scale' key -> field inactive, dynamics deterministic."""
+    m = {**MODEL, "dr_rate_disturbance": {k: v for k, v in MODEL_DIST["dr_rate_disturbance"].items()
+                                          if k != "scale"}}
+    dyn = VQMatchedDynamics(m, dt=1 / 72.0, roll_wv=False)
+    s = dyn.reset(4); a = np.tile([0.27, 0.1, -0.1, 0.05], (4, 1))
+    o1 = dyn.step(s, a)
+    dyn2 = VQMatchedDynamics(m, dt=1 / 72.0, roll_wv=False)
+    dyn2.reset(4)
+    np.testing.assert_allclose(o1, dyn2.step(s, a), atol=0)
+
+
+def test_disturbance_injects_correlated_bias():
+    """scale=1: omega deviates from nominal; bias constant within a block, resampled across blocks."""
+    np.random.seed(3)
+    dyn = VQMatchedDynamics(MODEL_DIST, dt=1 / 72.0, roll_wv=False)
+    nom = VQMatchedDynamics(MODEL, dt=1 / 72.0, roll_wv=False)
+    s = dyn.reset(8); nom.reset(8)
+    a = np.tile([0.27, 0.0, 0.0, 0.0], (8, 1))
+    o_d = dyn.step(s, a); o_n = nom.step(s, a)
+    d1 = o_d[:, 10:13] - o_n[:, 10:13]
+    assert np.abs(d1).max() > 0                      # bias present
+    b_first = dyn._dist_bias.copy()
+    for _ in range(10):                              # within the 36-step block: bias unchanged
+        o_d = dyn.step(o_d, a)
+    np.testing.assert_allclose(dyn._dist_bias, b_first, atol=0)
+    for _ in range(40):                              # crosses the block boundary: resampled
+        o_d = dyn.step(o_d, a)
+    assert not np.allclose(dyn._dist_bias, b_first)
