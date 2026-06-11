@@ -1,4 +1,13 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-10 night)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-11 ~23:00)
+
+## ★ NEXT = REFLY `ft_dr_field_v6c_best` (retrain + gate DONE), then chase the right-turn-drift gap
+**06-10/11 night (DR-FIELD-RT-01):** ★ steps (a)+(b)+(c-gate) done on a fresh pod (RTX 4090 `wn7uesgmk2xjyt`, vol `ygkhfer0p5`, now STOPPED — `~/bin/runpodctl` works, ssh config updated by migration #5).
+1. **Retrain DONE:** `ft_dr_field_v6c_best.zip` (Mac `sysid/` + pod) — DAgger 6.0/6, 16/16. Run 1's r6 COLLAPSED to 0/6 and the old code saved it → **best-by-eval now saved every DAgger round** (`19e68e4`); collapse was stochastic (clean rerun), recurs ⇒ suspect extreme DR draw poisoning the relabel round.
+2. **Offline gate** (`closed_loop_policy.py`, new `--model` flag; perturbed plants = `/tmp/vq_dr_*.json` from the DR rounds): nominal 5/6, left 6/6, dr1/dr3 5/6, dr5drift 6/6 — but **drift (--lag 0.085 --lat 0.019) on RIGHT turns 0–1/6 vs LEFT 5–6/6 (both retrain variants!)**. Lag-in-training (`ft_dr_field_lag_v6c_best`) did NOT fix it. Chirality-under-lag: plant A,B sym, wv2 sym ⇒ suspect deploy-chain adapter sign × lag interaction, or the genuinely harder branch. n=1 per cell — sweep more before believing details.
+3. **Predecessor `ft_hr_dr_v6c` = 0–1/6 on the wv2 plant** (its 6/6 was old-plant). Always state the gate plant.
+4. **REFLY blocked:** laptop VQ sim down (no :14550). Start sim → `vq_deploy4.py --policy ft_dr_field_v6c_best.zip --no-viz` (policy needs scp to laptop), dashboard rule applies, kill stray MAVLink parents first.
+
+# (prior 2026-06-10 night content below)
 
 ## ⚠ NEW (06-10 evening, READ if touching controllers or vision): COMMAND-side frame + visual pipeline
 The fly_gate3 campaign (~35 flights) mapped COMMAND-side frame distortions the canonical doc doesn't cover (live `desired_attitude` = level only at spawn yaw; world-y mirror; inverted yaw sign — possibly a LEFT-HANDED reconstructed frame; chirality probes specified, NOT run). Camera-only gate flying: gate-1 pass 9/10 (aperture aiming), full chain to GATE-2 LOCK; stopped before the crossing. Verdict: stateless visual servoing is the dead end — gates go via world-model/policy path. **Read: vault `AI-GP Visual Gate Pipeline & Command-Frame Findings (2026-06-10).md`** + canonical doc's new COMMAND-side section. Artifacts: laptop `fly_gate3.py`, `vel_probe2.py` (commit `cd3f161`).
