@@ -39,13 +39,15 @@ def argf(flag, d): return float(sys.argv[sys.argv.index(flag) + 1]) if flag in s
 MISSION = int(argf("--mission", 1))
 VMAX = argf("--v", 2.2); LEG = argf("--leg", 12.0); TURN = argf("--turn", 0.25)
 NWP = int(argf("--nwp", 5)); DURATION = argf("--dur", 120.0)
-WP_R = 1.5; WP_TIMEOUT = 30.0
+AMAX = argf("--amax", 0.6)   # fwd accel cap: 0.6 -> terminal ~3 m/s vs live drag; raise to go faster
+DZ = argf("--dz", 0.0)       # alternate wp z by +-DZ (vertical-channel stress)
+WP_R = argf("--wpr", 1.5); WP_TIMEOUT = 30.0
 KP_ATT = np.array([0.7, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3; KD_ATT = 0.3
 KD_AL = 1.2; KD_LAT = 1.4; VLAT_MAX = 1.5
 KP_Z = 1.8; KD_Z = 3.0
 YAWRATE_MAX = 0.35
 WMAX = 4.0; LOOP_DT = 0.004
-TILTMAX = np.tan(np.radians(15)) * 9.81; ABORT_TILT = 60.0
+TILTMAX = np.tan(np.radians(argf("--tilt", 15.0))) * 9.81; ABORT_TILT = 60.0
 IDLE = mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
 
 r = json.load(open("sysid/sim_response.json"))
@@ -109,7 +111,8 @@ def main():
             hd += TURN
             d = np.cos(hd) * cam_live + np.sin(hd) * lat_course   # heading measured from the spawn camera axis
             p = p + d * LEG
-            wps.append(np.array([p[0], p[1], spawn[2] - 1.5]))
+            zoff = DZ * (1.0 if i % 2 == 0 else -1.0)
+            wps.append(np.array([p[0], p[1], spawn[2] - 1.5 - zoff]))
     wps = np.array(wps)
     print(f"mission {MISSION}: {NWP} wps, leg {LEG}, turn {TURN if MISSION == 2 else 0}, vmax {VMAX}", flush=True)
     print(f"true-frame ctl: s_cam={s_cam:+.0f} yaw0_true_cam={np.degrees(yaw0_t):+.0f}", flush=True)
@@ -163,7 +166,7 @@ def main():
 
             # forward: bidirectional at low speed (run 1: overshot wp became unreachable)
             v_al_sp = float(np.clip(0.7 * e_al, -0.8, VMAX))
-            a_al = float(np.clip(KD_AL * (v_al_sp - v_al_w), -1.0, 0.0 if takeoff else 0.6))
+            a_al = float(np.clip(KD_AL * (v_al_sp - v_al_w), -1.0, 0.0 if takeoff else AMAX))
 
             # lateral: PUSH-SIGN PROBE then world-velocity loop. t in [2.5, 4.0): command a
             # fixed lateral push, watch the achieved world lateral velocity, lock the sign.
@@ -176,7 +179,7 @@ def main():
                     s_lat = 1.0 if (v_lat_w - probe_v0) > 0 else -1.0
                     print(f"s_lat locked: {s_lat:+.0f} (dv_lat {v_lat_w - probe_v0:+.2f})", flush=True)
             else:
-                a_lat = float(np.clip(KD_LAT * (v_lat_sp - v_lat_w), -2.0, 2.0)) * (s_lat if s_lat else 1.0)
+                a_lat = float(np.clip(KD_LAT * (v_lat_sp - v_lat_w), -TILTMAX, TILTMAX)) * (s_lat if s_lat else 1.0)
 
             # mission 2: once s_lat is locked, the live-world <-> push-frame map M2 is fully
             # determined (rotation if s_lat=+1, reflection if -1) -- columns from the spawn facts.
@@ -192,9 +195,9 @@ def main():
                 nv = float(np.linalg.norm(v_w_sp))
                 if nv > VMAX:
                     v_w_sp *= VMAX / nv
-                a_w = np.clip(KD_AL * (v_w_sp - vel_w), -2.0, 2.0)
-                a_al = float(np.clip(a_w @ fwd_live, -1.0, 0.6))
-                a_lat = float(np.clip(a_w @ lat_live, -2.0, 2.0))
+                a_w = np.clip(KD_AL * (v_w_sp - vel_w), -TILTMAX, TILTMAX)
+                a_al = float(np.clip(a_w @ fwd_live, -0.5 * TILTMAX, AMAX))
+                a_lat = float(np.clip(a_w @ lat_live, -TILTMAX, TILTMAX))
                 beta = float(np.arctan2(float(err @ (np.array([-fwd_live[1], fwd_live[0]]))),
                                         float(err @ fwd_live)))
                 if abs(wrap(yaw_ref - yaw_cur)) < 0.12 and dist > WP_R:
