@@ -1,6 +1,12 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-11 ~23:00)
 
-## ★ NEXT = the snap gap is NOT the disturbance field — replay the runaway, fit braking/high-v, rethink
+## ★ NEXT = fix the ENVELOPE EDGES: quadratic drag (high-v) + live thrust floor, refit, retrain
+**06-10 ~23:25 (REPLAY-01): the replay discriminator ANSWERED — `scripts/sysid/replay_cmds.py` (new, Mac): under the SAME recorded commands the matched plant reaches 92.7 m/s where live caps at 36.1** (runaway run `230939`; tracks to ~25 then diverges). And at sustained thr=0 (braking run `231029`) live holds |v|≈5 while the plant free-falls to 43 — **thrust floor missing too.** Both ends of the envelope lie; the policy's learned brake/speed authority is fiction outside |v|≈10–15 → that's the DEPLOY-03 tumble mechanism candidate, ahead of any wv story. Next agent:
+1. **Wire quadratic drag into `vq_matched`** (REFIT-02 form, c=0.057 was low-v only) + refit drag over the FULL v range — run `230939` is the high-v data (replay copies of all 4 runs: Mac `/tmp/vq_replay/*.npz`, originals laptop `vq_data/20260610T2308*-2310*`).
+2. **Measure the live thrust floor** (min-collective behavior at thr→0): mine the braking runs or fly dedicated low-thr drop tests.
+3. Retrain (`--dr`), re-gate (`closed_loop_policy.py`), refly. Laptop flight env: `C:\Users\alexj\miniconda3\envs\aigp\python.exe` (base python lacks pymavlink); worktree `algo_src\.claude\worktrees\aigp-client`.
+
+## (answered 06-10 ~23:25, see above) the snap gap is NOT the disturbance field — replay the runaway, fit braking/high-v, rethink
 **06-10 ~23:10 (DEPLOY-03):** refly DONE, 0/6 ×4. CONTROL run (predecessor `ft_hr_dr_v6c`, same session) = 0/6 t7.5 with the textbook braking β-snap at 5.1 m from gate 1 ⇒ sim unchanged, wall unchanged, **disturbance-field DR REFUTED as the missing ingredient** (offline 5–6/6 on wv2 plant, live 0/6). New: (1) left-course run = **throttle runaway v→35.6 m/s** (high-v sysID gold, run `20260610T230939`); (2) both policies live at the action clip edge (raw |u0|→1.7). Next agent, in order:
 1. **Replay run 230939's recorded cmds through `vq_matched`** — does sim v reach 35? If NOT → thrust/drag model wrong at high |u|/high v (simpler than any wv story) → refit there first.
 2. Fit the braking transient + clip-saturation regime on the 4 new recordings (`vq_data/20260610T2308*-2310*`).
