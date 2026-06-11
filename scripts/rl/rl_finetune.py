@@ -195,6 +195,8 @@ def main():
             return l.item()
         l = bc(X, Y, BC_EPOCHS); pk = eval_gates(model)
         print(f"  BC: mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
+        best_dag = pk.mean()   # a late DAgger round can collapse (dr_field r6: 6.0 -> 0.0); keep best-by-eval
+        if best_dag > 0: model.save(f"ft_{TAG}_best")
         def dr_model_path(rd):
             # domain randomization: perturbed plant per DAgger round (policy must not exploit
             # the nominal model's precision -- DEPLOY-01 transfer gap)
@@ -233,10 +235,13 @@ def main():
             X = np.concatenate([X, np.concatenate(Xn)]); Y = np.concatenate([Y, np.concatenate(Yn)])
             l = bc(X, Y, BC_EPOCHS); pk = eval_gates(model)
             print(f"  DAgger r{rd}: D={len(X)} mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
+            if pk.mean() > best_dag:
+                best_dag = pk.mean(); model.save(f"ft_{TAG}_best")
+                print(f"  DAgger r{rd}: new best {best_dag:.2f} -> ft_{TAG}_best.zip", flush=True)
         VDES = vdes_run   # PPO + eval at the target speed
 
     class GateEval(BaseCallback):
-        def __init__(s, every): super().__init__(); s.every = every; s.last = 0; s.best = -1.0
+        def __init__(s, every): super().__init__(); s.every = every; s.last = 0; s.best = best_dag if WARM else -1.0
         def _on_step(s):
             if s.num_timesteps - s.last >= s.every:
                 s.last = s.num_timesteps; pk = eval_gates(model)
