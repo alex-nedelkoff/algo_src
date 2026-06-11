@@ -46,7 +46,8 @@ GATE_AP = 1.5
 CX = 320.0; FX = 320.0; FY = 320.0; CY = 180.0
 EST_MIN = 6; EST_KEEP = 14; RATIO_MIN = 5
 ARC_A = 1.0; ARC_BASE = 2.5
-ANCHOR_RING = 110.0                      # come in until ring >= this, then anchor on the median
+ANCHOR_RING = 180.0                      # come in until ring >= this, then anchor on the median
+                                         # (110 anchored 1.3 m off; close samples gave 0.1 m)
 WP_R = 1.2; WP_TIMEOUT = 30.0
 KP_ATT = np.array([0.7, 1.6, 1.0]); KP_YAW = 3.0; KD_YAW = 0.3; KD_ATT = 0.3
 KD_AL = 1.2; KD_LAT = 1.4
@@ -236,6 +237,7 @@ def main():
     u_track = None; sz_mark = 0.0; last_det_t = t0; last_ex_sign = 1.0
     yaw_base = yaw0_t; scan_sd = 1.0
     arc_t0 = None; arc_dir = 1.0
+    main._vis = {}; main._vfixed = {}
     # phase: A = vision anchor, B = course
     phase = "A"; anchor = None; wps = None; wp_r = None; wp_center = None
     wi = 0; wp_t0 = t0; crossings = 0
@@ -260,7 +262,7 @@ def main():
 
             # ---------- detection (phase A only) ----------
             det = None; hole_wh = None; ray_t = None; Z_now = None
-            if phase == "A" and not takeoff:
+            if not takeoff:
                 fr, _ = s.get_frame(); bgr = fr[0] if fr else None
                 if u_track is not None and (now - last_det_t) > 2.5:
                     u_track = None
@@ -294,6 +296,35 @@ def main():
                         Z_now = FX * GATE_AP / ap_px
                         if Z_now < 40.0 and det.w_px < 260.0:
                             est.add(pos, ray_t, Z_now)
+                # phase-B per-gate vision refinement: translation-only anchoring leaves a
+                # chart-rotation error that GROWS with distance (crossing offsets 1.15->1.35
+                # over gates 0-2; gate 3 at 88 m = frame strike x4). The track shape is the
+                # prior; live vision measurements correct each gate as it comes into view.
+                if (phase == "B" and det is not None and ray_t is not None and Z_now is not None
+                        and est.H is not None and 60.0 <= det.w_px <= 260.0):
+                    # ring>=60 only: at ring 25 (~30 m) +-1 px of aperture quantization = +-1.7 m
+                    # of range error -- a long-range VIS-FIX moved gate 1 by 3 m and made the
+                    # crossing WORSE; <=12 m the same pixel is <=0.3 m
+                    g_t = wi // 2
+                    if g_t < ng:
+                        p_v = est.point(pos, ray_t, Z_now)
+                        buf = main._vis.setdefault(g_t, [])
+                        buf.append(p_v)
+                        spread = float(np.std(np.array(buf), 0).sum()) if len(buf) >= 5 else 9.9
+                        if len(buf) >= 5 and spread < 1.2:
+                            off = (np.median(np.array(buf), 0) + np.array([0.0, 0.0, ZBIAS])
+                                   - main._course_pts[g_t])   # same banner z-correction as the anchor
+                            n_off = float(np.linalg.norm(off))
+                            if n_off < 3.0:                   # larger = probably the wrong object
+                                if n_off > 2.0:
+                                    off *= 2.0 / n_off        # rate-limit a single fix
+                                main._course_pts[g_t] = main._course_pts[g_t] + off
+                                wps[2 * g_t] = wps[2 * g_t] + off
+                                wps[2 * g_t + 1] = wps[2 * g_t + 1] + off
+                                if np.linalg.norm(off) > 0.3:
+                                    print(f"VIS-FIX gate {g_t} t={t:.1f} off=[{off[0]:+.1f},{off[1]:+.1f},{off[2]:+.1f}]",
+                                          flush=True)
+                            main._vis[g_t] = []               # fresh window for the next (closer) fix
                 # arc calib
                 calibrating = est.H is None and s_yawu != 0.0
                 if calibrating and det is not None:
@@ -303,22 +334,31 @@ def main():
                         arc_t0 = now; arc_dir = -arc_dir
                     est.calibrate()
                 # ANCHOR: calibrated + close enough (ring big) -> lock the course
-                if (est.H is not None and det is not None and det.w_px >= ANCHOR_RING):
+                if (phase == "A" and est.H is not None and det is not None
+                        and det.w_px >= ANCHOR_RING):
                     g0 = est.wp(last=10)
                     if g0 is not None:
                         anchor = g0.copy(); anchor[2] += ZBIAS
                         rel = track - track[0]
                         pts = anchor[None, :] + rel
-                        wps = []; wp_r = []; wp_center = []
-                        prev_pt = pos.copy()
-                        for gp in pts:
-                            d = gp[:2] - prev_pt[:2]; d /= max(np.linalg.norm(d), 0.1)
+                        # pre/post only -- the center wp caused a ~1 m limit-cycle dwell + 30 s
+                        # timeouts; the plane-cross detector judges the pass, not wp arrival
+                        wps = []; wp_r = []
+                        # pre/post along the CENTRAL-DIFFERENCE course tangent (the racing-line
+                        # direction through the aperture) -- the straight chord from the previous
+                        # gate clipped structure ~6 m short of gate 3 on runs 2-4
+                        for i, gp in enumerate(pts):
+                            a_ = pts[max(i - 1, 0)] if i > 0 else np.append(pos[:2], gp[2])
+                            b_ = pts[min(i + 1, len(pts) - 1)]
+                            d = b_[:2] - a_[:2]
+                            n = np.linalg.norm(d)
+                            if n < 0.1:
+                                d = gp[:2] - pos[:2]; n = max(np.linalg.norm(d), 0.1)
+                            d = d / n
                             wps.append(np.array([gp[0] - THRU * d[0], gp[1] - THRU * d[1], gp[2]]))
-                            wp_r.append(WP_R); wp_center.append(False)
-                            wps.append(gp.copy()); wp_r.append(0.8); wp_center.append(True)
+                            wp_r.append(1.0)
                             wps.append(np.array([gp[0] + THRU * d[0], gp[1] + THRU * d[1], gp[2]]))
-                            wp_r.append(WP_R); wp_center.append(False)
-                            prev_pt = gp
+                            wp_r.append(WP_R)
                         wps = np.array(wps)
                         main._course_pts = pts
                         phase = "B"; wi = 0; wp_t0 = now
@@ -332,7 +372,15 @@ def main():
                 wp = wps[wi]
                 err = wp[:2] - pos[:2]
                 dist = float(np.linalg.norm(err))
-                z_ref = float(wp[2])
+                # transit altitude: hold the HIGHER of (leg-start, target) until 15 m out, then
+                # blend down, settled 4 m before the wp. Run 1: step-descend 25 m out = terrain;
+                # run 3: linear blend along the leg = structure below the high line, also terrain;
+                # run 2: hold-then-drop-in-8-m cleared the transit but hit the gate frame sinking.
+                leg_z = getattr(main, "_leg_z", wp[2])
+                z_hold = min(leg_z, wp[2])               # NED: min = higher altitude
+                frac = np.clip((dist - 4.0) / 11.0, 0.0, 1.0)
+                z_ref = float(wp[2] + (z_hold - wp[2]) * frac)
+                z_err = abs(pos[2] - wp[2])
             elif est.wp() is not None and not takeoff:
                 gw = est.wp()
                 wp = gw
@@ -363,6 +411,10 @@ def main():
                 elif wp is not None:
                     stop_short = phase == "A" and det is not None and det.w_px >= 200.0
                     vcap = VMAX if phase == "B" else (0.0 if stop_short else 0.8 * VMAX)
+                    if phase == "B" and dist < 15.0:
+                        ze = abs(pos[2] - wp[2])
+                        if ze > 1.5:
+                            vcap = max(1.0, vcap * 1.5 / ze)   # let altitude converge first
                     v_w_sp = 0.7 * err
                     nv = float(np.linalg.norm(v_w_sp))
                     if nv > max(vcap, 0.01):
@@ -422,10 +474,10 @@ def main():
             # ---------- phase B bookkeeping ----------
             gi = s.get_gate_idx()
             if phase == "B":
-                g_i = wi // 3
+                g_i = wi // 2
                 if g_i < ng:
                     gp = main._course_pts[g_i]
-                    dh = wps[3 * g_i + 2][:2] - wps[3 * g_i][:2]; dh /= max(np.linalg.norm(dh), 1e-6)
+                    dh = wps[2 * g_i + 1][:2] - wps[2 * g_i][:2]; dh /= max(np.linalg.norm(dh), 1e-6)
                     s_now = float(np.sign((pos[:2] - gp[:2]) @ dh)) or 1.0
                     key = f"_s{g_i}"
                     s_old = getattr(main, key, None)
@@ -435,20 +487,37 @@ def main():
                         inside = perp < half_ap
                         crossings += int(inside)
                         print(f"PLANE-CROSS gate {g_i} t={t:.1f} offset={perp:.2f} "
-                              f"({'INSIDE' if inside else 'OUTSIDE'} half={half_ap:.2f}) gi={gi} "
-                              f"race={s.get_race()}", flush=True)
+                              f"({'INSIDE' if inside else 'OUTSIDE'} half={half_ap:.2f}) gi={gi}",
+                              flush=True)
                     setattr(main, key, s_now)
-                zr = 0.8 if wp_center[wi] else 1.5
-                if dist < wp_r[wi] and abs(pos[2] - wp[2]) < zr:
+                ztol = 0.6 if wi % 2 == 0 else 1.5         # PRE point: SETTLE at gate altitude
+                                                            # (run 4 crossed 1.1 m high + sinking
+                                                            # under the loose tol -> frame strike)
+                if dist < wp_r[wi] and abs(pos[2] - wp[2]) < ztol:
                     wi += 1; wp_t0 = now
+                    main._leg_z = float(pos[2])
+                    if wi < len(wps):
+                        main._leg_d = float(np.linalg.norm(wps[wi][:2] - pos[:2]))
+                    if wi % 2 == 0:
+                        u_track = None; sz_mark = 0.0      # fresh acquisition for the next gate
                     print(f"wp {wi}/{len(wps)} t={t:.1f}", flush=True)
                     if wi >= len(wps):
                         break
                 elif now - wp_t0 > WP_TIMEOUT + dist / 1.0:
                     print(f"WP {wi + 1} TIMEOUT t={t:.1f} dist={dist:.1f} -> skip", flush=True)
                     wi += 1; wp_t0 = now
+                    main._leg_z = float(pos[2])
+                    if wi < len(wps):
+                        main._leg_d = float(np.linalg.norm(wps[wi][:2] - pos[:2]))
                     if wi >= len(wps):
                         break
+            # RACE-FIELD WATCHER: print the moment ANY scoring field moves
+            rc = s.get_race()
+            if rc:
+                sig = (rc["active_gate_index"], rc["last_gate_time"], rc["race_finish_ns"])
+                if getattr(main, "_rsig", None) is not None and sig != main._rsig:
+                    print(f"*** RACE-FIELD CHANGE t={t:.1f}: {main._rsig} -> {sig} ***", flush=True)
+                main._rsig = sig
             if gi > prev_gi:
                 print(f"*** GATE_IDX TICK t={t:.1f} ({prev_gi}->{gi}) ***", flush=True)
                 prev_gi = gi
@@ -462,7 +531,7 @@ def main():
                     print(f"COLLISION t={t:.1f} gi={gi} wp={wi} -> stop", flush=True); break
             if tilt_true > ABORT_TILT:
                 print(f"TUMBLE tilt={tilt_true:.0f} t={t:.1f} -> stop", flush=True); break
-            if DUMP and phase == "A":
+            if DUMP:
                 fr2, _ = s.get_frame()
                 if fr2 and now - getattr(main, "_dump_t", 0) > 0.4:
                     main._dump_t = now
@@ -480,6 +549,8 @@ def main():
         idle(); rec.close()
         if flog is not None:
             flog.close()
+    time.sleep(3.0)                        # let any post-course scoring fields land
+    print(f"final race: {s.get_race()}", flush=True)
     print(f"\nRESULT: {crossings}/{ng} apertures crossed (self-judged), gate_idx delta "
           f"{s.get_gate_idx() - gi0}, in {time.time() - t0:.0f}s, max_tilt={max_tilt:.0f} "
           f"(run {rec.run_id})", flush=True)
