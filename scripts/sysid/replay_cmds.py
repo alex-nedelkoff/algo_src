@@ -42,6 +42,15 @@ def main():
     om_live = d["omega"]
 
     model = json.load(open(ROOT / "sysid" / "vq_model.json"))
+    q = argf("--q", -1.0)        # quadratic-drag sweep override
+    if q >= 0:
+        model["drag_quadratic_body"] = {"qx": q, "qy": q, "qz": q, "Dz": 0.0}
+    fl = argf("--floor", -1.0)   # thrust-floor sweep override
+    if fl >= 0:
+        model["thrust"]["thr_floor"] = fl
+    dl = argf("--dlin", -1.0)    # linear-drag sweep override (joint with --q)
+    if dl >= 0:
+        model["drag_linear_body"]["Dx"] = model["drag_linear_body"]["Dy"] = dl
     dyn = VQMatchedDynamics(model, dt=DT, frame="NED", latency_s=lat, thrust_lag_s=lag)
     s = dyn.reset(1)
     if lag > 0:

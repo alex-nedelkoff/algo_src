@@ -311,3 +311,47 @@ def test_disturbance_injects_correlated_bias():
     for _ in range(40):                              # crosses the block boundary: resampled
         o_d = dyn.step(o_d, a)
     assert not np.allclose(dyn._dist_bias, b_first)
+
+
+def test_quad_drag_off_by_default():
+    """No 'drag_quadratic_body' key -> exact old translational behavior."""
+    dyn = VQMatchedDynamics(MODEL, roll_wv=False)
+    s = dyn.reset(2)
+    s[:, 3] = 10.0   # fast forward flight
+    a = np.tile([THR_HOVER, 0.0, 0.0, 0.0], (2, 1))
+    o = dyn.step(s, a)
+    m2 = {**MODEL, "drag_quadratic_body": {"qx": 0.0, "qy": 0.0, "qz": 0.0, "Dz": 0.0}}
+    dyn2 = VQMatchedDynamics(m2, roll_wv=False)
+    dyn2.reset(2)
+    np.testing.assert_allclose(o, dyn2.step(s, a), atol=0)
+
+
+def test_quad_drag_caps_terminal_speed():
+    """REPLAY-01: with q>0 sustained-thrust speed must saturate near sqrt-law, far below the
+    linear plant (which reached 92.7 m/s on the runaway replay)."""
+    m = {**MODEL, "drag_quadratic_body": {"qx": 0.032, "qy": 0.032, "qz": 0.032, "Dz": 0.0},
+         "drag_linear_body": {"Dx": 0.10, "Dy": 0.10, "Dz": 0.0},
+         "thrust": {**MODEL["thrust"], "thr_floor": 0.0924}}
+    dyn_q = VQMatchedDynamics(m, dt=1 / 72.0, roll_wv=False)
+    dyn_l = VQMatchedDynamics(MODEL, dt=1 / 72.0, roll_wv=False)
+    a = np.tile([0.9, 0.0, 0.0, 0.0], (1, 1))
+    sq = dyn_q.reset(1); sl = dyn_l.reset(1)
+    sq[0, 6:10] = sl[0, 6:10] = [np.cos(np.pi / 4), 0.0, np.sin(np.pi / 4), 0.0]  # pitched 90deg: thrust horizontal
+    for _ in range(72 * 6):
+        sq = dyn_q.step(sq, a); sl = dyn_l.step(sl, a)
+    vq = np.linalg.norm(sq[0, 3:6]); vl = np.linalg.norm(sl[0, 3:6])
+    assert vq < 45.0 < vl
+
+
+def test_thrust_floor_clamps_negative_collective():
+    """thr below -f0/df extrapolates to props pushing DOWN on the linear map; the floor stops it."""
+    m = {**MODEL, "thrust": {**MODEL["thrust"], "thr_floor": 0.0924}}
+    dyn_f = VQMatchedDynamics(m, roll_wv=False)
+    dyn_0 = VQMatchedDynamics(MODEL, roll_wv=False)
+    a = np.tile([0.0, 0.0, 0.0, 0.0], (1, 1))    # zero throttle
+    sf = dyn_f.reset(1); s0 = dyn_0.reset(1)
+    of = dyn_f.step(sf, a); o0 = dyn_0.step(s0, a)
+    # NED: +z down. Floored plant falls at ~g (floor 0.0924 vs exact -f0/df leaves ~1e-3 m/s^2);
+    # unfloored falls faster (negative thrust).
+    assert np.isclose(of[0, 5], GRAVITY * dyn_f.dt, atol=1e-4)
+    assert o0[0, 5] > of[0, 5]

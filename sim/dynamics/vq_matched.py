@@ -104,8 +104,22 @@ class VQMatchedDynamics:
                 "Run the env at dt=1/72 (or refit A,B for this dt).")
         d = model["drag_linear_body"]
         self.Dx, self.Dy = d["Dx"], d["Dy"]
+        # quadratic body drag (COR-127 REPLAY-01): the linear fit has no authority at high v —
+        # under DEPLOY-03's recorded commands the live VQ caps at |v|=36 m/s where this plant
+        # reached 92.7. f_ax += -q_ax*|v|*vb_ax (+ optional linear Dz; the linear fit had NO
+        # z-drag at all). Opt-in via model["drag_quadratic_body"]; absent -> exact old behavior.
+        _dq = model.get("drag_quadratic_body") or {}
+        self.qx = float(_dq.get("qx", 0.0))
+        self.qy = float(_dq.get("qy", 0.0))
+        self.qz = float(_dq.get("qz", 0.0))
+        self.Dz = float(_dq.get("Dz", 0.0))
         t = model["thrust"]
         self.f0, self.df = t["f0"], t["df_dthr"]
+        # thrust floor (COR-127 REPLAY-01): the linear map extrapolates to NEGATIVE collective
+        # below thr=-f0/df (props pushing down — nonphysical); live braking runs hold |v|~5 at
+        # thr_cmd=0 where this plant free-falls. thr_eff = max(thr, thr_floor). Opt-in via
+        # model["thrust"]["thr_floor"]; absent -> exact old behavior.
+        self.thr_floor = float(t.get("thr_floor", -1.0))
         self.yaw_wv = model["weathervane"]["wv_coeff"]
         # directional roll weathervane (COR-127): roll_wv(vx) = c0 + c1*v_body_x
         self.roll_wv0, self.roll_wv1 = (-0.105, -0.019) if roll_wv else (0.0, 0.0)
@@ -247,8 +261,11 @@ class VQMatchedDynamics:
 
         # --- translational: thrust + body drag + gravity (frame-aware signs) ---
         # c = -(f0+df*thr) > 0 at hover. Thrust along body-up: f_body_z = -c (NED/FRD) or +c (ENU/FLU).
-        c = -(self.f0 + self.df * thr)
-        f_body = np.stack([-self.Dx * vb[:, 0], -self.Dy * vb[:, 1], self._thrust_z_sign * c], axis=1)
+        c = -(self.f0 + self.df * np.maximum(thr, self.thr_floor))
+        vmag = np.linalg.norm(vb, axis=1)
+        f_body = np.stack([-(self.Dx + self.qx * vmag) * vb[:, 0],
+                           -(self.Dy + self.qy * vmag) * vb[:, 1],
+                           -(self.Dz + self.qz * vmag) * vb[:, 2] + self._thrust_z_sign * c], axis=1)
         a_world = np.einsum("nij,nj->ni", R, f_body) + self._g_vec
 
         new = states.copy()  # preserves any trailing slots (17-state motor slice)
