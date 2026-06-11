@@ -1,6 +1,10 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-11 night)
 
-## 🎯 OPEN CALIBRATION HYPOTHESIS (06-11 night, Alex's catch): the 20° camera pitch was NEVER PROBED
+## 🎯 MEASURED (VQ-COURSE-08, ~19:30): camera elevation-chain error = −32.3° (effective pitch ≈ −12°, NOT spec's +20 up!); azimuth +5.0°
+2-range probe (`vq_course.py --pitchprobe`, est-z vs Z regression over Z 3.8–13, 120 samples): slope −0.534/m. Range-proportional ⇒ retro-explains the zbias saga + per-gate scoring variance + lateral offsets. `--campitch` flag added; **verification at −12.3 incomplete because corrected rays shift the whole anchored course (~2 m at anchor range) — ALL z constants (ZBIAS, scoring brackets, anchor ring thresholds) were fitted under the wrong pitch.**
+**NEXT SESSION (coherent re-derivation, in order): (1) converge campitch via repeated probe (expect ~−12±3), fold azimuth +5° into the chain, (2) re-fit ZBIAS (should shrink to the true banner constant), (3) re-bracket the scoring volume, (4) scored 6/6 — per-gate offsets should collapse.** This supersedes the dz −0.3 shortcut and the per-gate mapping plan below.
+
+## (superseded by the measurement above) CALIBRATION HYPOTHESIS (06-11 night, Alex's catch): the 20° camera pitch was NEVER PROBED
 All vision rays assume the spec's 20° up-tilt (R_OPT). A Δpitch error ⇒ vertical estimate error = Z·tan(Δ) — RANGE-PROPORTIONAL, which a constant ZBIAS can never fit. This elegantly explains: the zbias saga (no constant worked everywhere), AND the per-gate scoring-volume variance (each gate's VIS-FIX samples a different range mix ⇒ different bias). Principal-point CY error has the same signature; both fold into one elevation-offset calibration. **NEXT SESSION OPENER (before the dz −0.3 shortcut): 2-range pitch probe — track gate 0 at ~12 m and ~4 m, slope of est-z vs Z = tan(elevation error); bake into R_OPT; per-gate offsets should collapse.** Does NOT explain the control z-hang (direct measurement) or lateral wander (yaw chase).
 
 ## ⚖ STRATEGY (06-11 night, RL-vs-analytic, with Alex): RL only for racing speed, only after capped-authority proves transfer
