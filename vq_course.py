@@ -222,11 +222,29 @@ class GateEstimator:
 
 
 def main():
-    assert fresh_start(), "not live"
+    if "--noreset" in sys.argv:
+        # fly the CURRENT live session (reset command ignored when the per-entry reset budget
+        # is spent -- race stays live, sim_reset does nothing, fresh_start times out)
+        t_w = time.time()
+        while time.time() - t_w < 10 and not s.get_race_live():
+            idle(); time.sleep(0.05)
+        assert s.get_race_live(), "not live (noreset)"
+    else:
+        assert fresh_start(), "not live"
     gates = None
     t_g = time.time()
     while time.time() - t_g < 10 and gates is None:
         gates = s.get_gates(); time.sleep(0.1)
+    if gates is None and "--noreset" in sys.argv:
+        # TRACK_INFO only broadcasts after a reset; the VQ-01 layout is constant -- use the
+        # cached absolute coords (aligned-session read, 06-11). Only RELATIVE vectors are used
+        # (vision-anchored), so chart misalignment is irrelevant.
+        from types import SimpleNamespace
+        _G = [(-23.298, -0.400, -0.032), (-46.894, -2.500, 5.068), (-74.594, 1.200, 13.668),
+              (-111.494, -5.100, 24.568), (-135.494, -0.800, 25.356), (-159.194, -4.400, 25.968)]
+        gates = [SimpleNamespace(id=i, pos_ned=np.array(g), width=2.72, height=2.72)
+                 for i, g in enumerate(_G)]
+        print("TRACK_INFO unavailable (noreset) -- using cached VQ-01 layout", flush=True)
     assert gates is not None, "no TRACK_INFO after reset"
     ng = min(N_GATES, len(gates))
     track = np.array([np.asarray(g.pos_ned, float) for g in gates[:ng]])
