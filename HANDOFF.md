@@ -1,4 +1,7 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-10 ~late morning)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-10 night)
+
+## ⚠ NEW (06-10 evening, READ if touching controllers or vision): COMMAND-side frame + visual pipeline
+The fly_gate3 campaign (~35 flights) mapped COMMAND-side frame distortions the canonical doc doesn't cover (live `desired_attitude` = level only at spawn yaw; world-y mirror; inverted yaw sign — possibly a LEFT-HANDED reconstructed frame; chirality probes specified, NOT run). Camera-only gate flying: gate-1 pass 9/10 (aperture aiming), full chain to GATE-2 LOCK; stopped before the crossing. Verdict: stateless visual servoing is the dead end — gates go via world-model/policy path. **Read: vault `AI-GP Visual Gate Pipeline & Command-Frame Findings (2026-06-10).md`** + canonical doc's new COMMAND-side section. Artifacts: laptop `fly_gate3.py`, `vel_probe2.py` (commit `cd3f161`).
 
 > **#1 lesson (still true):** frames/conventions + sysID are SOLVED. Do NOT re-derive. Read the sources of truth below FIRST.
 
