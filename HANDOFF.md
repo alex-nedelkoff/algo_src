@@ -1,6 +1,12 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-11 ~23:00)
 
-## ★ NEXT = fix the ENVELOPE EDGES: quadratic drag (high-v) + live thrust floor, refit, retrain
+## ★ NEXT = RETRAIN on the fixed envelope (--dr), re-gate, refly
+**06-11 ~00:00 (ENVELOPE-01): envelope FIXED + calibrated (`7c7bcd4`, tests 20/20).** `vq_matched` now has opt-in `drag_quadratic_body` (D_eff(v)=D+q·|v|) + `thrust.thr_floor`. Canonical (BOTH machines, backups `vq_model_pre_envelope.json`): **Dx=Dy=0.10, q=0.032, floor=0.0924**. Replay acceptance: sim vmax 35.7/24.2/12.8/9.5 vs live 36.1/23.8/13.0/11.4 (was 92.7/43/17/12.5). Steps:
+1. Retrain `rl_finetune --vdes 6 --vdes_warm 4 --curve --steps 0 --dr --dagger 6` on the new plant (pod stopped — recreate on vol `ygkhfer0p5` via `~/bin/runpodctl create pod ... --networkVolumeId`, scp the NEW vq_model.json — it must travel).
+2. Re-gate (`closed_loop_policy.py` battery incl. `--lag 0.085 --lat 0.019`, both turn signs), refly `vq_deploy4.py` (laptop aigp env).
+3. Known residual gap if braking still kills: live brakes HARDER than quad drag at high tilt (231029 t2: live 5.3 vs sim 13.7) — flat-plate/tilt-dependent drag term is the next candidate. Also thr_floor=zero-collective; live idle lift not yet measured.
+
+## (done 06-11 ~00:00, see above) fix the ENVELOPE EDGES: quadratic drag (high-v) + live thrust floor, refit, retrain
 **06-10 ~23:25 (REPLAY-01): the replay discriminator ANSWERED — `scripts/sysid/replay_cmds.py` (new, Mac): under the SAME recorded commands the matched plant reaches 92.7 m/s where live caps at 36.1** (runaway run `230939`; tracks to ~25 then diverges). And at sustained thr=0 (braking run `231029`) live holds |v|≈5 while the plant free-falls to 43 — **thrust floor missing too.** Both ends of the envelope lie; the policy's learned brake/speed authority is fiction outside |v|≈10–15 → that's the DEPLOY-03 tumble mechanism candidate, ahead of any wv story. Next agent:
 1. **Wire quadratic drag into `vq_matched`** (REFIT-02 form, c=0.057 was low-v only) + refit drag over the FULL v range — run `230939` is the high-v data (replay copies of all 4 runs: Mac `/tmp/vq_replay/*.npz`, originals laptop `vq_data/20260610T2308*-2310*`).
 2. **Measure the live thrust floor** (min-collective behavior at thr→0): mine the braking runs or fly dedicated low-thr drop tests.
