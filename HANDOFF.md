@@ -1,6 +1,14 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-12 evening)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-12 night)
 
-## ★ NEXT = TUMBLE-EXCITATION high-|ω| rate ID (MonoRace recipe), refit MIMO/saturation, capped retrain, grid gate, refly
+## ★ NEXT = OBS-DELAY + CMD-JITTER DR in training — the LAST untested live-only difference
+**TUMBLE-01 (06-12 night): the tumble-excitation ID ran — and REFUTED the high-|ω| refit. The plant model is now validated EVERYWHERE:**
+- `collect_vq_tumble.py` (committed): open-loop rate chirps amp 1.5–5 wire / 0.5–3 Hz from a 40–50 m playground, analytic recovery between events. 4 recordings (`20260612T1119*–1123*`, Mac `/tmp/vq_replay/*_tumble.npz`), 10,061 transitions, |ω| to 7+ on all axes incl. yaw-spin tumbles (post-yaw3 recovery failure at tilt 152 = the lethal regime, recorded).
+- **One-step RMSE/|W| 0.16–0.31 in every band; nonlinear residual terms (`fit_rate_nl.py`) capture 1–3% (white noise).** The deploy-recording "0.4 at |ω| 2–5" was command-dither timing artifact (same artifact class as LOWTHR-01's fake thrust residual — beware 1-step/block stats on dithering policy recordings, BOTH directions).
+- Refutation chain complete: envelope ✓ thrust ✓ low-thr ✓ lag ✓ rate@high-|ω| ✓. **The live 0/6 is NOT plant physics.**
+- What live has that sim training lacks: **obs staleness + jitter** (ODOMETRY 72 Hz, ~22 ms sensor delay, python loop wall-clock jitter) vs training's same-tick truth obs. High-gain policy + stale feedback = instability; low-gain analytic laws tolerate it. Supporting: chain WITH cmd-lag races 6/6 offline — cmd-side timing alone doesn't kill it; obs-side never modeled.
+- **Do next:** (a) add obs-delay to `GateRaceEnv` vq path (ring-buffer the obs source state 0–2 frames, randomized per episode — also jitter cmd latency per episode instead of fixed); (b) retrain `--maxw 6 --thrmax 0.6` + the new timing DR; (c) `grid_gate.sh` (champion bar: fin 10/18 lag-0 / 15/18 lag); (d) refly. If the obs-delay policy transfers, RL-for-speed is unblocked (see "Are we ready for RL" answer: scratch PPO + wide DR per MonoRace once transfer proven).
+
+## (closed 06-12 night — refit refuted, see TUMBLE-01 above) TUMBLE-EXCITATION high-|ω| rate ID
 **LOWTHR-01 + CAP-03 (06-12 evening) closed the model-fidelity question — every translational channel is now validated; the binding gap is the RATE-LOOP TRANSIENT.**
 1. **Low-thr refit DONE, big residual DEBUNKED**: dedicated open-loop thr-cut flight (`collect_vq_lowthr.py`, run `20260612T105637`) → steady low-thr z gap only ~2 m/s² (deploy-pool −11..−16 was a block-mean artifact: bang-bang thr dither × floor `max()` nonlinearity). z-drag baked: **Dz 0.0562, qz 0.0513** in vq_model.json (backup `vq_model_pre_lowthr.json`, both machines). Tilt/flat-plate x-drag REFUTED (controlled residual ≤0.9).
 2. **Lag-in-training REFUTED**: `ft_cap6lag_v6c` (+`--thrust_lag 0.085 --latency 0.019`) = grid 3.8/6 fin 1–3/18, strictly worse. Champion stays **`ft_cap6thr06_v6c_best`** — grid 4.05 fin 10/18 (lag-0), **5.16 fin 15/18 on the lag plant** (robust to actuation lag; weak cells = tight-left short-space).
