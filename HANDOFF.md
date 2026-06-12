@@ -1,6 +1,7 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-12 late night)
 
-## ★ NEXT = (1) raise the ring's Q (refit/DR-floor |poles| 0.92–0.98), (2) gate-miss recovery curriculum, (3) entry braking margin
+## ★ NEXT = (0) ZVD/slew-shape the POLICY's rate cmds (EXP-20b's proven ring killer, never tried on the policy path), (1) set rate_loop_2nd poles from EXP-20a's MEASURED ζ≈0.14/f_d 9.1 Hz (lstsq over-damps), (2) gate-miss recovery curriculum, (3) entry braking margin
+**⚠ RING-03 circle audit (Alex's catch): the ring is OLD NEWS — EXP-14/17/20 (06-04) found it, identified it (9.1 Hz, ζ 0.14, yaw), and KILLED it with a ZVD prefilter on the rate setpoint (first non-tumbling orbit). Read the WHOLE exp-log index before control work — the tail is not the log. The two corrections above come straight from that prior art.**
 **HYPO-01 + RING-01/02 (06-12 late): the live mechanism is FOUND and partially closed — survival 8.1 → 12.4 s.**
 1. **Obs-staleness/jitter/control-rate/entry-state ALL REFUTED** as live killers (chain probes `--obsdelay/--obsjitter/--actevery/--vback` in closed_loop_policy — no kill, even combined).
 2. **Chain mirror-branch bug fixed**: offline gate flew nose-TOWARD-gates (obs[8]≈0); live flies nose-anti-course (obs[8]≈π, the trained attitude). `closed_loop_policy` now defaults to the live branch (`--nosebranch` = old). Champion `ft_cap6thr06` on the live branch: **17/18 lag-0, 18/18 lag** — the earlier "fragility" (fin 10/18) was the mirrored branch. Obs-logged refly (`--obslog` in vq_deploy4, saves obslog_last.npy) verified the live obs build EXACT vs rebuild.
