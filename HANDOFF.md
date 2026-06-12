@@ -1,4 +1,14 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-12)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-12 day)
+
+## ★ NEXT = refit the LOW-THR/BRAKING transient (thr_floor + tilt/flat-plate drag), retrain capped, refly
+**CAP-01/02 (06-12 day): the twice-prescribed action-authority cap EXECUTED — rate-loop death CURED, offline battery PERFECT, last live gap PINNED.**
+1. **Caps shipped + validated** (`08a860b`, `1a97d1c`): `--maxw 6` (wire rate cmd, was 17.45) + `--thrmax 0.6` (u0=+1 → thr 0.6; teacher p99 0.33) in `rl_finetune` (env action map via GateRaceEnv `max_body_rate`/`vq_max_thrust`) + `closed_loop_policy` + laptop `vq_deploy4`. **The three values MUST match the policy** — flags, not constants. Teacher unaffected (6/6 16/16 capped).
+2. **Deploy-chain bug fixed**: training lookahead wraps `(gi+1)%NG`; the chain's `min(gi+1,NG-1)` fed a ZERO next-gate vector at the last gate (policy parked 9 m short on every config). Fixed in closed_loop_policy + vq_deploy4.
+3. **Offline gate `ft_cap6thr06_v6c_best` (Mac `sysid/`+ laptop): 8/8 configs 6/6** — nominal R/L, drift R/L, dr1/3/5, dr5drift (space 14). First perfect battery.
+4. **Refly 0/6 ×3 BUT transformed** (runs `20260612T102954/103052/103925`, /tmp/vq_replay on Mac): handoff survives (tilt ≤41 entry, β≈170 camfwd), TWO recoveries from tilt 74–86 (historically instant death), survival 6.2→8.1 s. Failure = entry burst → overshoot gate 0 (closest 3.1 m) → OOD flail. Discriminators run: replay_cmds (envelope honest, runaway COMMANDED), onestep_omega (|ω| 2–5 RMSE/|W| now ~0.4, >5 band 0.25–0.31 — rate model OK in capped band), IMU thrust axis-split: **thr 0.2–0.6 map GOOD (ratio 0.92–1.26); thr>0.6 saturates (capped away, ignore); thr<0.2 live |a| = 4–7× model — the braking/min-collective regime is THE remaining gap** (= ENVELOPE-01's flat-plate residual, now blocking).
+5. **Do next, in order:** (a) refit low-thr: thr_floor behavior + tilt-dependent (flat-plate) drag in `vq_matched`, fit on pooled deploy recordings (every run has entry/brake transients; brake runs `2026061011*_brake.npz` too) + dedicated low-thr drop tests if needed; (b) retrain `--maxw 6 --thrmax 0.6 --vdes 6 --vdes_warm 4 --curve --steps 0 --dr --dagger 6` (Mac CPU ~25 min, no pod needed); (c) re-gate battery (script pattern: closed_loop_policy `--maxw 6 --thrmax 0.6 --space 14`, 8 configs); (d) refly `vq_deploy4.py --policy X --maxw 6 --thrmax 0.6 --space 14` (Rerun viewer on Mac 9876 must be up; kill stray laptop python first). Exp-log rows CAP-01/CAP-02.
+
+
 
 ## 📄 MonoRace takeaway (arxiv 2601.15222, read at 06-12 session close): scratch PPO + great sysID + huge DR beats laddering
 2025 Abu Dhabi champion: PPO from scratch (NO BC/demos/classical bootstrap at the policy level), 3×64 MLP → 4 motor cmds @500 Hz. Classical control's only role = collecting the high-speed sysID data (linear-regression nominal params; inertia via free-fall spinning throw, no props; lin+quad drag, AoA/advance-ratio aero, motor response, gyro coupling). NO deploy→refit→retrain loop — replaced by DR over ALL 30+ params at 15–55%/episode (~90% success at 30% perturbation). Lessons for COR-127:
