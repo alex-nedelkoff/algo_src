@@ -117,6 +117,9 @@ def main():
         s = np.concatenate([s, np.zeros((1, 4))], axis=1)
         s[0, 13] = (-9.81 - model["thrust"]["f0"]) / model["thrust"]["df_dthr"]  # start at hover thr
     s[0, QUAT] = np.array([0.0, 0.0, 0.0, 1.0])  # live-frame identity spawn (closed_loop_corner)
+    vback = argf("--vback", 0.0)   # spawn drifting backward (away from gate 0) at this speed -- the live LVL handoff state
+    if vback > 0:
+        s[0, VEL] = quat_to_R(s[0, QUAT])[:, 0] * vback   # body +x = away from camera-forward course
 
     # course along the NOSE in ENU, exactly as vq_deploy2 builds it
     q_true0 = s[0, QUAT]
@@ -126,6 +129,11 @@ def main():
     camfwd[2] = 0
     camfwd /= np.linalg.norm(camfwd) + 1e-9
     hd0 = float(np.arctan2(-camfwd[1], -camfwd[0]))
+    if "--nosebranch" not in sys.argv:
+        # LIVE branch by default (HYPO-01): vq_deploy4's course puts the nose ANTI-course
+        # (obs[8] ~ pi, the trained camera-forward attitude). The old chain default flew the
+        # mirrored nose-toward-gates branch (obs[8] ~ 0) and masked the live entry behavior.
+        hd0 += np.pi
     gates = []
     gyaws = []
     hd = hd0
@@ -145,15 +153,29 @@ def main():
     betas = []
     last = -1
     n_steps = int(MAX_T / DT)
+    # obs staleness: build the policy's obs from the state OBSDELAY frames ago (live ODOMETRY is
+    # ~22 ms stale + loop jitter; training obs are same-tick truth). --obsjitter draws the delay
+    # uniformly in [0, OBSDELAY] each step instead of holding it fixed.
+    obsdelay = int(argf("--obsdelay", 0))
+    obsjitter = "--obsjitter" in sys.argv
+    actevery = int(argf("--actevery", 1))   # policy acts every N frames, cmd held (live loop-rate sag: dt p99 ~3 frames)
+    rng = np.random.default_rng(3)
+    hist: list[NDArray] = []
+    held_action = None
     for k in range(n_steps):
         t = k * DT
+        hist.append(s.copy())
+        if len(hist) > 8:
+            hist.pop(0)
+        d = int(rng.integers(0, obsdelay + 1)) if (obsjitter and obsdelay > 0) else obsdelay
+        so = hist[max(0, len(hist) - 1 - d)]
         # plant truth -> live io_layer representation (data-verified adapter)
-        q_true = s[0, QUAT]
+        q_true = so[0, QUAT]
         quat_live = q_true[[3, 0, 1, 2]]
-        om_live = s[0, OMEGA] * np.array([1.0, -1.0, 1.0])
+        om_live = so[0, OMEGA] * np.array([1.0, -1.0, 1.0])
         Rb = quat_to_R(q_true)
-        vel_live = Rb.T @ s[0, VEL]          # ds.vel_ned is BODY frame
-        pos_live = s[0, POS]
+        vel_live = Rb.T @ so[0, VEL]         # ds.vel_ned is BODY frame
+        pos_live = so[0, POS]
         # ---- vq_deploy2 obs build ----
         pe, ve, qe, ome = to_enu(quat_live, vel_live, pos_live, om_live)
         gate = gates[gi]
@@ -184,6 +206,10 @@ def main():
         thr = float((uc[0] + 1) / 2 * THRMAX)
         rates = np.array([uc[1], -uc[2], -uc[3]]) * MAXW   # ENU -> VQ rate cmd (B)
         action = np.array([[thr, *rates]])
+        if actevery > 1:                     # hold the previous cmd between policy ticks
+            if held_action is None or k % actevery == 0:
+                held_action = action
+            action = held_action
         # diagnostics
         tilt_true = float(np.degrees(np.arccos(np.clip(Rb[2, 2], -1, 1))))
         vmag = float(np.linalg.norm(ve))

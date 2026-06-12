@@ -107,7 +107,7 @@ def _yaw_quat(th):
 def make_env(n, seed, vq_path="sysid/vq_model.json"):
     rng = np.random.default_rng(seed); tracks = []; G3 = []
     for _ in range(n):
-        sp = rng.uniform(9, 13); amp = rng.uniform(1.0, 3.0); ph = rng.uniform(0, 6.28)
+        sp = rng.uniform(9, 18); amp = rng.uniform(1.0, 3.0); ph = rng.uniform(0, 6.28)   # deploy courses use space 14-16; 9-13 left them OOD-long (grid weak cells)
         gs = []
         if CURVE:
             hd = 0.0; pos = np.array([8.0, 0.0, 1.0]); turn = rng.uniform(0.12, 0.28)*rng.choice([-1, 1])
@@ -151,7 +151,7 @@ def eval_gates(model, seed=7, NE=16):
 
 
 def main():
-    global VDES
+    global VDES, LAT, TLAG
     torch.manual_seed(0)
     print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
@@ -209,33 +209,60 @@ def main():
             if mm is not None:
                 A = np.array(mm["A"]); Bm = np.array(mm["B"])
                 for _ in range(50):
-                    off = np.ones((3, 3)) + (rng.uniform(-0.4, 0.4, (3, 3)) * (1 - np.eye(3)))
-                    dia = 1 + rng.uniform(-0.08, 0.08, 3)
-                    A2 = A * off * dia[:, None]; B2 = Bm * off * (1 + rng.uniform(-0.2, 0.2, 3))[:, None]
+                    # MonoRace-width scatter: the marginal-stability entry (CAP-03/TUMBLE-01 verdict)
+                    # needs the policy to hold its basin across real-plant-sized variation
+                    off = np.ones((3, 3)) + (rng.uniform(-0.6, 0.6, (3, 3)) * (1 - np.eye(3)))
+                    dia = 1 + rng.uniform(-0.20, 0.20, 3)
+                    A2 = A * off * dia[:, None]; B2 = Bm * off * (1 + rng.uniform(-0.30, 0.30, 3))[:, None]
                     if np.abs(np.linalg.eigvals(A2)).max() < 0.995:
                         break
                 mm["A"] = A2.tolist(); mm["B"] = B2.tolist()
-            mv["weathervane"]["wv_coeff"] *= 1 + rng.uniform(-0.3, 0.3)
+            r2 = mv.get("rate_loop_2nd")
+            if r2 is not None:                       # scatter the underdamped loop (RING-01): damping + freq + gain
+                for _ in range(50):
+                    A1 = np.array(r2["A1"]); A2 = np.array(r2["A2"])
+                    B0 = np.array(r2["B0"]); B1 = np.array(r2["B1"])
+                    dia = 1 + rng.uniform(-0.10, 0.10, 3)
+                    A1s = A1 * dia[:, None]; A2s = A2 * (1 + rng.uniform(-0.20, 0.20, 3))[:, None]
+                    g = (1 + rng.uniform(-0.30, 0.30, 3))[:, None]
+                    B0s = B0 * g; B1s = B1 * g
+                    C = np.zeros((6, 6)); C[0:3, 0:3] = A1s; C[0:3, 3:6] = A2s; C[3:6, 0:3] = np.eye(3)
+                    if np.abs(np.linalg.eigvals(C)).max() < 0.97:
+                        r2["A1"] = A1s.tolist(); r2["A2"] = A2s.tolist()
+                        r2["B0"] = B0s.tolist(); r2["B1"] = B1s.tolist()
+                        break
+            mv["weathervane"]["wv_coeff"] *= 1 + rng.uniform(-0.5, 0.5)
             if "weathervane_v2" in mv:               # scatter the ACTIVE wv surface (speed-dependent, 06-10)
                 for ax in ("roll", "yaw"):
                     for k in ("a", "b"):
-                        mv["weathervane_v2"][ax][k] *= 1 + rng.uniform(-0.3, 0.3)
+                        mv["weathervane_v2"][ax][k] *= 1 + rng.uniform(-0.5, 0.5)
             if "dr_rate_disturbance" in mv:          # inject the MEASURED unmodeled-moment field
                 # (tilt-scaled sustained rate biases, BRAKE-WV-01) -- the DEPLOY-02 snap mechanism;
                 # scale randomized so the policy tolerates the field's magnitude range, not a value
-                mv["dr_rate_disturbance"]["scale"] = float(rng.uniform(0.6, 1.4))
-            mv["thrust"]["df_dthr"] *= 1 + rng.uniform(-0.08, 0.08)
+                mv["dr_rate_disturbance"]["scale"] = float(rng.uniform(0.5, 2.0))
+            mv["thrust"]["df_dthr"] *= 1 + rng.uniform(-0.15, 0.15)
+            mv["thrust"]["f0"] *= 1 + rng.uniform(-0.10, 0.10)
+            for kk in ("Dx", "Dy"):
+                mv["drag_linear_body"][kk] *= 1 + rng.uniform(-0.4, 0.4)
+            for kk in ("qx", "qy", "qz", "Dz"):
+                mv["drag_quadratic_body"][kk] *= 1 + rng.uniform(-0.4, 0.4)
             path = f"/tmp/vq_dr_{rd}.json"
             json.dump(mv, open(path, "w"))
             return path
 
+        lat0, tlag0 = LAT, TLAG
         for rd in range(1, DAGGER+1):
             vqp = dr_model_path(rd) if DR else "sysid/vq_model.json"
+            if DR:   # per-round timing DR: the live chain has ~12-22 ms latency + ~85 ms thrust lag
+                rngt = np.random.default_rng(2000 + rd)
+                LAT = float(rngt.choice([0.0, 0.014, 0.028]))
+                TLAG = float(rngt.uniform(0.0, 0.10))
             ed, gd = make_env(NENV, 100+rd, vq_path=vqp); vd = VecEnvAdapter(ed); o = vd.reset(); Xn = []; Yn = []
             for _ in range(EP_STEPS):
                 S = ed._states; uff = ff_batch(S, *aim(S, gd, ed._gates_passed))
                 act, _ = model.predict(o, deterministic=True); Xn.append(o.copy()); Yn.append(uff.copy()); o, r, dn, inf = vd.step(act)
             X = np.concatenate([X, np.concatenate(Xn)]); Y = np.concatenate([Y, np.concatenate(Yn)])
+            LAT, TLAG = lat0, tlag0   # eval on the nominal-timing env
             l = bc(X, Y, BC_EPOCHS); pk = eval_gates(model)
             print(f"  DAgger r{rd}: D={len(X)} mse {l:.4f} | gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
             if pk.mean() > best_dag:

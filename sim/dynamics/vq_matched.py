@@ -102,6 +102,24 @@ class VQMatchedDynamics:
             raise ValueError(
                 f"rate_loop_mimo A,B are discrete-time at dt=1/72 s; got dt={dt}. "
                 "Run the env at dt=1/72 (or refit A,B for this dt).")
+        # 2nd-order MIMO rate loop (COR-127 RING-01): the live inner loop is UNDERDAMPED — a
+        # complex pole pair at ~4-7 Hz per axis rings under step-like commands. First-order
+        # structures cannot overshoot, so the ring showed up as "white" 1-step residual and a
+        # policy-killing live limit cycle (the policy feeds back near the ring frequency).
+        # om[k+1] = A1@om[k] + A2@om[k-1] + B0@w[k] + B1@w[k-1]; needs per-env history state,
+        # kept on the object (reset() clears it; episode-level partial resets leave a 1-step
+        # transient, harmless at om~0 hover starts). Opt-in via model["rate_loop_2nd"];
+        # supersedes rate_loop_mimo when present. dt-specific (1/72).
+        _r2 = model.get("rate_loop_2nd")
+        if _r2:
+            self.A1_r2 = np.array(_r2["A1"], float); self.A2_r2 = np.array(_r2["A2"], float)
+            self.B0_r2 = np.array(_r2["B0"], float); self.B1_r2 = np.array(_r2["B1"], float)
+            if abs(dt - 1.0 / 72.0) > 1e-9:
+                raise ValueError(f"rate_loop_2nd matrices are discrete-time at dt=1/72 s; got dt={dt}.")
+        else:
+            self.A1_r2 = None
+        self._om_prev: NDArray[np.float64] | None = None
+        self._wcmd_prev: NDArray[np.float64] | None = None
         d = model["drag_linear_body"]
         self.Dx, self.Dy = d["Dx"], d["Dy"]
         # quadratic body drag (COR-127 REPLAY-01): the linear fit has no authority at high v —
@@ -176,6 +194,10 @@ class VQMatchedDynamics:
             T = np.diag([1.0, -1.0, -1.0])
             self.A_rate = T @ self.A_rate @ T
             self.B_rate = T @ self.B_rate @ T
+        if enu and self.A1_r2 is not None:           # same conjugation for the 2nd-order loop
+            T = np.diag([1.0, -1.0, -1.0])
+            self.A1_r2 = T @ self.A1_r2 @ T; self.A2_r2 = T @ self.A2_r2 @ T
+            self.B0_r2 = T @ self.B0_r2 @ T; self.B1_r2 = T @ self.B1_r2 @ T
 
     def reset(self, n_envs: int) -> NDArray[np.float64]:
         """Hover initial state (level, at rest, z=0): (n_envs, 13)."""
@@ -184,6 +206,8 @@ class VQMatchedDynamics:
         self._buf = []
         self._dist_bias = None
         self._dist_k = 0
+        self._om_prev = None
+        self._wcmd_prev = None
         return s
 
     def step(self, states: NDArray[np.float64], actions: NDArray[np.float64],
@@ -219,7 +243,14 @@ class VQMatchedDynamics:
         # --- rate loop (first-order per axis, EXACT zero-order-hold discretization) ---
         # om[k+1] = a*om[k] + (1-a)*G*wcmd, a=exp(-dt/tau). Exact for held input and dt-correct;
         # plain Euler is wrong here (dt/tau ~ 0.5 at 72 Hz). Matches vq_model alpha (=exp(-dt_fit/tau)).
-        if self.A_rate is not None:                  # MIMO rate loop (roll<->yaw turn coupling, COR-127; dt~=1/72)
+        if self.A1_r2 is not None:                   # 2nd-order underdamped loop (RING-01; dt~=1/72)
+            n_env = om.shape[0]
+            if self._om_prev is None or self._om_prev.shape[0] != n_env:
+                self._om_prev = om.copy(); self._wcmd_prev = wcmd.copy()
+            om_new = (om @ self.A1_r2.T + self._om_prev @ self.A2_r2.T
+                      + wcmd @ self.B0_r2.T + self._wcmd_prev @ self.B1_r2.T)
+            self._om_prev = om.copy(); self._wcmd_prev = wcmd.copy()
+        elif self.A_rate is not None:                # MIMO rate loop (roll<->yaw turn coupling, COR-127; dt~=1/72)
             om_new = om @ self.A_rate.T + wcmd @ self.B_rate.T
         else:
             a = np.exp(-dt / self.tau)
