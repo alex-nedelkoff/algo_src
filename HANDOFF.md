@@ -1,6 +1,14 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-12 day)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-12 evening)
 
-## ★ NEXT = refit the LOW-THR/BRAKING transient (thr_floor + tilt/flat-plate drag), retrain capped, refly
+## ★ NEXT = TUMBLE-EXCITATION high-|ω| rate ID (MonoRace recipe), refit MIMO/saturation, capped retrain, grid gate, refly
+**LOWTHR-01 + CAP-03 (06-12 evening) closed the model-fidelity question — every translational channel is now validated; the binding gap is the RATE-LOOP TRANSIENT.**
+1. **Low-thr refit DONE, big residual DEBUNKED**: dedicated open-loop thr-cut flight (`collect_vq_lowthr.py`, run `20260612T105637`) → steady low-thr z gap only ~2 m/s² (deploy-pool −11..−16 was a block-mean artifact: bang-bang thr dither × floor `max()` nonlinearity). z-drag baked: **Dz 0.0562, qz 0.0513** in vq_model.json (backup `vq_model_pre_lowthr.json`, both machines). Tilt/flat-plate x-drag REFUTED (controlled residual ≤0.9).
+2. **Lag-in-training REFUTED**: `ft_cap6lag_v6c` (+`--thrust_lag 0.085 --latency 0.019`) = grid 3.8/6 fin 1–3/18, strictly worse. Champion stays **`ft_cap6thr06_v6c_best`** — grid 4.05 fin 10/18 (lag-0), **5.16 fin 15/18 on the lag plant** (robust to actuation lag; weak cells = tight-left short-space).
+3. **Gate discipline changed**: single-rollout battery cells are CHAOTIC (6/6↔0/6 on a 0.06 z-drag delta). Use `scripts/sysid/grid_gate.sh <policy.zip> <lag 0|1>` (18 cells) — mean + finished count.
+4. **Deploy chain**: prev_act LVL-shadow bug fixed (training starts prev_actions=0; live shadowed during LVL → OOD handoff obs). Refly 4 after fix: 0/6 t7.8, signature unchanged — tilt 60° in 0.5 s of handoff at sub-hover thr; overshoot; flail. Chain races 6/6 offline WITH lag ⇒ live gap isn't lag, isn't envelope, isn't thrust map, isn't low-thr: **it's the rate transient at |ω| 2–5 (onestep RMSE/|W| ~0.4)**.
+5. **Do next (the twice-queued MonoRace move): tumble-excitation ID** — open-loop rate-cmd chirps/steps at HIGH amplitude from hover and at speed (sim crashes are FREE; pattern = `collect_vq_lowthr.py` lineage, but command `send_attitude_target` rate channels open-loop: chirp 1–6 rad/s wire per axis + mixed, accept the tumble, fresh_start, repeat ~10 events/flight, 2–3 flights). Refit `rate_loop_mimo` + a saturation/nonlinear residual term on |ω| 2–8 (fit on block means; mirror-symmetrize; dt=1/72). Then capped retrain (`--maxw 6 --thrmax 0.6`, NO lag flags) → grid gate (target: beat fin 10/18) → refly.
+
+
 **CAP-01/02 (06-12 day): the twice-prescribed action-authority cap EXECUTED — rate-loop death CURED, offline battery PERFECT, last live gap PINNED.**
 1. **Caps shipped + validated** (`08a860b`, `1a97d1c`): `--maxw 6` (wire rate cmd, was 17.45) + `--thrmax 0.6` (u0=+1 → thr 0.6; teacher p99 0.33) in `rl_finetune` (env action map via GateRaceEnv `max_body_rate`/`vq_max_thrust`) + `closed_loop_policy` + laptop `vq_deploy4`. **The three values MUST match the policy** — flags, not constants. Teacher unaffected (6/6 16/16 capped).
 2. **Deploy-chain bug fixed**: training lookahead wraps `(gi+1)%NG`; the chain's `min(gi+1,NG-1)` fed a ZERO next-gate vector at the last gate (policy parked 9 m short on every config). Fixed in closed_loop_policy + vq_deploy4.
