@@ -76,11 +76,21 @@ s = Store(); m = MavlinkIO(s); assert m.wait_heartbeat(10); m.start(); VisionIO(
 boot = int(time.time() * 1000); c = Commander(m.conn, boot)
 
 
+CAMYAW = np.radians(argf("--camyaw", 0.0))
+# --camyaw: constant camera-ray azimuth correction (deg, about body-z). Camprobe hover
+# regression measured -21.7 deg ray azimuth offset (NOT the H chart -- continuous axis fit
+# says ~+1 deg); source = camera mount yaw or the s_cam/body-x assumption. Calibrate by
+# zeroing the camprobe hover est-y slope.
+
+
 def r_opt_body_true(s_cam):
     S, C = np.sin(T20), np.cos(T20)
-    return np.array([[0.0, s_cam * S, s_cam * C],
+    base = np.array([[0.0, s_cam * S, s_cam * C],
                      [s_cam, 0.0, 0.0],
                      [0.0, C, -S]])
+    cy, sy = np.cos(CAMYAW), np.sin(CAMYAW)
+    Rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+    return Rz @ base
 
 
 def world_maps():
@@ -196,20 +206,30 @@ class GateEstimator:
         return float(np.linalg.norm(ps.max(0) - ps.min(0)))
 
     def calibrate(self):
-        """H is PINNED to refl0 (world-y flip): proven by 4 independent runs + the in-flight
-        pixel discriminator. The scatter vote is kept as a CHECK only -- run 13 voted refl135
-        on marginal data and flew blind for 350 s."""
+        """CONTINUOUS reflection-axis fit (06-11 camprobe: hover azimuth error -21.7 deg ~ half
+        the old 22.5-deg H quantization step -- the true reflection axis lies between the coarse
+        candidates). Fine-scan theta in [-15, 15] deg around refl0's axis, min triangulation
+        scatter; fall back to refl0 if degenerate."""
         if len(self.samples) < 20 or self.baseline() < ARC_BASE:
             return False
+        if "--pinH" in sys.argv:
+            # isolate camyaw: H and camyaw are partially redundant (joint fit ran to the scan
+            # edge); pin refl0 while calibrating the ray azimuth
+            self.H = np.array([[1.0, 0, 0], [0, -1.0, 0], [0, 0, 1.0]]); self.Hname = "refl0-pinned"
+            print("H locked: refl0 (PINNED via --pinH)", flush=True)
+            return True
         best = None
-        for name, Hm in H_CANDS:
+        for thd in np.arange(-15.0, 15.01, 0.5):
+            th = np.radians(thd)
+            c2, s2 = np.cos(2 * th), np.sin(2 * th)
+            Hm = np.array([[c2, s2, 0.0], [s2, -c2, 0.0], [0.0, 0.0, 1.0]])
             pts = np.array([p + Z * (Hm @ ray) for p, ray, Z in self.samples])
             sc = float(np.std(pts[:, :2], 0).sum())
             if best is None or sc < best[0]:
-                best = (sc, name, Hm)
-        self.Hname = "refl0"; self.H = H_CANDS[1][1]
-        note = "" if best[1] == "refl0" else f" (vote said {best[1]} {best[0]:.2f} -- OVERRIDDEN)"
-        print(f"H locked: refl0 (pinned){note}", flush=True)
+                best = (sc, thd, Hm)
+        self.H = best[2]; self.Hname = f"refl{best[1]:+.1f}"
+        print(f"H locked: reflection axis {best[1]:+.1f} deg (scatter {best[0]:.2f}, "
+              f"n={len(self.samples)})", flush=True)
         return True
 
     def point(self, pos, ray, Z):
@@ -292,6 +312,14 @@ def main():
     # intercept = gate z + constant (banner) aim offset. ring 60-80 ~ Z 11-13;
     # ring 175-215 ~ Z 3.7-4.3 (ratio 1.62).
     PPROBE = "--pitchprobe" in sys.argv
+    # --camprobe: stabilized-camera experiment. Hover stations (tilt<3, |v|<0.4) at 3 ranges
+    # isolate the MOUNT angle (no body-pitch contamination); a fore-aft velocity oscillation at
+    # the middle station sweeps body pitch at ~fixed range -> leakage factor
+    # (d est_z / d cam_elev) / Z: ~1.0 = camera stabilized (R_t double-counts), ~0 = chain correct.
+    CPROBE = "--camprobe" in sys.argv
+    cp_stages = ["h0", "h1", "sweep", "h2"]
+    cp_bands = {"h0": (55.0, 70.0), "h1": (100.0, 125.0), "h2": (185.0, 215.0)}
+    cp_i = 0; cp_data = []; cp_hold = False; cp_sweep_t0 = None
     pp_bands = [(60.0, 80.0), (175.0, 215.0)]; pp_station = 0; pp_samples = []
     pp_hold = False
     main._vis = {}; main._vfixed = {}
@@ -383,6 +411,36 @@ def main():
                             if det.w_px >= 215.0 and len(pp_samples) >= 60:
                                 print(f"PPROBE sweep done ({len(pp_samples)} samples)", flush=True)
                                 pp_station = 2
+                        if CPROBE and est.H is not None and cp_i < len(cp_stages):
+                            cam_elev = float(-np.arcsin(np.clip(s_cam * R_t[2, 0], -1.0, 1.0)))
+                            stg = cp_stages[cp_i]
+                            if stg.startswith("h"):
+                                lo, hi = cp_bands[stg]
+                                cp_hold = lo <= det.w_px <= hi
+                                if (cp_hold and tilt_true < 3.0
+                                        and float(np.linalg.norm(vel_w)) < 0.4):
+                                    cp_data.append((stg, Z_now,
+                                                    est.point(pos, ray_t, Z_now).copy(), cam_elev))
+                                    n_s = sum(1 for d_ in cp_data if d_[0] == stg)
+                                    if n_s >= 40:
+                                        print(f"CPROBE {stg} done ({n_s} hover samples, "
+                                              f"Z~{Z_now:.1f})", flush=True)
+                                        cp_i += 1
+                                        if cp_i < len(cp_stages) and cp_stages[cp_i] == "sweep":
+                                            cp_sweep_t0 = now
+                                            print("CPROBE sweep start (fore-aft oscillation)",
+                                                  flush=True)
+                            elif stg == "sweep":
+                                cp_hold = False
+                                if 85.0 <= det.w_px <= 145.0:
+                                    cp_data.append(("sweep", Z_now,
+                                                    est.point(pos, ray_t, Z_now).copy(), cam_elev))
+                                if now - cp_sweep_t0 > 16.0:
+                                    n_s = sum(1 for d_ in cp_data if d_[0] == "sweep")
+                                    print(f"CPROBE sweep done ({n_s} samples)", flush=True)
+                                    cp_i += 1
+                        elif CPROBE:
+                            cp_hold = False
                 # phase-B per-gate vision refinement: translation-only anchoring leaves a
                 # chart-rotation error that GROWS with distance (crossing offsets 1.15->1.35
                 # over gates 0-2; gate 3 at 88 m = frame strike x4). The track shape is the
@@ -563,6 +621,20 @@ def main():
                     nv = float(np.linalg.norm(v_w_sp))
                     if nv > 1.2:
                         v_w_sp *= 1.2 / nv             # slow sweep = dense range coverage
+                elif CPROBE:
+                    stg = cp_stages[cp_i] if cp_i < len(cp_stages) else "done"
+                    if stg == "sweep" and cp_sweep_t0 is not None:
+                        phs = ((now - cp_sweep_t0) % 4.0) / 4.0
+                        v_w_sp = (0.9 if phs < 0.5 else -0.9) * fwd_live   # pitch oscillation
+                    elif cp_hold:
+                        v_w_sp = np.zeros(2)
+                    elif wp is not None:
+                        v_w_sp = 0.7 * err
+                        nv = float(np.linalg.norm(v_w_sp))
+                        if nv > 1.0:
+                            v_w_sp *= 1.0 / nv
+                    else:
+                        v_w_sp = np.zeros(2)
                 elif beam_mode:
                     # ride the spline: forward along the camera axis (yaw is servoing onto the
                     # beam), throttled by how centered the beam is
@@ -617,7 +689,7 @@ def main():
             if phase == "B" and abs(ze) < 1.5:           # conditional integration: run 17 wound
                 main._zi = float(np.clip(getattr(main, "_zi", 0.0) + 0.4 * ze * dt, -2.5, 2.5))
                                                           # up through takeoff and hit gate 0 high
-            if PPROBE:
+            if PPROBE or CPROBE:
                 z_ref = float(np.clip(z_ref, spawn[2] - 4.0, spawn[2] + 2.0))
                 ze = z_ref - pos[2]
             a2 = float(np.clip(KP_Z * ze + KD_Z * (0.0 - ds.vel_ned[2])
@@ -759,6 +831,34 @@ def main():
                     main._dump_t = now
                     os.makedirs("frames_dump", exist_ok=True)
                     cv2.imwrite(f"frames_dump/c{t:06.1f}.jpg", fr2[0])
+            if CPROBE and cp_i >= len(cp_stages):
+                hov = [(z, p, e) for stg, z, p, e in cp_data if stg.startswith("h")]
+                sw = [(z, p, e) for stg, z, p, e in cp_data if stg == "sweep"]
+                Zh = np.array([h[0] for h in hov]); zh = np.array([h[1][2] for h in hov])
+                yh = np.array([h[1][1] for h in hov])
+                Ah = np.vstack([Zh, np.ones_like(Zh)]).T
+                mzh, czh = np.linalg.lstsq(Ah, zh, rcond=None)[0]
+                myh, _ = np.linalg.lstsq(Ah, yh, rcond=None)[0]
+                print(f"\nCPROBE RESULT:", flush=True)
+                print(f"  HOVER ({len(hov)} samples, Z {Zh.min():.1f}-{Zh.max():.1f}): "
+                      f"est-z slope {mzh:+.4f}/m => MOUNT elevation error "
+                      f"{np.degrees(np.arcsin(np.clip(mzh, -1, 1))):+.2f} deg "
+                      f"(intercept {czh:+.2f}); est-y slope {myh:+.4f}/m => mount azimuth "
+                      f"{np.degrees(np.arcsin(np.clip(myh, -1, 1))):+.2f} deg", flush=True)
+                if len(sw) >= 20:
+                    Zs2 = np.array([s2[0] for s2 in sw]); zs2 = np.array([s2[1][2] for s2 in sw])
+                    es2 = np.array([s2[2] for s2 in sw])
+                    As2 = np.vstack([es2, np.ones_like(es2)]).T
+                    msw, _ = np.linalg.lstsq(As2, zs2, rcond=None)[0]
+                    Zbar = float(Zs2.mean())
+                    print(f"  SWEEP ({len(sw)} samples, Z~{Zbar:.1f}, cam_elev "
+                          f"{np.degrees(es2.min()):+.1f}..{np.degrees(es2.max()):+.1f} deg): "
+                          f"d(est-z)/d(elev) {msw:+.2f} m/rad => LEAK FACTOR "
+                          f"{-msw / Zbar:+.2f} (1.0 = camera fully stabilized, 0 = chain correct)",
+                          flush=True)
+                else:
+                    print(f"  SWEEP: insufficient samples ({len(sw)})", flush=True)
+                break
             if PPROBE and pp_station >= 2:
                 arr = np.array([(z, p[0], p[1], p[2]) for st, z, p in pp_samples])
                 Zs, ys, zs = arr[:, 0], arr[:, 2], arr[:, 3]
