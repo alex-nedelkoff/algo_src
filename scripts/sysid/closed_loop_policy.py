@@ -157,7 +157,7 @@ def main():
         # ---- vq_deploy2 obs build ----
         pe, ve, qe, ome = to_enu(quat_live, vel_live, pos_live, om_live)
         gate = gates[gi]
-        gi1 = min(gi + 1, NG - 1)
+        gi1 = (gi + 1) % NG   # training env wraps lookahead; min() gave a zero next-gate vector at the last gate
         gyaw = gyaws[gi]
         roll, pitch, dyaw = quat_to_euler(qe)
         obs = np.zeros(27, dtype=np.float32)
