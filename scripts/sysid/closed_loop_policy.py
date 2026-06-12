@@ -25,7 +25,6 @@ from sim.dynamics.vq_matched import VQMatchedDynamics, POS, VEL, QUAT, OMEGA  # 
 
 G = 9.81
 DT = 1.0 / 72.0
-MAXW = 17.45
 NG = 6
 GATE_R = 1.5
 MAX_T = 33.0
@@ -33,6 +32,9 @@ MAX_T = 33.0
 
 def argf(f, d):
     return float(sys.argv[sys.argv.index(f) + 1]) if f in sys.argv else d
+
+
+MAXW = argf("--maxw", 17.45)   # must match the policy's training-time action cap
 
 
 def args_(f, d):
