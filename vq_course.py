@@ -76,7 +76,11 @@ s = Store(); m = MavlinkIO(s); assert m.wait_heartbeat(10); m.start(); VisionIO(
 boot = int(time.time() * 1000); c = Commander(m.conn, boot)
 
 
-CAMYAW = np.radians(argf("--camyaw", 0.0))
+CAMYAW = np.radians(argf("--camyaw", 5.7))
+# CALIBRATED 06-11 (offline joint fit on 3248 logged detections): camyaw +5.7 zeroes both the
+# azimuth (+0.04 deg) and elevation (-0.05 deg) range-slopes; campitch 20.0 exact. The earlier
+# station-only "-21.7" was a small-sample geometry artifact; residual y-scatter 0.78 m is
+# view-dependent DETECTOR aim bias (banner asymmetry), not chain geometry.
 # --camyaw: constant camera-ray azimuth correction (deg, about body-z). Camprobe hover
 # regression measured -21.7 deg ray azimuth offset (NOT the H chart -- continuous axis fit
 # says ~+1 deg); source = camera mount yaw or the s_cam/body-x assumption. Calibrate by
@@ -320,6 +324,8 @@ def main():
     cp_stages = ["h0", "h1", "sweep", "h2"]
     cp_bands = {"h0": (55.0, 70.0), "h1": (100.0, 125.0), "h2": (185.0, 215.0)}
     cp_i = 0; cp_data = []; cp_hold = False; cp_sweep_t0 = None
+    cp_raw = []   # raw per-detection log for offline joint calibration:
+                  # (t, u, v, ring_w, ring_h, hole_w, hole_h, pos3, quat_live4, tilt)
     pp_bands = [(60.0, 80.0), (175.0, 215.0)]; pp_station = 0; pp_samples = []
     pp_hold = False
     main._vis = {}; main._vfixed = {}
@@ -411,6 +417,12 @@ def main():
                             if det.w_px >= 215.0 and len(pp_samples) >= 60:
                                 print(f"PPROBE sweep done ({len(pp_samples)} samples)", flush=True)
                                 pp_station = 2
+                        if CPROBE:
+                            hw_, hh_ = (hole_wh if hole_wh is not None else (-1.0, -1.0))
+                            cp_raw.append((t, det.u, det.v, det.w_px, det.h_px, hw_, hh_,
+                                           pos[0], pos[1], pos[2],
+                                           ds.quat_wxyz[0], ds.quat_wxyz[1],
+                                           ds.quat_wxyz[2], ds.quat_wxyz[3], tilt_true))
                         if CPROBE and est.H is not None and cp_i < len(cp_stages):
                             cam_elev = float(-np.arcsin(np.clip(s_cam * R_t[2, 0], -1.0, 1.0)))
                             stg = cp_stages[cp_i]
@@ -858,6 +870,8 @@ def main():
                           flush=True)
                 else:
                     print(f"  SWEEP: insufficient samples ({len(sw)})", flush=True)
+                np.savez_compressed("camcal_samples.npz", raw=np.array(cp_raw))
+                print(f"camcal_samples.npz written ({len(cp_raw)} raw detections)", flush=True)
                 break
             if PPROBE and pp_station >= 2:
                 arr = np.array([(z, p[0], p[1], p[2]) for st, z, p in pp_samples])
@@ -884,6 +898,12 @@ def main():
                       f"tilt={tilt_true:3.0f} gi={gi} bm={int(beam_mode)} x={crossings}", flush=True)
             time.sleep(LOOP_DT)
     finally:
+        if "--camprobe" in sys.argv and 'cp_raw' in dir() and len(cp_raw) > 50:
+            try:
+                np.savez_compressed("camcal_samples.npz", raw=np.array(cp_raw))
+                print(f"camcal_samples.npz written ({len(cp_raw)} raw detections)", flush=True)
+            except Exception:
+                pass
         idle(); rec.close()
         if flog is not None:
             flog.close()
