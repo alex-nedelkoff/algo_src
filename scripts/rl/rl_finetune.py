@@ -31,6 +31,7 @@ M = json.load(open("sysid/vq_model.json"))
 GAIN = np.array([M["rate_loop"][n]["gain_G"] for n in ("roll", "pitch", "yaw")])
 F0 = M["thrust"]["f0"]; DF = M["thrust"]["df_dthr"]
 MAXW = argf("--maxw", 17.45)   # action-authority cap: max wire rate cmd (rad/s); deploy chain must use the same value
+THRMAX = argf("--thrmax", 1.0)  # thrust-authority cap: u0=+1 -> thr THRMAX (teacher p99 ~0.33; live bang-bang thr 1.0 was the 06-12 killer)
 DT = 1.0 / 72.0; EP_STEPS = 1080   # MIMO rate loop is dt-specific (fit 1/72); ~15 s episodes
 # weathervane-FF (corner_speed teacher term, WV-DYNAMIC coeffs), ENU env frame signs
 ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
@@ -38,7 +39,7 @@ YR_CAP = 1.5   # rad/s yaw-rate cap (corner_speed)
 KP_POS = np.array([0.6, 0.6, 2.0]); KD_POS = np.array([1.2, 1.2, 3.0])
 KP_ATT = np.array([6.0, 6.0, 4.0]); KD_ATT = np.array([1.2, 1.2, 0.0]); KP_YAW = 4.0; KD_YAW = 0.5
 TILT_MAX = np.tan(np.radians(35)) * G
-HOVER_U0 = 2*((F0+G)/(-DF)) - 1
+HOVER_U0 = 2*((F0+G)/(-DF))/THRMAX - 1
 # Racing reward: gate_passage (per-gate, the objective) + delta gate_progress (loiter-safe guidance)
 # + small body-rate penalty + crash. NO dense per-step survival terms (heading_alignment/speed_bonus
 # are gameable on a finite course -> reward-hacking: survive+point-at-gate without threading).
@@ -82,7 +83,7 @@ def ff_batch(S, tgt_pos, tgt_vel, tgt_yaw):
     w[:, 2] += -YAW_WV * vb[:, 1]
     cos_t = np.maximum(R[:, 2, 2], 0.5); c = (G + a[:, 2])/cos_t
     thr = np.clip((F0+c)/(-DF), 0.0, 1.0)
-    u = np.empty((S.shape[0], 4)); u[:, 0] = np.clip(2*thr-1, -1, 1); u[:, 1:4] = np.clip(w/GAIN/MAXW, -1, 1)
+    u = np.empty((S.shape[0], 4)); u[:, 0] = np.clip(2*thr/THRMAX-1, -1, 1); u[:, 1:4] = np.clip(w/GAIN/MAXW, -1, 1)
     cap = YR_CAP/abs(GAIN[2])/MAXW   # corner_speed yaw-rate cap (resonance guard)
     u[:, 3] = np.clip(u[:, 3], -cap, cap)
     return u.astype(np.float32)
@@ -120,7 +121,7 @@ def make_env(n, seed, vq_path="sysid/vq_model.json"):
                                     orientation=np.array([1.0, 0, 0, 0])))
         tracks.append(Track(gates=gs, name="c", start_position=np.array([0, 0, 1.0]))); G3.append([g.position for g in gs])
     env = GateRaceEnv(n_envs=n, dt=DT, max_steps=EP_STEPS, action_mode="vq_rate",
-                      max_body_rate=MAXW,
+                      max_body_rate=MAXW, vq_max_thrust=THRMAX,
                       vq_model_path=vq_path, tracks=tracks, random_gate_start=False,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
                       gate_collision=True, gate_passage_radius=1.0, arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
@@ -152,7 +153,7 @@ def eval_gates(model, seed=7, NE=16):
 def main():
     global VDES
     torch.manual_seed(0)
-    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} steps={STEPS}", flush=True)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
     # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the

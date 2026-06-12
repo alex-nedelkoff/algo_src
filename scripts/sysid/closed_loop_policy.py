@@ -34,7 +34,8 @@ def argf(f, d):
     return float(sys.argv[sys.argv.index(f) + 1]) if f in sys.argv else d
 
 
-MAXW = argf("--maxw", 17.45)   # must match the policy's training-time action cap
+MAXW = argf("--maxw", 17.45)    # must match the policy's training-time action cap
+THRMAX = argf("--thrmax", 1.0)  # must match the policy's training-time thrust cap
 
 
 def args_(f, d):
@@ -180,7 +181,7 @@ def main():
         u = policy(obs)
         uc = np.clip(u, -1, 1)
         prev_act = uc
-        thr = float((uc[0] + 1) / 2)
+        thr = float((uc[0] + 1) / 2 * THRMAX)
         rates = np.array([uc[1], -uc[2], -uc[3]]) * MAXW   # ENU -> VQ rate cmd (B)
         action = np.array([[thr, *rates]])
         # diagnostics

@@ -307,6 +307,7 @@ class GateRaceEnv(gym.Env):
         vq_model_path: str = "sysid/vq_model.json",
         vq_latency_s: float = 0.0,
         vq_thrust_lag_s: float = 0.0,
+        vq_max_thrust: float = 1.0,
     ) -> None:
         super().__init__()
 
@@ -340,6 +341,7 @@ class GateRaceEnv(gym.Env):
         self.max_body_rate = max_body_rate
         self.max_velocity = max_velocity
         self.arena_bounds = arena_bounds
+        self.vq_max_thrust = vq_max_thrust
 
         # Track initialization: explicit list > single track > default figure-8
         if tracks is not None:
@@ -601,11 +603,11 @@ class GateRaceEnv(gym.Env):
     def _vqrate_action(self, u: NDArray[np.float64]) -> NDArray[np.float64]:
         """Map normalized action [-1,1] to the VQ-matched rate-loop command.
 
-        u[0] in [-1,1] -> normalized collective thrust in [0,1] (the VQ thrust input)
+        u[0] in [-1,1] -> normalized collective thrust in [0, vq_max_thrust] (the VQ thrust input)
         u[1:4] in [-1,1] -> body rates in [-max_body_rate, max_body_rate] (rad/s)
         """
         phys = np.empty_like(u)
-        phys[:, 0] = (u[:, 0] + 1.0) / 2.0
+        phys[:, 0] = (u[:, 0] + 1.0) / 2.0 * self.vq_max_thrust
         phys[:, 1:4] = u[:, 1:4] * self.max_body_rate
         return phys
 
