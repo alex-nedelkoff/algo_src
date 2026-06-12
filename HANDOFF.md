@@ -1,4 +1,10 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-11 ~22:10)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-12)
+
+## 📄 MonoRace takeaway (arxiv 2601.15222, read at 06-12 session close): scratch PPO + great sysID + huge DR beats laddering
+2025 Abu Dhabi champion: PPO from scratch (NO BC/demos/classical bootstrap at the policy level), 3×64 MLP → 4 motor cmds @500 Hz. Classical control's only role = collecting the high-speed sysID data (linear-regression nominal params; inertia via free-fall spinning throw, no props; lin+quad drag, AoA/advance-ratio aero, motor response, gyro coupling). NO deploy→refit→retrain loop — replaced by DR over ALL 30+ params at 15–55%/episode (~90% success at 30% perturbation). Lessons for COR-127:
+1. Our missing piece is high-|ω| ID data, not RL machinery — and in a sim, crashes are FREE: try **deliberately-unstable excitation** (open-loop rate chirps at high amplitude, accept the tumble, record, refit) instead of the controlled-flight collection that capped at 42° tilt.
+2. Motor-level is banned for us, so the sim's own rate-loop saturation behavior must live IN the model (their argument for motor-level output is exactly the unpredictability we have to identify instead).
+3. Once the model envelope covers |ω| 2–5, wide DR may replace the cap-ladder entirely.
 
 ## 🏁 VQ-COURSE-12 (06-11 ~22:05): SCORED 6/6 — RACE FINISHED
 `final race: active_gate_index 6, race_finish_ns 118573837280 (118.6 s)` — all six gates ticked sequentially (run `20260611T220244_vq_course`, laptop vq_data). Two root causes closed the gap from 1/6, both found via the **TRUTH-REL crossing logger** (crossing vs TRACK_INFO truth at every plane-cross — now in vq_course.py):
