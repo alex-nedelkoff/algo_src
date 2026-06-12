@@ -308,6 +308,7 @@ class GateRaceEnv(gym.Env):
         vq_latency_s: float = 0.0,
         vq_thrust_lag_s: float = 0.0,
         vq_max_thrust: float = 1.0,
+        vq_zvd: bool = False,
     ) -> None:
         super().__init__()
 
@@ -342,6 +343,16 @@ class GateRaceEnv(gym.Env):
         self.max_velocity = max_velocity
         self.arena_bounds = arena_bounds
         self.vq_max_thrust = vq_max_thrust
+        # ZVD input shaper on the wire rate cmds (RING-03 / EXP-20b's live-validated "ring
+        # killer", applied to the policy path): the VQ inner loop is underdamped (EXP-20a:
+        # yaw f_d~9.1 Hz, zeta~0.14; RING-01 roll/pitch ~5.2 Hz). 3-impulse ZVD, K=exp(-zeta*pi/
+        # sqrt(1-zeta^2)) at zeta=0.14 -> amplitudes [1,2K,K^2]/(1+K)^2; per-axis delay =
+        # half ring period in frames at 72 Hz (roll/pitch 7, yaw 4). Adds ~0.1 s cmd smoothing
+        # the policy trains THROUGH. Deploy/gate must apply the SAME shaper (--zvd).
+        self.vq_zvd = vq_zvd
+        self._zvd_amp = np.array([0.371, 0.476, 0.153])
+        self._zvd_delay = np.array([7, 7, 4])           # frames per axis (roll, pitch, yaw)
+        self._zvd_buf: NDArray[np.float64] | None = None
 
         # Track initialization: explicit list > single track > default figure-8
         if tracks is not None:
@@ -609,6 +620,17 @@ class GateRaceEnv(gym.Env):
         phys = np.empty_like(u)
         phys[:, 0] = (u[:, 0] + 1.0) / 2.0 * self.vq_max_thrust
         phys[:, 1:4] = u[:, 1:4] * self.max_body_rate
+        if self.vq_zvd:
+            n = u.shape[0]
+            if self._zvd_buf is None or self._zvd_buf.shape[0] != n:
+                self._zvd_buf = np.zeros((n, 15, 3))
+            self._zvd_buf = np.roll(self._zvd_buf, 1, axis=1)
+            self._zvd_buf[:, 0, :] = phys[:, 1:4]
+            for ax in range(3):
+                d = self._zvd_delay[ax]
+                phys[:, 1 + ax] = (self._zvd_amp[0] * self._zvd_buf[:, 0, ax]
+                                   + self._zvd_amp[1] * self._zvd_buf[:, d, ax]
+                                   + self._zvd_amp[2] * self._zvd_buf[:, 2 * d, ax])
         return phys
 
     def step(
