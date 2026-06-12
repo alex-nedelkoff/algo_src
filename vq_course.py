@@ -572,6 +572,13 @@ def main():
                         # gate-4 crossings land est dz +0.02..+0.05 (low): att-12 ticked only
                         # via a late/lucky stamp, att-15 brush-ground the tube instead. Lift
                         # into the same est -0.5..-0.9 zone as the rest
+                        d4 = pts[5][:2] - pts[3][:2]; d4 = d4 / max(np.linalg.norm(d4), 1e-6)
+                        p4 = np.array([-d4[1], d4[0]]) * 0.55
+                        # gate-4 drifts LEFT every run (TRUE lat -0.72..-0.75 across 4
+                        # crossings) and brush-grinds the tube on exit -- same corner-cut
+                        # counter as gate 2, scaled to its measured drift
+                        wps[8][0] += p4[0]; wps[8][1] += p4[1]
+                        wps[9][0] += p4[0]; wps[9][1] += p4[1]
                         wps[10][2] -= 1.0; wps[11][2] -= 1.0
                         # gate-5: ground into the tube on the crossing leg (att 12, wp=11,
                         # no plane-cross) -- z-comp had clipped to 0 by then so the unraised
@@ -804,6 +811,7 @@ def main():
                         inside = perp < 0.95   # CLEAR aperture half (frame tube eats ~0.4 of
                                                # the 1.36 outer half -- rim strike at perp 0.92)
                         crossings += int(inside)
+                        main._last_cross_t = now
                         print(f"PLANE-CROSS gate {g_i} t={t:.1f} offset={perp:.2f} "
                               f"(lat={lat_c:+.2f} dz={dz_c:+.2f}) "
                               f"({'INSIDE' if inside else 'OUTSIDE'} half=0.95) gi={gi}",
@@ -867,8 +875,19 @@ def main():
                     thr_l = ev.get("threat", 0) if ev else 0
                     main._evts = [x for x in getattr(main, "_evts", []) if now - x < 1.0] + [now]
                     if len(main._evts) > 10:
-                        print(f"CONTACT-GRIND t={t:.1f} ({len(main._evts)} events/s, id={cid}) "
-                              f"gi={gi} wp={wi} -> stop", flush=True); break
+                        if now - getattr(main, "_last_cross_t", -9.0) < 3.0:
+                            # the scoring tick lands 0.2-4 s AFTER a plane-cross; a tube brush
+                            # in that window used to grind-abort the run before the tick
+                            # registered (killed g4 twice while crossing mid-zone). Brushes are
+                            # momentary -- the drone is already leaving; if it's still grinding
+                            # 3 s past the cross the abort fires normally.
+                            print(f"GRIND-SUPPRESSED t={t:.1f} ({len(main._evts)} ev/s, id={cid}) "
+                                  f"gi={gi} wp={wi} -- {now - main._last_cross_t:.1f}s after cross",
+                                  flush=True)
+                            main._evts = []
+                        else:
+                            print(f"CONTACT-GRIND t={t:.1f} ({len(main._evts)} events/s, id={cid}) "
+                                  f"gi={gi} wp={wi} -> stop", flush=True); break
                     if imp < 0.5 and thr_l <= 1:
                         # impulse 0 + threat 1 = PROXIMITY WARNING, not a hit (the gate-3
                         # 'collision' decoded as id=1002 thr=1 imp=0.000 -- zero momentum
