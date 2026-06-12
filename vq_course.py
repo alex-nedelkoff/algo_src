@@ -41,7 +41,10 @@ def argf(flag, d): return float(sys.argv[sys.argv.index(flag) + 1]) if flag in s
 
 DUMP = "--dump" in sys.argv
 VMAX = argf("--v", 3.0); N_GATES = int(argf("--ngates", 8)); DURATION = argf("--dur", 360.0)
-AMAX = argf("--amax", 0.6); THRU = argf("--thru", 2.0); ZBIAS = argf("--zbias", 0.45)
+AMAX = argf("--amax", 0.6); THRU = argf("--thru", 2.0); ZBIAS = argf("--zbias", 0.7)
+# ZBIAS 0.9 (attempt-5): every tick happened at crossings dz -0.40..-0.73 vs zbias-0.45
+# estimates; dz ~0 crossings never tick and grind the bottom region. 0.9 centers nominal
+# crossings in the proven tick band. (Yes -- back near the original 0.95.)
 # ZBIAS 0.95->0.45 (run-M scoring calibration): crossings at dz -0.4 vs the old centers TICK
 # gate_idx + stamp last_gate_time; dz ~0 does not -- the real aperture sits ~0.5 above the old
 # zbias-corrected estimate. Raising via zbias keeps vision/VIS-FIX geometry self-consistent
@@ -76,7 +79,11 @@ s = Store(); m = MavlinkIO(s); assert m.wait_heartbeat(10); m.start(); VisionIO(
 boot = int(time.time() * 1000); c = Commander(m.conn, boot)
 
 
-CAMYAW = np.radians(argf("--camyaw", 5.7))
+CAMYAW = np.radians(argf("--camyaw", 0.0))
+# NOTE: offline calibration says +5.7 zeroes the estimate range-slopes (see fit_camcal), but the
+# OPERATING stack (zbias, VIS-FIX, biases, ticks 5/5) was co-tuned at camyaw 0 -- flying 5.7
+# regressed gate-0 (lat +2.07 grind). Default stays 0 for course flying; recalibrate the whole
+# z/lat stack under 5.7 as a coherent next-session task if estimate quality matters.
 # CALIBRATED 06-11 (offline joint fit on 3248 logged detections): camyaw +5.7 zeroes both the
 # azimuth (+0.04 deg) and elevation (-0.05 deg) range-slopes; campitch 20.0 exact. The earlier
 # station-only "-21.7" was a small-sample geometry artifact; residual y-scatter 0.78 m is
@@ -216,11 +223,12 @@ class GateEstimator:
         scatter; fall back to refl0 if degenerate."""
         if len(self.samples) < 20 or self.baseline() < ARC_BASE:
             return False
-        if "--pinH" in sys.argv:
+        if "--fitH" not in sys.argv:
             # isolate camyaw: H and camyaw are partially redundant (joint fit ran to the scan
             # edge); pin refl0 while calibrating the ray azimuth
             self.H = np.array([[1.0, 0, 0], [0, -1.0, 0], [0, 0, 1.0]]); self.Hname = "refl0-pinned"
-            print("H locked: refl0 (PINNED via --pinH)", flush=True)
+            print("H locked: refl0 (PINNED default -- the per-run continuous fit injected "
+                  "-15..+1 deg of lateral variance; fit only with --fitH)", flush=True)
             return True
         best = None
         for thd in np.arange(-15.0, 15.01, 0.5):
@@ -476,8 +484,17 @@ def main():
                                    - main._course_pts[g_t])   # same banner z-correction as the anchor
                             n_off = float(np.linalg.norm(off))
                             if n_off < 3.0:                   # larger = probably the wrong object
-                                if n_off > 2.0:
-                                    off *= 2.0 / n_off        # rate-limit a single fix
+                                dh_g = wps[2 * g_t + 1][:2] - wps[2 * g_t][:2]
+                                dh_g = dh_g / max(float(np.linalg.norm(dh_g)), 1e-6)
+                                along = float(off[:2] @ dh_g)
+                                # vision is biased OFF-axis: attempt 9 truth showed the gate-1
+                                # estimate +1.24 m in y vs TRACK_INFO (crossing lat -1.32 =
+                                # outside the aperture -> no tick + tube brush), while the
+                                # anchored TRACK_INFO relative layout is truth-exact in lat/z
+                                # (gate-0 err [+0.57,-0.01,+0.03]). Correct along-track only.
+                                off = np.array([along * dh_g[0], along * dh_g[1], 0.0])
+                                if abs(along) > 2.0:
+                                    off *= 2.0 / abs(along)   # rate-limit a single fix
                                 main._course_pts[g_t] = main._course_pts[g_t] + off
                                 wps[2 * g_t] = wps[2 * g_t] + off
                                 wps[2 * g_t + 1] = wps[2 * g_t + 1] + off
@@ -499,7 +516,20 @@ def main():
                     g0 = est.wp(last=10)
                     if g0 is not None:
                         anchor = g0.copy(); anchor[2] += ZBIAS
-                        rel = track - track[0]
+                        # ANCHOR IDENTITY: the detector can acquire a LATER gate from spawn
+                        # (attempt-3 anchored gate 1 at 36 m and built the course one gate off,
+                        # grinding into structure). Match the anchored gate by its distance from
+                        # the run start against the cached layout ladder, then build the FULL
+                        # course relative to it (scoring is sequential -- gate 0 must be first).
+                        d0 = float(np.linalg.norm(anchor[:2] - spawn[:2]))
+                        ladder = np.array([np.linalg.norm(track[k, :2] - track[0, :2])
+                                           for k in range(len(track))]) + 15.0
+                        k_id = int(np.argmin(np.abs(ladder - d0)))
+                        if k_id != 0:
+                            print(f"ANCHOR-ID: acquired gate {k_id} (start-dist {d0:.0f} m, "
+                                  f"ladder {np.round(ladder, 0).tolist()}) -- building full "
+                                  f"course incl. backtrack to gate 0", flush=True)
+                        rel = track - track[k_id]
                         pts = anchor[None, :] + rel
                         # pre/post only -- the center wp caused a ~1 m limit-cycle dwell + 30 s
                         # timeouts; the plane-cross detector judges the pass, not wp arrival
@@ -520,6 +550,32 @@ def main():
                             wps.append(np.array([gp[0] + THRU * d[0], gp[1] + THRU * d[1], gp[2]]))
                             wp_r.append(WP_R)
                         wps = np.array(wps)
+                        wps[0][2] -= 0.5; wps[1][2] -= 0.5
+                        # gate-0 cold-start: the z trim hasn't converged at the first gate
+                        # (sag ~+1.0 vs ~+0.45 later) -- without this the first crossing sits
+                        # below the scoring volume and SEQUENTIAL scoring kills the whole run
+                        wps[2][2] -= 0.75; wps[3][2] -= 0.75
+                        # gate-1 sits low too: raise 0.45 crossed dz -0.39 (1 cm shy of the
+                        # tick band -0.4..-1.15) and still brushed the bottom tube (5x id-1001
+                        # imp<=0.17 right after the plane) -> grind-abort. 0.75 targets dz
+                        # ~-0.7: mid-band and clear of both tubes (gate-0 recipe)
+                        wps[4][2] -= 1.1; wps[5][2] -= 1.1
+                        # gate-2 crossed TRUE dz +0.21 (ticks land true -0.8..-1.2) with
+                        # z-comp 0.18 -> needs its own ~1.1 lift like gates 0/1
+                        d2 = pts[3][:2] - pts[1][:2]; d2 = d2 / max(np.linalg.norm(d2), 1e-6)
+                        p2 = np.array([-d2[1], d2[0]]) * 0.7
+                        # counter the corner-cut at gate 2's turn: crossed TRUE lat -0.93
+                        # (left tube brush -> grind-abort on exit) while g0/g1 crossed ~0
+                        wps[4][0] += p2[0]; wps[4][1] += p2[1]
+                        wps[5][0] += p2[0]; wps[5][1] += p2[1]
+                        wps[8][2] -= 0.6; wps[9][2] -= 0.6
+                        # gate-4 crossings land est dz +0.02..+0.05 (low): att-12 ticked only
+                        # via a late/lucky stamp, att-15 brush-ground the tube instead. Lift
+                        # into the same est -0.5..-0.9 zone as the rest
+                        wps[10][2] -= 1.0; wps[11][2] -= 1.0
+                        # gate-5: ground into the tube on the crossing leg (att 12, wp=11,
+                        # no plane-cross) -- z-comp had clipped to 0 by then so the unraised
+                        # crossing sat low like every other gate pre-raise. Same ~1.0 lift.
                         if "--high" in sys.argv and len(wps) > 7:
                             # gate-3 threading profile: the obstacle face (5.3 m out) tops ~0.5-0.7
                             # ABOVE gate center (raise-0.7 still clipped it 2/3 runs; raise-0.9
@@ -760,7 +816,7 @@ def main():
                               f"(est-vs-truth off=[{main._course_pts[g_i][0]-gt[0]:+.2f},"
                               f"{main._course_pts[g_i][1]-gt[1]:+.2f},"
                               f"{main._course_pts[g_i][2]-gt[2]:+.2f}])", flush=True)
-                        if abs(dz_c) < 1.5:
+                        if abs(dz_c) < 1.5 and g_i > 0:
                             # dz_c is the residual sag THIS crossing (z_comp already applied);
                             # fold it into the estimate for the next gate
                             main._zcomp = float(np.clip(main._zcomp + 0.5 * dz_c, 0.0, 1.2))
