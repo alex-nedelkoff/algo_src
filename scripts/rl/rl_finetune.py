@@ -123,7 +123,7 @@ def _yaw_quat(th):
     return np.array([np.cos(th/2), 0.0, 0.0, np.sin(th/2)])
 
 
-def make_env(n, seed, vq_path="sysid/vq_model.json", train=True):
+def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=None):
     rng = np.random.default_rng(seed); tracks = []; G3 = []
     for _ in range(n):
         sp = rng.uniform(9, 18); amp = rng.uniform(1.0, 3.0); ph = rng.uniform(0, 6.28)   # deploy courses use space 14-16; 9-13 left them OOD-long (grid weak cells)
@@ -146,7 +146,8 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True):
                       start_behind_max=34.0 if scat else None,
                       vq_model_path=vq_path, tracks=tracks, random_gate_start=scat,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
-                      gate_collision=True, gate_passage_radius=RAD_START, arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
+                      gate_collision=True, gate_passage_radius=(gate_radius if gate_radius is not None else RAD_START),
+                      arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
     return env, np.array(G3)
 
 
@@ -157,8 +158,12 @@ def policy_mean(model, obs_np):
     return model.policy.action_net(latent_pi)
 
 
-def eval_gates(model, seed=7, NE=16):
-    env, gates = make_env(NE, seed, train=False); venv = VecEnvAdapter(env); obs = venv.reset()
+def eval_gates(model, seed=7, NE=16, gate_radius=None):
+    # TRANSFER-10 fix: eval at the SAME radius as current training (passed by callback during
+    # curriculum); else falls back to RAD_END (the final/target radius, NOT RAD_START -- prior
+    # bug was eval always at RAD_START so curriculum eval lied)
+    eval_rad = gate_radius if gate_radius is not None else RAD_END
+    env, gates = make_env(NE, seed, train=False, gate_radius=eval_rad); venv = VecEnvAdapter(env); obs = venv.reset()
     peak = np.zeros(NE, int); fr = np.zeros(NE, bool); lstm = None; starts = np.ones(NE, bool)
     for _ in range(EP_STEPS + 200):
         if REC:
@@ -239,10 +244,10 @@ def main():
             if mm is not None:
                 A = np.array(mm["A"]); Bm = np.array(mm["B"])
                 for _ in range(50):
-                    # MonoRace-width scatter: the marginal-stability entry (CAP-03/TUMBLE-01 verdict)
-                    # needs the policy to hold its basin across real-plant-sized variation
+                    # MonoRace-width scatter (POD_SCALE_PLAN: bumped diag ±20% -> ±40% for VQ2 push).
+                    # Need the policy to hold its basin across real-plant-sized variation.
                     off = np.ones((3, 3)) + (rng.uniform(-0.6, 0.6, (3, 3)) * (1 - np.eye(3)))
-                    dia = 1 + rng.uniform(-0.20, 0.20, 3)
+                    dia = 1 + rng.uniform(-0.40, 0.40, 3)
                     A2 = A * off * dia[:, None]; B2 = Bm * off * (1 + rng.uniform(-0.30, 0.30, 3))[:, None]
                     if np.abs(np.linalg.eigvals(A2)).max() < 0.995:
                         break
@@ -252,8 +257,8 @@ def main():
                 for _ in range(50):
                     A1 = np.array(r2["A1"]); A2 = np.array(r2["A2"])
                     B0 = np.array(r2["B0"]); B1 = np.array(r2["B1"])
-                    dia = 1 + rng.uniform(-0.10, 0.10, 3)
-                    A1s = A1 * dia[:, None]; A2s = A2 * (1 + rng.uniform(-0.12, 0.12, 3))[:, None]
+                    dia = 1 + rng.uniform(-0.20, 0.20, 3)   # POD_SCALE_PLAN: pole-mag ±10% -> ±20%
+                    A1s = A1 * dia[:, None]; A2s = A2 * (1 + rng.uniform(-0.20, 0.20, 3))[:, None]
                     g = (1 + rng.uniform(-0.30, 0.30, 3))[:, None]
                     B0s = B0 * g; B1s = B1 * g
                     C = np.zeros((6, 6)); C[0:3, 0:3] = A1s; C[0:3, 3:6] = A2s; C[3:6, 0:3] = np.eye(3)
@@ -283,10 +288,11 @@ def main():
         lat0, tlag0 = LAT, TLAG
         for rd in range(1, DAGGER+1):
             vqp = dr_model_path(rd) if DR else "sysid/vq_model.json"
-            if DR:   # per-round timing DR: the live chain has ~12-22 ms latency + ~85 ms thrust lag
+            if DR:   # per-round timing DR: live chain has ~12-22 ms latency + ~85 ms thrust lag
+                # POD_SCALE_PLAN: extended latency to 0-30 ms range, finer steps
                 rngt = np.random.default_rng(2000 + rd)
-                LAT = float(rngt.choice([0.0, 0.014, 0.028]))
-                TLAG = float(rngt.uniform(0.0, 0.10))
+                LAT = float(rngt.uniform(0.0, 0.030))
+                TLAG = float(rngt.uniform(0.0, 0.12))
             ed, gd = make_env(NENV, 100+rd, vq_path=vqp); vd = VecEnvAdapter(ed); o = vd.reset(); Xn = []; Yn = []
             for _ in range(EP_STEPS):
                 S = ed._states; uff = ff_batch(S, *aim(S, gd, ed._gate_indices))
@@ -312,7 +318,7 @@ def main():
                 new_rad = RAD_START + (RAD_END - RAD_START) * frac
                 env.gate_passage_radius = new_rad
             if s.num_timesteps - s.last >= s.every:
-                s.last = s.num_timesteps; pk = eval_gates(model)
+                s.last = s.num_timesteps; pk = eval_gates(model, gate_radius=env.gate_passage_radius)
                 rad_str = f" rad={env.gate_passage_radius:.2f}" if RAD_STEPS > 0 else ""
                 print(f"  [t={s.num_timesteps}]{rad_str} gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
                 if pk.mean() > s.best:   # PPO can degrade the warm-start; keep the best-by-eval policy
@@ -322,7 +328,7 @@ def main():
 
     if STEPS > 0:
         print(f"FT[{TAG}]: learn {STEPS}...", flush=True)
-        model.learn(total_timesteps=STEPS, progress_bar=False, callback=GateEval(500_000))
+        model.learn(total_timesteps=STEPS, progress_bar=False, callback=GateEval(int(argf("--eval_every", 250_000))))
     else:
         print(f"FT[{TAG}]: STEPS=0 -> save DAgger warm-start only (no PPO)", flush=True)
     pk = eval_gates(model)
