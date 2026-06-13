@@ -170,7 +170,6 @@ def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
     print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} steps={STEPS}", flush=True)
-    print(f"FT[{TAG}] PPO: log_std={log_std} lr={LR} ent={ENT} epo={EPO} clip={CLIP} target_kl={TKL}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
     # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the
@@ -179,6 +178,7 @@ def main():
     LR = argf("--lr", 1e-4 if WARM else 3e-4); ENT = argf("--ent", 0.0 if WARM else 0.01)
     EPO = int(argf("--epo", 4 if WARM else 8)); CLIP = argf("--clip", 0.1 if WARM else 0.2)
     TKL = argf("--target_kl", 0.0)  # 0 = disabled; e.g. 0.02 enables KL early-stop
+    print(f"FT[{TAG}] PPO: log_std={log_std} lr={LR} ent={ENT} epo={EPO} clip={CLIP} target_kl={TKL}", flush=True)
     if REC:
         from sb3_contrib import RecurrentPPO
         model = RecurrentPPO("MlpLstmPolicy", venv, n_steps=512, batch_size=8192, n_epochs=EPO, gamma=0.999,
