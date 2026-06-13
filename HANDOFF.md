@@ -1,5 +1,11 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-12 late night)
 
+## ★ NEXT = CLOSE THE GUIDANCE GAP — RL CONTROL TRANSFER IS PROVEN (true-tilt re-fly)
+**TRANSFER-01 (06-13): RL stability/control TRANSFERS to live. The campaign's "tumbles" were WARPED-TILT FALSE ABORTS.** vq_deploy4 aborted on the live-frame tilt (warp-inflated 60-114 in turns); fixed to TRUE (qfix) tilt. Re-fly of `ft_cap6brake_v6c_best`: through the in-distribution flight true tilt holds **35-48 deg (controlled)** (approach med 35/max 59, near-gate med 41/max 48); it only inverts (110) late in the deep-OOD fly-away at 130 m. So the hard part — stable rate-path control that consumed EXP-01->RING-08 — WORKS live. The remaining gap is **guidance: overshoot gate 0 -> fly-away -> OOD** (tractable, no stability risk).
+- **Do next (guidance only):** (1) `--noobsclip` so recovery sees true distance (the clip masks how far it overshot); (2) tighter approach / harder brake so it doesn't overshoot gate 0 at v6-10; (3) recovery training at overshoot speed (scatter at higher start v). Champion `ft_cap6brake_v6c_best` (+slew variant cap6slew caps the aggressive-rate ring). Deploy: `vq_deploy4 --policy ft_cap6brake_v6c_best.zip --maxw 6 --thrmax 0.6 --zvd --space 14 --turn 0.2` (TRUE-tilt abort now baked in).
+- **ALWAYS read TRUE (qfix) tilt** (rl_truetilt.py / phase_tilt.py / truetilt.py). The live-frame tilt warp obscured the transfer picture the whole campaign.
+- Analytic fallback for VQ1 nav: `vq_waypoint2` true-frame already does clean turning waypoints (WAYPOINT-03, 5/5).
+
 ## ★ NEXT = GUIDANCE (the stability problem is SOLVED) — thread gate 0 + recover from a miss
 **✅ WAYPOINT-03 (06-13): proven `vq_waypoint2` re-confirmed live = 5/5 turning waypoints, TRUE tilt ≤9° (bending course turn 0.25/leg, max_tilt 18, run 20260613T091323). Waypoint NAVIGATION on the rate path is SOLVED (true-frame velocity-vector; weathervane gone). My vq_waypoint_slew was a re-derived-ff_one bug + warped-tilt misread. Open item = the RL RACING policy's guidance only; analytic true-frame nav + speed-schedule may already meet the VQ1 "navigate the course" bar. Invoke: `vq_waypoint2.py --mission 2 --turn 0.25 --leg 12 --v 2.2 --nwp 5` (raise --amax/--tilt/--v for speed, WAYPOINT-02 did 9.4 m/s).**
 
