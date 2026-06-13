@@ -170,13 +170,15 @@ def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
     print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} steps={STEPS}", flush=True)
+    print(f"FT[{TAG}] PPO: log_std={log_std} lr={LR} ent={ENT} epo={EPO} clip={CLIP} target_kl={TKL}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
     # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the
     # warm-start. From-scratch (warm=0) needs real exploration, so log_std 0 + entropy + larger LR.
-    log_std = -4.0 if WARM else 0.0
-    LR = 1e-4 if WARM else 3e-4; ENT = 0.0 if WARM else 0.01
-    EPO = 4 if WARM else 8; CLIP = 0.1 if WARM else 0.2
+    log_std = argf("--log_std", -4.0 if WARM else 0.0)
+    LR = argf("--lr", 1e-4 if WARM else 3e-4); ENT = argf("--ent", 0.0 if WARM else 0.01)
+    EPO = int(argf("--epo", 4 if WARM else 8)); CLIP = argf("--clip", 0.1 if WARM else 0.2)
+    TKL = argf("--target_kl", 0.0)  # 0 = disabled; e.g. 0.02 enables KL early-stop
     if REC:
         from sb3_contrib import RecurrentPPO
         model = RecurrentPPO("MlpLstmPolicy", venv, n_steps=512, batch_size=8192, n_epochs=EPO, gamma=0.999,
@@ -184,10 +186,13 @@ def main():
                              policy_kwargs=dict(net_arch=[128, 128], log_std_init=log_std, lstm_hidden_size=128),
                              device="cuda", verbose=1)
     else:
-        model = PPO("MlpPolicy", venv, n_steps=512, batch_size=8192, n_epochs=EPO, gamma=0.999,
-                    gae_lambda=0.95, clip_range=CLIP, ent_coef=ENT, learning_rate=LR,
-                    policy_kwargs=dict(net_arch=[128, 128, 128], log_std_init=log_std),
-                    device="cuda" if torch.cuda.is_available() else "cpu", verbose=1)
+        ppo_kwargs = dict(n_steps=512, batch_size=8192, n_epochs=EPO, gamma=0.999,
+                          gae_lambda=0.95, clip_range=CLIP, ent_coef=ENT, learning_rate=LR,
+                          policy_kwargs=dict(net_arch=[128, 128, 128], log_std_init=log_std),
+                          device="cuda" if torch.cuda.is_available() else "cpu", verbose=1)
+        if TKL > 0:
+            ppo_kwargs["target_kl"] = TKL   # KL early-stop guard against destroying warm-start
+        model = PPO("MlpPolicy", venv, **ppo_kwargs)
     with torch.no_grad():
         model.policy.action_net.bias[:] = torch.tensor([HOVER_U0, 0, 0, 0], dtype=model.policy.action_net.bias.dtype)
 
