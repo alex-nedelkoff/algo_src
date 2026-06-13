@@ -49,6 +49,9 @@ HOVER_U0 = 2*((F0+G)/(-DF))/THRMAX - 1
 WSIDE = argf("--ws", 0.0)   # TRANSFER-06: sideslip penalty weight; 0 = off (campaign default)
 WAPER = argf("--wa", 0.0)   # TRANSFER-08: aperture-proximity bonus weight (Gaussian, sigma 5 m)
 WCNTR = argf("--wc", 0.0)   # gate-centering weight (existing, near-plane lateral penalty)
+RAD_START = argf("--rad_start", 1.0)  # TRANSFER-10: gate radius curriculum -- start loose, anneal to 1.0
+RAD_END   = argf("--rad_end",   1.0)  # final radius after anneal
+RAD_STEPS = int(argf("--rad_steps", 0))   # anneal duration in PPO steps; 0 = no curriculum (rad=RAD_START)
 REWARD = {"gate_progress": 2.0, "gate_passage": 15.0, "gate_offset": 0.5,
           "body_rate": 0.005, "crash_penalty": 10.0, "sideslip": WSIDE,
           "aperture": WAPER, "gate_centering": WCNTR}
@@ -143,7 +146,7 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True):
                       start_behind_max=34.0 if scat else None,
                       vq_model_path=vq_path, tracks=tracks, random_gate_start=scat,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
-                      gate_collision=True, gate_passage_radius=1.0, arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
+                      gate_collision=True, gate_passage_radius=RAD_START, arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
     return env, np.array(G3)
 
 
@@ -172,7 +175,7 @@ def eval_gates(model, seed=7, NE=16):
 def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
-    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} steps={STEPS}", flush=True)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
     # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the
@@ -300,9 +303,18 @@ def main():
     class GateEval(BaseCallback):
         def __init__(s, every): super().__init__(); s.every = every; s.last = 0; s.best = best_dag if WARM else -1.0
         def _on_step(s):
+            # TRANSFER-10 radius curriculum: linearly anneal gate_passage_radius RAD_START -> RAD_END
+            # over RAD_STEPS PPO steps. Wider gates first = looser basin of attraction = more
+            # robust to sim-to-sim drift (user concern: in-env perfect but live miss grows; this
+            # widens the threading window the policy MUST get into so it can't overfit precision).
+            if RAD_STEPS > 0 and RAD_START != RAD_END:
+                frac = min(1.0, s.num_timesteps / RAD_STEPS)
+                new_rad = RAD_START + (RAD_END - RAD_START) * frac
+                env.gate_passage_radius = new_rad
             if s.num_timesteps - s.last >= s.every:
                 s.last = s.num_timesteps; pk = eval_gates(model)
-                print(f"  [t={s.num_timesteps}] gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
+                rad_str = f" rad={env.gate_passage_radius:.2f}" if RAD_STEPS > 0 else ""
+                print(f"  [t={s.num_timesteps}]{rad_str} gates {pk.mean():.1f}/{NG} fin {int((pk>=NG).sum())}/16", flush=True)
                 if pk.mean() > s.best:   # PPO can degrade the warm-start; keep the best-by-eval policy
                     s.best = pk.mean(); model.save(f"ft_{TAG}_best")
                     print(f"  [t={s.num_timesteps}] new best {s.best:.2f} -> ft_{TAG}_best.zip", flush=True)
