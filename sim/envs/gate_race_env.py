@@ -487,7 +487,7 @@ class GateRaceEnv(gym.Env):
             # Position: behind gate along negative normal + small lateral noise
             if self.start_behind_max is not None:
                 behind = float(rng.uniform(self.start_behind_dist, self.start_behind_max))
-                lateral = rng.normal(0, 0.15 * behind, size=3)
+                lateral = rng.normal(0, 0.10 * behind, size=3)
                 lateral[2] = rng.normal(0, 1.0)
                 self._states[idx, POS] = gate.position - behind * normal + lateral
             else:
@@ -505,8 +505,8 @@ class GateRaceEnv(gym.Env):
             roll = rng.normal(0, self.start_att_std)
             pitch = rng.normal(0, self.start_att_std)
             if self.start_behind_max is not None:
-                # racing attitude: nose anti-gate (camera-forward branch) + wide scatter
-                yaw = gate_yaw + np.pi + rng.normal(0, 0.8)
+                # racing attitude: nose anti-gate (camera-forward branch) + moderate scatter
+                yaw = gate_yaw + np.pi + rng.normal(0, 0.4)
             else:
                 yaw = gate_yaw + rng.normal(0, self.start_att_std)
             self._states[idx, QUAT] = _euler_to_quat(roll, pitch, yaw)
@@ -587,7 +587,15 @@ class GateRaceEnv(gym.Env):
                 self._gate_indices[0] = int(gate_index)
                 self._start_gate_indices[0] = int(gate_index)
         elif self.random_gate_start:
-            self._randomize_start(all_indices)
+            if self.start_behind_max is not None:
+                # recovery mix: scatter only half the episodes; the rest keep the standard
+                # full-course start so the core racing distribution stays dominant (an all-
+                # scattered population made BC demos multimodal and unlearnable)
+                m = self.np_random.random(self.n_envs) < 0.5
+                if m.any():
+                    self._randomize_start(all_indices[m])
+            else:
+                self._randomize_start(all_indices)
 
         self._update_gate_tracking(all_indices)
 
@@ -1071,7 +1079,12 @@ class GateRaceEnv(gym.Env):
                     self._splines[idx] = GateSpline(positions) if len(positions) >= 2 else None
 
             if self.random_gate_start:
-                self._randomize_start(done_indices)
+                if self.start_behind_max is not None:
+                    m = self.np_random.random(len(done_indices)) < 0.5   # recovery mix (see reset())
+                    if m.any():
+                        self._randomize_start(done_indices[m])
+                else:
+                    self._randomize_start(done_indices)
 
             self._update_gate_tracking(done_indices)
 

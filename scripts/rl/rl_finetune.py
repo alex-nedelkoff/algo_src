@@ -184,7 +184,10 @@ def main():
         print(f"FT: FF demos + BC... (vdes_warm={VDES_WARM})", flush=True)
         obs = venv.reset(); X = []; Y = []
         for _ in range(EP_STEPS):
-            S = env._states; u = ff_batch(S, *aim(S, gates, env._gates_passed))
+            # teacher targets the env's CURRENT gate (_gate_indices), not gates_passed --
+            # with scattered starts the episode begins at a random gate, so gates_passed (0)
+            # would aim the teacher backward across the course (poisoned demos)
+            S = env._states; u = ff_batch(S, *aim(S, gates, env._gate_indices))
             X.append(obs.copy()); Y.append(u.copy()); obs, r, d, info = venv.step(u)
         X = np.concatenate(X); Y = np.concatenate(Y)
         opt = torch.optim.Adam(model.policy.parameters(), 1e-3)
@@ -263,7 +266,7 @@ def main():
                 TLAG = float(rngt.uniform(0.0, 0.10))
             ed, gd = make_env(NENV, 100+rd, vq_path=vqp); vd = VecEnvAdapter(ed); o = vd.reset(); Xn = []; Yn = []
             for _ in range(EP_STEPS):
-                S = ed._states; uff = ff_batch(S, *aim(S, gd, ed._gates_passed))
+                S = ed._states; uff = ff_batch(S, *aim(S, gd, ed._gate_indices))
                 act, _ = model.predict(o, deterministic=True); Xn.append(o.copy()); Yn.append(uff.copy()); o, r, dn, inf = vd.step(act)
             X = np.concatenate([X, np.concatenate(Xn)]); Y = np.concatenate([Y, np.concatenate(Yn)])
             LAT, TLAG = lat0, tlag0   # eval on the nominal-timing env
