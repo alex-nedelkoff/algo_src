@@ -101,7 +101,9 @@ def aim(S, gates, gp):
     # |v| replay), so the constant-VDES teacher over-speeds live -> overshoot. A distance-scaled
     # speed gives the policy a brake profile robust to that plant-speed mismatch. V_GATE floor
     # keeps it committing through the aperture.
-    BRAKE = 0.9; V_GATE = 2.5
+    # aggressive brake taper (TRANSFER-01: live overshoots gate 0 to 8.7 m at v6-10, can't turn
+    # in within the 1.5 m gate; train to arrive SLOW). Target ~2 m/s by 4 m out.
+    BRAKE = 0.5; V_GATE = 1.5
     vtgt = np.clip(BRAKE * dist, V_GATE, VDES)
     tv = np.zeros((len(gp), 3)); tv[:, :2] = vtgt*dxy/dist
     vel = S[:, VEL][:, :2]; spd = np.linalg.norm(vel, axis=1)
