@@ -1,6 +1,16 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-12 late night)
 
-## ★ NEXT = GATE-RADIUS CURRICULUM (3->1.5) or accept analytic VQ1 path (reward-shaping at 1M budget REFUTED)
+## ★ NEXT = ACCEPT ANALYTIC VQ1 PATH for qualification; defer RL to pod-scale (4 reward/curr experiments REFUTED live at 1M budget)
+**TRANSFER-09/10 (06-13): Tested 4 RL guidance levers live, all refuted at 1M Mac budget.**
+- sideslip pen (ws=0.05/0.20): in-env beta drops, live lateral 5.0→5.9-6.4 m (WORSE)
+- aperture+centering (wa/wc): in-env grid 16/18, live lat 6.4 m (WORSE)
+- **radius curriculum (3→1.5)**: trained DAgger r3=5.1/6 fin 5/16 at rad=3.0 (campaign best in-env!) but **eval-instrumentation bug**: `eval_gates` builds fresh env at RAD_START so PPO eval scored at rad=3.0 while training at 1.5. True rad=1.5 grid = 0/18.
+- **Pattern: every RL lever improves in-env, worsens live lateral.** Sim-to-sim divergence is the binding constraint — in-env optimization specializes to matched-plant precision live plant doesn't share.
+- **Recommended exit**: VQ1 qualification ALREADY DONE analytically. `vq_waypoint2 --mission 2` flew 5/5 turning waypoints (WAYPOINT-03); `vq_course` scored 6/6 (COR-125). Ship that for competition.
+- **RL deferred to pod-scale push**: 10M+ multi-seed PPO + LSTM/temporal arch + wider DR. Pod ur5fncrpamh05u stopped (host A4500 full).
+- Bug to fix when resuming: `eval_gates(rad=...)` param + match training rad. Champion `ft_cap6brake_v6c_best` (live 8.7 m, 30 s controlled).
+- Tools added: `--ws --wa --wc --rad_start --rad_end --rad_steps`, full PPO config flags, sideslip+aperture rewards.
+
 **TRANSFER-09 (06-13): aperture-bonus reward tested live, REFUTED at 1M budget.** Built `aperture_proximity_reward = exp(-d²/(2·5²))` + wired `gate_centering` via --wc; trained `ft_aper_v6c_best` (DAgger 4.75 + PPO 1M, grid 16/18). Live closest 13.2 m (worse than cap6brake 8.7), lateral 6.4 m (worse than cap6brake 5.0). The σ=5m gradient pulled the policy in TOO HARD → bigger overshoot.
 - **Pattern across 3 reward shapings live** (sideslip, aperture, centering): all respond IN-ENV but live lateral gets WORSE not better. Lateral miss is control/dynamics, not guidance — not solvable by reward shaping at 1M PPO Mac budget.
 - **Do next, ordered**: (1) **gate-radius curriculum** — start `gate_passage_radius` at 3.0, anneal to 1.5 over training. The env already accepts `gate_passage_radius` kwarg (see GateRaceEnv.__init__). Add `--rad_start --rad_end --rad_steps` to rl_finetune; or just train at radius 3.0 alone and see if anything threads. (2) Pod retry for 10M+ PPO multi-seed if Mac short budget is the bottleneck. (3) **Pragmatic exit**: VQ1 qualification already met analytically — `vq_waypoint2` 5/5 turning waypoints + `vq_course` 6/6 (COR-125). RL for racing speed is a separate program.
