@@ -230,11 +230,11 @@ def main():
                     A1 = np.array(r2["A1"]); A2 = np.array(r2["A2"])
                     B0 = np.array(r2["B0"]); B1 = np.array(r2["B1"])
                     dia = 1 + rng.uniform(-0.10, 0.10, 3)
-                    A1s = A1 * dia[:, None]; A2s = A2 * (1 + rng.uniform(-0.20, 0.20, 3))[:, None]
+                    A1s = A1 * dia[:, None]; A2s = A2 * (1 + rng.uniform(-0.12, 0.12, 3))[:, None]
                     g = (1 + rng.uniform(-0.30, 0.30, 3))[:, None]
                     B0s = B0 * g; B1s = B1 * g
                     C = np.zeros((6, 6)); C[0:3, 0:3] = A1s; C[0:3, 3:6] = A2s; C[3:6, 0:3] = np.eye(3)
-                    if np.abs(np.linalg.eigvals(C)).max() < 0.97:
+                    if np.abs(np.linalg.eigvals(C)).max() < 0.985:   # base |p|=0.92 (RING-04); allow scatter up to live-ring stiffness
                         r2["A1"] = A1s.tolist(); r2["A2"] = A2s.tolist()
                         r2["B0"] = B0s.tolist(); r2["B1"] = B1s.tolist()
                         break
