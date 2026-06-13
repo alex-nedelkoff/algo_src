@@ -33,6 +33,7 @@ F0 = M["thrust"]["f0"]; DF = M["thrust"]["df_dthr"]
 MAXW = argf("--maxw", 17.45)   # action-authority cap: max wire rate cmd (rad/s); deploy chain must use the same value
 THRMAX = argf("--thrmax", 1.0)  # thrust-authority cap: u0=+1 -> thr THRMAX (teacher p99 ~0.33; live bang-bang thr 1.0 was the 06-12 killer)
 ZVD = "--zvd" in sys.argv       # ZVD-shape the wire rate cmds (EXP-20b ring killer on the policy path); deploy must match
+SLEW = argf("--slew", 0.0)      # rad/s^2 wire-rate slew cap (RING-06: prevents the hard kick that triggers the nonlinear 11 Hz ring); 0=off
 SCATTER = "--scatter" in sys.argv  # miss-recovery starts: random gate, behind 1-34 m, racing yaw (training envs only)
 DT = 1.0 / 72.0; EP_STEPS = 1080   # MIMO rate loop is dt-specific (fit 1/72); ~15 s episodes
 # weathervane-FF (corner_speed teacher term, WV-DYNAMIC coeffs), ENU env frame signs
@@ -132,6 +133,7 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True):
     scat = SCATTER and train
     env = GateRaceEnv(n_envs=n, dt=DT, max_steps=EP_STEPS, action_mode="vq_rate",
                       max_body_rate=MAXW, vq_max_thrust=THRMAX, vq_zvd=ZVD,
+                      vq_slew=(SLEW if SLEW > 0 else None),
                       start_behind_max=34.0 if scat else None,
                       vq_model_path=vq_path, tracks=tracks, random_gate_start=scat,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
@@ -164,7 +166,7 @@ def eval_gates(model, seed=7, NE=16):
 def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
-    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} steps={STEPS}", flush=True)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
     # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the

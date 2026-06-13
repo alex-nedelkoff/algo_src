@@ -39,6 +39,7 @@ THRMAX = argf("--thrmax", 1.0)  # must match the policy's training-time thrust c
 ZVD = "--zvd" in sys.argv       # ZVD shaper on wire rate cmds; must match training (EXP-20b ring killer)
 ZVD_AMP = np.array([0.371, 0.476, 0.153])
 ZVD_DELAY = (7, 7, 4)           # frames per axis at 72 Hz (roll, pitch, yaw)
+SLEW = argf("--slew", 0.0)      # rad/s^2 wire-rate slew cap (RING-06); must match training
 
 
 def args_(f, d):
@@ -166,6 +167,7 @@ def main():
     hist: list[NDArray] = []
     held_action = None
     zvd_buf = np.zeros((15, 3))
+    slew_prev = None
     for k in range(n_steps):
         t = k * DT
         hist.append(s.copy())
@@ -217,6 +219,11 @@ def main():
             zvd_buf = np.roll(zvd_buf, 1, axis=0); zvd_buf[0] = rates
             rates = np.array([ZVD_AMP[0] * zvd_buf[0, ax] + ZVD_AMP[1] * zvd_buf[ZVD_DELAY[ax], ax]
                               + ZVD_AMP[2] * zvd_buf[2 * ZVD_DELAY[ax], ax] for ax in range(3)])
+        if SLEW > 0:
+            if slew_prev is None:
+                slew_prev = rates.copy()
+            mx = SLEW * DT
+            rates = slew_prev + np.clip(rates - slew_prev, -mx, mx); slew_prev = rates.copy()
         action = np.array([[thr, *rates]])
         if actevery > 1:                     # hold the previous cmd between policy ticks
             if held_action is None or k % actevery == 0:

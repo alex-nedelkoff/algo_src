@@ -309,6 +309,7 @@ class GateRaceEnv(gym.Env):
         vq_thrust_lag_s: float = 0.0,
         vq_max_thrust: float = 1.0,
         vq_zvd: bool = False,
+        vq_slew: float | None = None,
         start_behind_max: float | None = None,
     ) -> None:
         super().__init__()
@@ -360,6 +361,8 @@ class GateRaceEnv(gym.Env):
         self._zvd_amp = np.array([0.371, 0.476, 0.153])
         self._zvd_delay = np.array([7, 7, 4])           # frames per axis (roll, pitch, yaw)
         self._zvd_buf: NDArray[np.float64] | None = None
+        self.vq_slew = vq_slew                          # rad/s^2 wire-rate slew cap (RING-06); None = off
+        self._slew_prev: NDArray[np.float64] | None = None
 
         # Track initialization: explicit list > single track > default figure-8
         if tracks is not None:
@@ -558,6 +561,7 @@ class GateRaceEnv(gym.Env):
                 self._states[:, 13] = 0.2675  # init first-order thrust-lag state at hover thrust
         self._step_counts[:] = 0
         self._prev_actions = np.zeros((self.n_envs, 4), dtype=np.float64)
+        self._slew_prev = None; self._zvd_buf = None
         self._gates_passed[:] = 0
         self._laps_completed[:] = 0
         self._episode_rewards[:] = 0.0
@@ -656,6 +660,17 @@ class GateRaceEnv(gym.Env):
                 phys[:, 1 + ax] = (self._zvd_amp[0] * self._zvd_buf[:, 0, ax]
                                    + self._zvd_amp[1] * self._zvd_buf[:, d, ax]
                                    + self._zvd_amp[2] * self._zvd_buf[:, 2 * d, ax])
+        if self.vq_slew is not None:
+            # slew-limit the wire rate command: caps cmd rate-of-change so the policy can't
+            # make the hard kick that triggers the live nonlinear ~11 Hz saturation ring
+            # (RING-06: the ring fires only on aggressive commands; gentle ones stay damped).
+            n = u.shape[0]
+            if self._slew_prev is None or self._slew_prev.shape[0] != n:
+                self._slew_prev = phys[:, 1:4].copy()
+            mx = self.vq_slew * self.dt
+            dr = np.clip(phys[:, 1:4] - self._slew_prev, -mx, mx)
+            phys[:, 1:4] = self._slew_prev + dr
+            self._slew_prev = phys[:, 1:4].copy()
         return phys
 
     def step(
