@@ -1,6 +1,15 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-12 late night)
 
-## ★ NEXT = LIVE TEST `ft_swC_explore_best` (PPO winner); SCALE-UP RUNNING ON POD (3 ws x 2 seeds x 3M)
+## ★ NEXT = APERTURE-BONUS REWARD or GATE-RADIUS CURRICULUM (sideslip-reward alone responds but doesn't crack capture)
+**TRANSFER-08 (06-13): pod-PPO breakthrough STANDS, sideslip-reward lever WORKS but is downstream of geometric miss.** Live-flew pod scale winners:
+- `ft_C_ws020_s1_best`: closest 13.0 m (cautious — slowed and drifted, didn't commit)
+- `ft_C_ws005_s2_best`: closest 9.5 m, beta dropped 154→**72** at exit (sideslip reward genuinely shifted to wv-stable branch live!)
+- capture_geom: lateral -5.9 m vs cap6brake -5.0 m → lateral SLIGHTLY WORSE despite beta drop. Sideslip is symptom, geometric miss is cause: policy arrives at v9-10 with too much energy to turn into 1.5 m aperture.
+- **Do next** (reward redesign, pod-iterable): (1) **aperture-distance bonus**: penalize closest_dist_to_current_gate every step before passage (not just delta-progress) — teaches precision approach. Add to monorace_reward. (2) **gate-radius curriculum**: start passage_radius 3.0 → anneal to 1.5 over training (env already has `gate_passage_radius` flag). (3) yaw-toward-gate reward to encourage active gate-pointing not just speed-vec yaw.
+- **POD STANDS**: A4500 ssh runpod-cor127 (213.173.108.207:13180), vol ygkhfer0p5, currently STOPPED. Resume: `runpodctl pod start ur5fncrpamh05u` ($0.25/hr; only $0.18 spent so far / $10.50 balance). 6-run scale workflow proven (~20 min).
+- **Tools added**: `--ws` sideslip flag, PPO config flags (`--log_std --ent --lr --clip --target_kl`), sideslip_penalty in monorace_reward.
+- Champion stays `ft_cap6brake_v6c_best` (live 8.7 m, controlled 30 s).
+
 **POD-SWEEP-01 (06-13): the PPO erosion wall is BROKEN.** A4500 pod runpod-cor127 (213.173.108.207:13180), 5-config × 1M PPO sweep ran in 1h. **Config C: `--log_std -2.5 --ent 0.005`** is the ONLY config PPO IMPROVED (DAgger 4.4 → PPO 4.9 fin 4/16). The old config (log_std=-4 = essentially deterministic, ent=0) had no exploration head-room. B (target_kl=0.02), D (LR 3e-4), E (combo) all DESTROYED the warm-start; A baseline eroded mildly.
 - `ft_swC_explore_best` pulled: grid **17/18 lag-0** (cap6brake-grade); final ft_swC_explore.zip 14/18.
 - **6-run scale-up running**: ws ∈ {0.05, 0.10, 0.20} × seed ∈ {1, 2}, C-config, 3M steps each ≈ 3h on the pod.
