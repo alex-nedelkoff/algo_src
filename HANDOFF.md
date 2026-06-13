@@ -1,6 +1,13 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-12 late night)
 
-## ★ NEXT = FIX PPO-FROM-WARM CONFIG ON MAC (single-config sweep), THEN POD multi-seed scale
+## ★ NEXT = LIVE TEST `ft_swC_explore_best` (PPO winner); SCALE-UP RUNNING ON POD (3 ws x 2 seeds x 3M)
+**POD-SWEEP-01 (06-13): the PPO erosion wall is BROKEN.** A4500 pod runpod-cor127 (213.173.108.207:13180), 5-config × 1M PPO sweep ran in 1h. **Config C: `--log_std -2.5 --ent 0.005`** is the ONLY config PPO IMPROVED (DAgger 4.4 → PPO 4.9 fin 4/16). The old config (log_std=-4 = essentially deterministic, ent=0) had no exploration head-room. B (target_kl=0.02), D (LR 3e-4), E (combo) all DESTROYED the warm-start; A baseline eroded mildly.
+- `ft_swC_explore_best` pulled: grid **17/18 lag-0** (cap6brake-grade); final ft_swC_explore.zip 14/18.
+- **6-run scale-up running**: ws ∈ {0.05, 0.10, 0.20} × seed ∈ {1, 2}, C-config, 3M steps each ≈ 3h on the pod.
+- **Do next**: live test `ft_swC_explore_best` on the laptop: `vq_deploy4 --policy ft_swC_explore_best.zip --maxw 6 --thrmax 0.6 --slew 40 --space 14 --turn 0.2 --noobsclip`. If gate-0 closest drops below 8.7 m (cap6brake), the sideslip-reward + correct PPO-config IS the lateral-miss lever; if it doesn't, may need higher ws (0.20 in scale).
+- After scale finishes, pull the 6 final policies, grid + capture_geom them, pick best for live, then live battery.
+- Tools: scripts/rl/rl_finetune now has `--log_std --lr --ent --epo --clip --target_kl --ws`. Sweep script `/tmp/ppo_sweep.sh` + scale `/tmp/sweep_scale.sh` on pod. Champion still cap6brake (live 8.7 m, controlled 30 s).
+
 **TRANSFER-07 (06-13): sideslip-penalty reward BUILT and VERIFIED; PPO config is the bottleneck.** Mac 3M smoke: DAgger 0.3→5.0/6, PPO 500k 4.2 → 1M 3.6 → 1.5M 1.0/6 (same 3-time erosion pattern). Live `ft_side05_v6c_best` DAgger: closest 12.2 m, beta 127-162 (slight improvement, reward had small effect). DAgger MSE ignores ws; ws only enters PPO -- so the sideslip lever NEEDS PPO that climbs.
 - **Do next on MAC (single-seed, cheap): one-knob PPO-config sweep** from warm-start: log_std_init -4→-2.5; ent_coef 0→0.005; LR 1e-4→3e-4; target_kl 0.02 early-stop; anchored-BC regularization (penalize KL to DAgger best); clip 0.1→0.2. Whichever config IMPROVES on Mac at 1M = the config that earns the pod.
 - **Then POD**: multi-seed + wide DR + ws sweep (0.02/0.05/0.1/0.2) on the winning config. This is the genuine MLP-PPO CPU-bound scale-up.
