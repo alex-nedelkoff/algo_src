@@ -42,6 +42,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "gate_approach": 0.0,      # disabled by default
     "gate_centering": 0.0,     # disabled by default
     "sideslip": 0.0,           # TRANSFER-06 lever: penalize body-y velocity^2
+    "aperture": 0.0,           # TRANSFER-08 lever: Gaussian proximity bonus across approach
 }
 
 
@@ -111,6 +112,34 @@ def sideslip_penalty(state: QuadState) -> float:
     rzy = 2.0 * (y * z + w * x)
     vby = rxy * state.vel[0] + ryy * state.vel[1] + rzy * state.vel[2]
     return -float(vby * vby)
+
+
+def aperture_proximity_reward(
+    state: QuadState, gate_state: GateState, sigma: float = 5.0
+) -> float:
+    """Gaussian aperture-proximity bonus across the WHOLE approach (TRANSFER-08).
+
+    Smooth gradient pulling the drone toward the gate center at every step
+    (not just near the plane like gate_centering). The campaign-blocker is the
+    final 10 m: the policy approaches at v9-10 with too much energy to turn
+    into the 1.5 m aperture, then drifts wide. Continuous proximity reward
+    teaches the policy to seek closeness throughout the approach.
+
+    r = exp(-d^2 / (2*sigma^2))
+
+    At sigma=5: r=1.0 at gate, 0.61 at 5m, 0.14 at 10m, 0.01 at 15m -- gradient
+    biting from 15 m in (the typical approach band) but saturating near gate.
+
+    Args:
+        state: Current quadrotor state.
+        gate_state: Target gate state (use the CURRENT gate, env handles index).
+        sigma: Bell-curve width in meters. 5 m bites at typical approach range.
+
+    Returns:
+        Reward in (0, 1].
+    """
+    d = float(np.linalg.norm(state.pos - gate_state.position))
+    return float(np.exp(-0.5 * (d / sigma) ** 2))
 
 
 def gate_offset_penalty(state: QuadState, gate_state: GateState) -> float:
@@ -215,7 +244,11 @@ def monorace_reward(
     sideslip_val = w.get("sideslip", 0.0) * sideslip_penalty(state)
     components["sideslip"] = sideslip_val
 
-    total = progress_val + body_rate_val + action_smooth_val + sideslip_val
+    # Aperture proximity bonus (TRANSFER-08; weight 0 = disabled = default)
+    aperture_val = w.get("aperture", 0.0) * aperture_proximity_reward(state, gate_state)
+    components["aperture"] = aperture_val
+
+    total = progress_val + body_rate_val + action_smooth_val + sideslip_val + aperture_val
     return RewardResult(total=total, components=components)
 
 
