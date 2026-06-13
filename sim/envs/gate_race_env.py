@@ -32,13 +32,14 @@ RC_BOUNDARY_PENALTY = 9
 RC_GATE_APPROACH = 10
 RC_GATE_CENTERING = 11
 RC_SPLINE_SPEED = 12
-NUM_REWARD_COMPONENTS = 13
+RC_SIDESLIP = 13
+NUM_REWARD_COMPONENTS = 14
 REWARD_COMPONENT_NAMES = [
     "progress", "body_rate", "action_smooth",
     "gate_passage", "gate_offset", "crash_penalty",
     "spline_proximity", "heading_alignment", "speed_bonus",
     "boundary_penalty", "gate_approach", "gate_centering",
-    "spline_speed",
+    "spline_speed", "sideslip",
 ]
 from sim.tracks import Track
 from sim.procedural_tracks import ProceduralTrackGenerator
@@ -873,6 +874,7 @@ class GateRaceEnv(gym.Env):
             self._step_reward_components[i, RC_PROGRESS] = reward_result.components["progress"]
             self._step_reward_components[i, RC_BODY_RATE] = reward_result.components["body_rate"]
             self._step_reward_components[i, RC_ACTION_SMOOTH] = reward_result.components["action_smooth"]
+            self._step_reward_components[i, RC_SIDESLIP] = reward_result.components.get("sideslip", 0.0)
 
             # Spline proximity reward (pre-computed)
             if spline_weight != 0.0:

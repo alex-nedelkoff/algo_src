@@ -46,8 +46,9 @@ HOVER_U0 = 2*((F0+G)/(-DF))/THRMAX - 1
 # Racing reward: gate_passage (per-gate, the objective) + delta gate_progress (loiter-safe guidance)
 # + small body-rate penalty + crash. NO dense per-step survival terms (heading_alignment/speed_bonus
 # are gameable on a finite course -> reward-hacking: survive+point-at-gate without threading).
+WSIDE = argf("--ws", 0.0)   # TRANSFER-06: sideslip penalty weight; 0 = off (campaign default)
 REWARD = {"gate_progress": 2.0, "gate_passage": 15.0, "gate_offset": 0.5,
-          "body_rate": 0.005, "crash_penalty": 10.0}
+          "body_rate": 0.005, "crash_penalty": 10.0, "sideslip": WSIDE}
 
 
 def mat_to_quat_batch(m):
@@ -168,7 +169,7 @@ def eval_gates(model, seed=7, NE=16):
 def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
-    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} steps={STEPS}", flush=True)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
     # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the

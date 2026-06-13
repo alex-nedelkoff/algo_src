@@ -41,6 +41,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "boundary_penalty": 0.0,   # disabled by default
     "gate_approach": 0.0,      # disabled by default
     "gate_centering": 0.0,     # disabled by default
+    "sideslip": 0.0,           # TRANSFER-06 lever: penalize body-y velocity^2
 }
 
 
@@ -84,6 +85,32 @@ def body_rate_penalty(state: QuadState) -> float:
     """
     omega = state.omega  # angular velocity vector (3,)
     return -float(np.dot(omega, omega))  # -||Omega||^2
+
+
+def sideslip_penalty(state: QuadState) -> float:
+    """Penalize tail-first sideslip: -(body-y velocity)^2.
+
+    TRANSFER-05/06: the live RL policy flies camera-forward (tail-first, |beta|~170)
+    and at v10+ the sideslip curves it laterally off the gate aperture; the analytic
+    true-frame law (vq_waypoint2) bounds sideslip and threads cleanly. Teaching the
+    policy to bound body-y velocity is the missing lever. Squared to bite hard above
+    a few m/s lateral.
+
+    Args:
+        state: Current quadrotor state.
+
+    Returns:
+        Negative squared body-y velocity (rad of energy in the sideslip mode).
+    """
+    # body velocity = R^T @ vel_world (z-y-x convention quat; use rotmat)
+    q = state.quat  # [w,x,y,z]
+    w, x, y, z = q[0], q[1], q[2], q[3]
+    # body-y row of R^T (= column of R, index 1)
+    rxy = 2.0 * (x * y - w * z)
+    ryy = 1.0 - 2.0 * (x * x + z * z)
+    rzy = 2.0 * (y * z + w * x)
+    vby = rxy * state.vel[0] + ryy * state.vel[1] + rzy * state.vel[2]
+    return -float(vby * vby)
 
 
 def gate_offset_penalty(state: QuadState, gate_state: GateState) -> float:
@@ -184,7 +211,11 @@ def monorace_reward(
     )
     components["action_smooth"] = action_smooth_val
 
-    total = progress_val + body_rate_val + action_smooth_val
+    # Sideslip penalty (TRANSFER-06; weight 0 = disabled = default)
+    sideslip_val = w.get("sideslip", 0.0) * sideslip_penalty(state)
+    components["sideslip"] = sideslip_val
+
+    total = progress_val + body_rate_val + action_smooth_val + sideslip_val
     return RewardResult(total=total, components=components)
 
 
