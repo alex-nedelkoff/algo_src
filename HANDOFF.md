@@ -1,6 +1,12 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-12 late night)
 
-## ★ NEXT = APERTURE-BONUS REWARD or GATE-RADIUS CURRICULUM (sideslip-reward alone responds but doesn't crack capture)
+## ★ NEXT = GATE-RADIUS CURRICULUM (3->1.5) or accept analytic VQ1 path (reward-shaping at 1M budget REFUTED)
+**TRANSFER-09 (06-13): aperture-bonus reward tested live, REFUTED at 1M budget.** Built `aperture_proximity_reward = exp(-d²/(2·5²))` + wired `gate_centering` via --wc; trained `ft_aper_v6c_best` (DAgger 4.75 + PPO 1M, grid 16/18). Live closest 13.2 m (worse than cap6brake 8.7), lateral 6.4 m (worse than cap6brake 5.0). The σ=5m gradient pulled the policy in TOO HARD → bigger overshoot.
+- **Pattern across 3 reward shapings live** (sideslip, aperture, centering): all respond IN-ENV but live lateral gets WORSE not better. Lateral miss is control/dynamics, not guidance — not solvable by reward shaping at 1M PPO Mac budget.
+- **Do next, ordered**: (1) **gate-radius curriculum** — start `gate_passage_radius` at 3.0, anneal to 1.5 over training. The env already accepts `gate_passage_radius` kwarg (see GateRaceEnv.__init__). Add `--rad_start --rad_end --rad_steps` to rl_finetune; or just train at radius 3.0 alone and see if anything threads. (2) Pod retry for 10M+ PPO multi-seed if Mac short budget is the bottleneck. (3) **Pragmatic exit**: VQ1 qualification already met analytically — `vq_waypoint2` 5/5 turning waypoints + `vq_course` 6/6 (COR-125). RL for racing speed is a separate program.
+- Champion `ft_cap6brake_v6c_best` (live 8.7 m, 30s controlled, true tilt 35-48). Pod ur5fncrpamh05u STOPPED (host A4500 full, retry `runpodctl pod start`).
+- Tools added: `--wa` (aperture), `--wc` (centering), `--ws` (sideslip), full PPO config flags. `aperture_proximity_reward`, `sideslip_penalty` in sim/rewards.py.
+
 **TRANSFER-08 (06-13): pod-PPO breakthrough STANDS, sideslip-reward lever WORKS but is downstream of geometric miss.** Live-flew pod scale winners:
 - `ft_C_ws020_s1_best`: closest 13.0 m (cautious — slowed and drifted, didn't commit)
 - `ft_C_ws005_s2_best`: closest 9.5 m, beta dropped 154→**72** at exit (sideslip reward genuinely shifted to wv-stable branch live!)
