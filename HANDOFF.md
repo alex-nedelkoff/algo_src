@@ -1,11 +1,15 @@
 # AI-GP HANDOFF — next agent starts here (updated 2026-06-12 late night)
 
-## ★ NEXT = REFLY `ft_cap6q92_v6c_best` (`vq_deploy4 --policy ft_cap6q92_v6c_best.zip --maxw 6 --thrmax 0.6 --zvd --space 14 --turn 0.2`); grid 18/18 lag-0 — trained on the measured-ζ ring (RING-04 fix)
-**RING-04 (06-13): run-8 refly localized the live failure to the GATE TURN-IN ring + fixed the model Q. Flight pending (laptop Tailscale dropped mid-ship — re-scp policy + sysid/vq_model.json first).**
-- `diverge_run8.py` (step-aligned offline-from-handoff vs live recording): SIM and LIVE match to the DIGIT for ~1.5 s, then at frame ~115 the LIVE inner loop rings up on the gate turn-in (omega 0→2, tilt 34→55, live cuts thr 0.30→0.15) while the over-damped model stays smooth and threads. Deploy chain exact; the gap is the ring Q.
-- Fix: EXP-20a's measured ζ=0.14 → discrete pole |p|≈0.92 at 6.5 Hz (lstsq gave 0.76=ζ0.3). rate_loop_2nd poles raised 0.76→0.92 (backup `vq_model_pre_highq.json`); DR bound 0.97→0.985. Retrain `ft_cap6q92_v6c_best`: grid 18/18 lag-0, 11/18 lag.
-- If q92 still rings on turn-in live: the ZVD f_d notch is mistuned (delays set from the lstsq freqs) — do a dedicated per-axis ring-ID flight (clean rate steps, log-decrement on omega) to nail live f_d, retune ZVD delays. Second finding (lower pri): at tilt55/v11 in the flee, live accelerates where the model brakes — high-tilt drag deficit, only matters after a miss.
-- Tools: `diverge_run8.py`, `replay_run8.py`, `highq_test.py` (/tmp). Model backups chain: vq_model_pre_highq → pre_lowthr → pre_envelope.
+## ★ NEXT = REDESIGN THE RING SUPPRESSION (the analytic-teacher+DAgger pipeline hit its ceiling at the true 11 Hz ring)
+**RING-05 (06-13): the live roll/pitch ring is MEASURED at ~11 Hz (FFT, run-9/10), not the 5.2/6.6 Hz the lstsq gave — so the 7-frame ZVD delay was a full period (no cancellation). BUT the faithful 11 Hz model defeats the analytic teacher (0.8/6 at any damping vs 4.9/6 at 6.5 Hz): DAgger can't demonstrate ring-robustness because the teacher itself can't fly the ring. Integer ZVD is also too coarse at 11 Hz/72 Hz (6.5-frame period). This is the original "RL must absorb the coupled dynamics" thesis, hit concretely.**
+- **Champion / deliverable: `ft_cap6brake_v6c_best`** — caps + ZVD(7/7/4) + q92 ring + scatter + gate-braking teacher taper; grid 18/18 lag-0; flew the closest live approach of the campaign (**8.6 m**, v8.8; ladder 16→13.5→11.9→9.2→8.6). Deploy: `vq_deploy4 --policy ft_cap6brake_v6c_best.zip --maxw 6 --thrmax 0.6 --zvd --space 14 --turn 0.2`. Model + ZVD are at the cap6brake training config (reverted from the 11 Hz experiment).
+- **The binding gap (precise): final-turn ring + ~20% approach-speed excess.** `diverge_run9`: SIM/LIVE track to the digit until ~8 m, then the live ring fires on the hard turn-in (omega→5, tilt→52) and live is faster (v9.9 vs 7.2) → brakes too late → overshoot→flee. The brake taper helped (run-10 v8.8 vs run-9 v13.9) but the ring still fires.
+- **Three options for the ring (pick one, all need a flight to validate):**
+  1. **Digital notch at 11 Hz** on the rate command (biquad, fractional-delay — cleaner than integer ZVD at this freq). Apply in env+gate+deploy, retrain, refly.
+  2. **PPO from reward** on the 11 Hz plant (not imitation) — learns the ring-robustness the analytic teacher cannot demonstrate. The honest pivot the campaign has pointed at since EXP-34. Pod-worthy (this is the scale-up case; high-core CPU).
+  3. **Ring-aware teacher** (notch its own command + add rate damping) so DAgger can demo on the 11 Hz plant.
+- **Bonus gap (lower pri):** at tilt55/v11 in the flee, live accelerates where the model brakes — high-tilt drag deficit, only matters post-miss.
+- Tools: `ring_id.py` (FFT per axis), `diverge_run9.py`, `replay_run8.py`. Model backups: vq_model_pre_highq → pre_lowthr → pre_envelope. The 11 Hz model is reconstructible via ring_id freqs in `fit_ring_mimo`.
 
 ## (superseded by RING-04 — q92 is the new candidate) REFLY `ft_cap6rec3_v6c_best`
 
