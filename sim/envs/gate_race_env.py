@@ -309,6 +309,7 @@ class GateRaceEnv(gym.Env):
         vq_thrust_lag_s: float = 0.0,
         vq_max_thrust: float = 1.0,
         vq_zvd: bool = False,
+        start_behind_max: float | None = None,
     ) -> None:
         super().__init__()
 
@@ -334,6 +335,12 @@ class GateRaceEnv(gym.Env):
         self.omega_min = omega_min
         self.random_gate_start = random_gate_start
         self.start_behind_dist = start_behind_dist
+        # Miss-recovery scatter (ZVD-01 follow-up): when set, random-gate starts sample the
+        # behind-distance U(start_behind_dist, start_behind_max) with proportional lateral
+        # offset and the RACING yaw (anti-gate; _randomize_start's gate-facing yaw is the
+        # mirror branch this policy never flies). Covers |obs0| up to start_behind_max so a
+        # live gate miss is in-distribution instead of an OOD thrust-max flee.
+        self.start_behind_max = start_behind_max
         self.start_vel_std = start_vel_std
         self.start_att_std = start_att_std
         self.start_omega_std = start_omega_std
@@ -478,11 +485,17 @@ class GateRaceEnv(gym.Env):
             normal = _gate_normal(gate)
 
             # Position: behind gate along negative normal + small lateral noise
-            self._states[idx, POS] = (
-                gate.position
-                - self.start_behind_dist * normal
-                + rng.normal(0, 0.1, size=3)
-            )
+            if self.start_behind_max is not None:
+                behind = float(rng.uniform(self.start_behind_dist, self.start_behind_max))
+                lateral = rng.normal(0, 0.15 * behind, size=3)
+                lateral[2] = rng.normal(0, 1.0)
+                self._states[idx, POS] = gate.position - behind * normal + lateral
+            else:
+                self._states[idx, POS] = (
+                    gate.position
+                    - self.start_behind_dist * normal
+                    + rng.normal(0, 0.1, size=3)
+                )
 
             # Velocity perturbation
             self._states[idx, VEL] = rng.normal(0, self.start_vel_std, size=3)
@@ -491,7 +504,11 @@ class GateRaceEnv(gym.Env):
             gate_yaw = float(np.arctan2(normal[1], normal[0]))
             roll = rng.normal(0, self.start_att_std)
             pitch = rng.normal(0, self.start_att_std)
-            yaw = gate_yaw + rng.normal(0, self.start_att_std)
+            if self.start_behind_max is not None:
+                # racing attitude: nose anti-gate (camera-forward branch) + wide scatter
+                yaw = gate_yaw + np.pi + rng.normal(0, 0.8)
+            else:
+                yaw = gate_yaw + rng.normal(0, self.start_att_std)
             self._states[idx, QUAT] = _euler_to_quat(roll, pitch, yaw)
 
             # Angular rate perturbation (M23: random initial body rates)

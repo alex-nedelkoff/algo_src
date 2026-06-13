@@ -33,6 +33,7 @@ F0 = M["thrust"]["f0"]; DF = M["thrust"]["df_dthr"]
 MAXW = argf("--maxw", 17.45)   # action-authority cap: max wire rate cmd (rad/s); deploy chain must use the same value
 THRMAX = argf("--thrmax", 1.0)  # thrust-authority cap: u0=+1 -> thr THRMAX (teacher p99 ~0.33; live bang-bang thr 1.0 was the 06-12 killer)
 ZVD = "--zvd" in sys.argv       # ZVD-shape the wire rate cmds (EXP-20b ring killer on the policy path); deploy must match
+SCATTER = "--scatter" in sys.argv  # miss-recovery starts: random gate, behind 1-34 m, racing yaw (training envs only)
 DT = 1.0 / 72.0; EP_STEPS = 1080   # MIMO rate loop is dt-specific (fit 1/72); ~15 s episodes
 # weathervane-FF (corner_speed teacher term, WV-DYNAMIC coeffs), ENU env frame signs
 ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
@@ -105,7 +106,7 @@ def _yaw_quat(th):
     return np.array([np.cos(th/2), 0.0, 0.0, np.sin(th/2)])
 
 
-def make_env(n, seed, vq_path="sysid/vq_model.json"):
+def make_env(n, seed, vq_path="sysid/vq_model.json", train=True):
     rng = np.random.default_rng(seed); tracks = []; G3 = []
     for _ in range(n):
         sp = rng.uniform(9, 18); amp = rng.uniform(1.0, 3.0); ph = rng.uniform(0, 6.28)   # deploy courses use space 14-16; 9-13 left them OOD-long (grid weak cells)
@@ -121,9 +122,11 @@ def make_env(n, seed, vq_path="sysid/vq_model.json"):
                 gs.append(GateState(position=np.array([8.0+sp*i, amp*np.sin(i*0.9+ph), 1.0]),
                                     orientation=np.array([1.0, 0, 0, 0])))
         tracks.append(Track(gates=gs, name="c", start_position=np.array([0, 0, 1.0]))); G3.append([g.position for g in gs])
+    scat = SCATTER and train
     env = GateRaceEnv(n_envs=n, dt=DT, max_steps=EP_STEPS, action_mode="vq_rate",
                       max_body_rate=MAXW, vq_max_thrust=THRMAX, vq_zvd=ZVD,
-                      vq_model_path=vq_path, tracks=tracks, random_gate_start=False,
+                      start_behind_max=34.0 if scat else None,
+                      vq_model_path=vq_path, tracks=tracks, random_gate_start=scat,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
                       gate_collision=True, gate_passage_radius=1.0, arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
     return env, np.array(G3)
@@ -137,7 +140,7 @@ def policy_mean(model, obs_np):
 
 
 def eval_gates(model, seed=7, NE=16):
-    env, gates = make_env(NE, seed); venv = VecEnvAdapter(env); obs = venv.reset()
+    env, gates = make_env(NE, seed, train=False); venv = VecEnvAdapter(env); obs = venv.reset()
     peak = np.zeros(NE, int); fr = np.zeros(NE, bool); lstm = None; starts = np.ones(NE, bool)
     for _ in range(EP_STEPS + 200):
         if REC:

@@ -204,6 +204,10 @@ def main():
         obs[24] = 2.0
         obs[25] = 2.0
         obs[26] = 12.0
+        if "--noobsclip" not in sys.argv:
+            # OOD guard (run-7 flee): clip gate-rel position to the training-covered range
+            obs[0:2] = np.clip(obs[0:2], -44.0, 44.0)
+            obs[2] = np.clip(obs[2], -8.0, 8.0)
         u = policy(obs)
         uc = np.clip(u, -1, 1)
         prev_act = uc
