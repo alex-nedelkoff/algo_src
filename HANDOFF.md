@@ -1,4 +1,67 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-12 late night)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-14 evening)
+
+## ★ NEXT = TRAIN RL DRONE TO FLY BEYOND VQ-SIM STABLE REGIME (spline teacher cracked 8.7m wall → 4.3m; need to push past stable cruise envelope)
+
+**SPLINE-LIVE-01 (06-14): TRACK-01 spline planner ported into RL teacher; CRACKED THE 8.7m WALL → 4.3m closest live.** Vault TRACK-01 (06-09) demonstrated live: open arc-length spline through gates + tilt-budget speed schedule. Ported `sim/gate_traj.py` (numpy+scipy only). New `aim()` projects drone to per-env spline (`nearest_s`), samples LEAD=2.5m ahead → `tgt_pos = ref["pos"]`, `tgt_vel = ref["v"] * ref["tang"]`, `tgt_yaw = ref["yaw"]` (nose anti-tangent, camera-forward).
+- **Live results (`ft_pscale_spline_5M_best`)**: closest 4.3m at v=7.8 (vs prior best 8.7m cap6brake). Early DAgger checkpoint hit 4.5m at **tilt=12°** sustained (no tumble), late PPO checkpoint hit 4.3m but tumbled (tilt=87° at closest).
+- **Pattern**: PPO degrades live stability (more aggressive in-env optimum). The DAgger-r3 model (3.5/6 in-env, 4.5m live with low tilt) is the BETTER live champion than PPO-best.
+- **Files**: `sim/gate_traj.py` (port), commit `49bacbe`. RRDs: `/Users/alex/Documents/aigp_spline_20260614_141227.rrd` (early DAgger) + `aigp_spline_final_20260614_142927.rrd` (PPO peak).
+
+**ENVELOPE-SWEEP (06-14): mapped the sim-to-VQ stable envelope.** 9-cell sweep (vdes ∈ {2,4,6} × tiltmax ∈ {25,35,45}°) of wp2 teacher live: **ALL cells ran 33s without abort/tumble**. tilt budget controls cruise velocity (REFIT-02 confirmed live):
+- tilt 25° → end_v ~10 m/s
+- tilt 35° → end_v ~11 m/s
+- tilt 45° → end_v ~14 m/s
+- mean|beta| 52-59° across all
+- vdes target has NO effect on end velocity (policy/teacher reaches drag-saturation regardless of command)
+- **Stable transfer envelope**: v ≤ ~14 m/s, tilt ≤ ~30°, beta ≤ ~60°. Outside (high speed approach + max tilt brake): rate ring + drag mismatch.
+
+**TEACHER-LIVE DIAGNOSTIC (06-14): the ff_batch+aim teacher itself does NOT fly the VQ sim cleanly.** Built `vq_deploy_teacher.py` to live-test the analytic DAgger teacher in isolation (NOT a policy zip; pure analytic). Findings:
+- v1 (anti-velocity yaw, original): drone flew TAIL-FIRST 438m in 32s (stable controlled equilibrium, wrong direction)
+- v2 (nose-anti-gate yaw fix, position-derived): drone briefly nose-first (beta=1-2° for 10s), then re-tumbled at high speed (v=21)
+- **wp2 (full vault waypoint2 features: bidirectional vtgt + tilt-conditional collective clamp)**: drone flew **stable controlled cruise 33s** at v=11, tilt=22-23°, beta=55° — no tumble, just wrong direction
+- **Verdict**: stability transfers; gate-capture-at-speed does NOT. RL was inheriting the teacher's gate-capture gap. Confirms RING-09 vault warning: "do NOT re-derive guidance; reuse the proven block" — we re-derived 3x before getting to TRACK-01 spline port.
+
+**YAWFIX + ENVELOPE TRAIN (06-14): faithful-envelope retrain (vdes 3, brake 1.0, vgate 1.0) gave first live REVERSE recovery.** Envelope-final policy (`ft_pscale_envelope_5M_best`, 5.2/6 in-env / 12/16 finishes — best ever): live 17s with REVERSE-RECOVERY (drone went past gate dist 57.8m, decelerated, came back 11.8m to dist 46.0m). First live RL with overshoot recovery.
+
+**PHASE-1 SUMMARY (06-14 morning): NeuroBEM recipe + sideslip + LSTM all REFUTED live at 5M.** Followed NotebookLM-recommended hybrid (MLP+history-stacked obs+action-smoothness+sideslip-penalty). All combinations: 0/6 gates live despite 5.0-5.6/6 in-env. Failure mode: matched-sim velocity drift (1.7 m/s in 0.5s per VERIFY-ALL) lets policy exploit sim quirks live exposes. The MORE recipe knobs added, the WORSE live transfer got. cap6brake (vanilla MLP+DAgger+slew40) was the live-RL ceiling until spline.
+
+**KEY VAULT EVIDENCE for next steps**:
+- Stable envelope (transfers cleanly): v ≤ 8 m/s, tilt ≤ 30°, beta ≤ 60° — TRACK-01 / WAYPOINT-02 / ENVELOPE-SWEEP all confirm
+- Live drag faster than matched at v=5-20 (~20-25%) — TRANSFER-03; sim under-brakes
+- WV weakens/reverses at v>5 — REFIT-02 / WV-DYNAMIC; not an aero instability
+- Velocity drift in matched sim — VERIFY-ALL; bounded position-accurate, ~1.7 m/s vel drift in 0.5s
+- Spline planner WORKS live for straight cruise to 8.6 m/s — TRACK-01
+
+## ★ OPEN QUESTION: how to train RL to fly BEYOND v=8 m/s while remaining sim-to-VQ transferable
+
+**Bottleneck**: in-env eval optimizes to fit matched-plant velocity profile; live plant diverges past v=8 → policy overshoots. Recipe adornments (sideslip, smoothness, history) optimize in-env at cost of live.
+
+**Hypotheses to test** (priority-ordered):
+1. **Refit matched-sim drag at v=5-20 mid-band** (close the under-prediction gap). Fit_drag_quad on deploy recordings. If sim and live agree on cruise speed, policy can safely train at higher vdes. Cheap (~30min). [`scripts/sysid/fit_drag_quad.py` exists.]
+2. **Multi-seed × 30M** at vdes=3 + spline teacher — let PPO find safe accelerations within envelope. Pod $3/run, ~13h. Per POD_SCALE_PLAN Phase 2.
+3. **DAgger-only champion (skip PPO)** — early-DAgger model live-tested 4.5m at tilt=12° (stable). PPO eroded that. Try `--steps 0 --dagger 8` (more DAgger rounds, no PPO).
+4. **Asymmetric privileged critic**: actor uses observable obs, critic uses true plant state (drag, weathervane). Per NLM ranking (#4 in transfer evidence). `control/algorithms/ppo_asymmetric.py` exists.
+5. **Per-episode wider DR** (vs per-DAgger-round) — MonoRace prescription: every episode randomizes 30 params ±15-55%. Requires env hook (currently per-round in `dr_model_path()`).
+6. **Train at extreme tilt (45°+) intentionally** — spline teacher in 9-cell sweep showed stable cruise at tilt=45° → policy can learn aggressive racing within that budget if reward incentivizes it.
+
+**Live deploy chain** (matches training): `vq_deploy4_hist.py --policy <X>.zip --maxw 6 --thrmax 0.6 --slew 40 --hist 8 --gates 6`. Mac rerun proxy: `~/.rerun33-venv/bin/rerun --port 9876 --save <RRD>`. Laptop sim must be live (DCGame-Win64-Shipping.exe in tasklist).
+
+**Champions (live-tested)**:
+| model | live closest | live stability | notes |
+|-------|-------------|----------------|-------|
+| ft_pscale_spline_5M_best (early DAgger) | **4.5m** | tilt=12°, no tumble | 06-14, spline teacher 3.5/6 in-env |
+| ft_pscale_spline_5M_best (final PPO) | **4.3m** | tilt=87°, tumbled | 06-14, PPO 4.6/6 peak |
+| ft_pscale_envelope_5M_best | 9m | 17s + reverse recovery | 06-14, envelope vdes 3 |
+| ft_cap6brake_v6c_best | 8.7m | 30s controlled, true tilt 35-48 | 06-13 baseline |
+
+**Files added today (06-14, in commits)**:
+- `sim/gate_traj.py` (49bacbe) — TRACK-01 spline planner
+- `scripts/rl/rl_finetune.py` — `--hist`, `--wsmooth`, `--brake`, `--vgate`, spline-following `aim()`, vq_waypoint2 features in `ff_batch`
+- `/tmp/vq_deploy_teacher.py` — live teacher diagnostic runner (push to laptop as needed)
+
+---
+
+## (06-12 era and before — kept for reference)
 
 ## ★ NEXT = ACCEPT ANALYTIC VQ1 PATH for qualification; defer RL to pod-scale (4 reward/curr experiments REFUTED live at 1M budget)
 **TRANSFER-09/10 (06-13): Tested 4 RL guidance levers live, all refuted at 1M Mac budget.**
