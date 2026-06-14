@@ -58,6 +58,13 @@ HIST   = int(argf("--hist", 0))           # NeuroBEM history stack: prev-action 
 WSMOOTH = argf("--wsmooth", 0.0)          # NLM rec: action smoothness weight (anti 11Hz ring); try 1.4
 BRAKE = argf("--brake", 0.5)              # aim() brake-taper slope; bigger = brake harder per meter
 V_GATE = argf("--vgate", 1.5)             # min commit speed near gate; lower = arrive slower
+# Residual learning (HANDOFF 06-14 #1): action = clip(FF_spline_anchor + tanh(net)*delta_scale).
+# The anchor guarantees stability so PPO can only add bounded deltas -> CANNOT erode it. Deploy mirrors.
+RESIDUAL = "--residual_ff" in sys.argv
+DELTA_SCALE = argf("--delta_scale", 0.15)  # residual delta magnitude cap
+# Asymmetric privileged critic (HANDOFF #2): critic sees true per-env plant params, actor only obs.
+ASYM = "--asymmetric_critic" in sys.argv
+DR_WIDTH = argf("--dr_width", 0.4)         # per-env plant DR width feeding the privileged channel
 REWARD = {"gate_progress": 2.0, "gate_passage": 15.0, "gate_offset": 0.5,
           "body_rate": 0.005, "crash_penalty": 10.0, "sideslip": WSIDE,
           "aperture": WAPER, "gate_centering": WCNTR, "action_smoothness": WSMOOTH}
@@ -110,7 +117,7 @@ def ff_batch(S, tgt_pos, tgt_vel, tgt_yaw):
     return u.astype(np.float32)
 
 
-def aim(S, gates, gp):
+def aim(S, gates, gp, trajs=None):
     # SPLINE-FOLLOWING teacher (TRACK-01 port). Each env has an open arc-length spline through
     # spawn + gates (built in make_env). Drone projects to spline (nearest_s), reference is
     # LEAD m ahead. tgt_pos = ref["pos"], tgt_vel = ref["v"] * ref["tang"] (tilt-budget speed),
@@ -119,16 +126,17 @@ def aim(S, gates, gp):
     # point-to-point PD; live tilt budget pre-scheduled before each gate (predictive braking).
     n_envs = len(gp)
     LEAD = 2.5
+    T = trajs if trajs is not None else _TRAJS   # explicit per-env splines (anti global-clobber)
     out_pos = np.zeros((n_envs, 3))
     out_vel = np.zeros((n_envs, 3))
     out_yaw = np.zeros(n_envs)
-    if len(_TRAJS) < n_envs:                          # fallback if trajs not built (smoke/test path)
+    if len(T) < n_envs:                               # fallback if trajs not built (smoke/test path)
         idx = np.clip(gp, 0, NG-1); gate = gates[np.arange(n_envs), idx]
         dxy = (gate - S[:, POS])[:, :2]; dist = np.linalg.norm(dxy, axis=1, keepdims=True) + 1e-6
         nose_dir = -dxy / dist
         return gate, np.zeros((n_envs, 3)), np.arctan2(nose_dir[:, 1], nose_dir[:, 0])
     for i in range(n_envs):
-        traj = _TRAJS[i]
+        traj = T[i]
         s_d = traj.nearest_s(S[i, POS])
         s_ref = float(min(s_d + LEAD, traj.s_max))
         ref = traj.sample(s_ref)
@@ -167,7 +175,8 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
                       gate_collision=True, gate_passage_radius=(gate_radius if gate_radius is not None else RAD_START),
                       arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG,
-                      n_action_history=HIST)
+                      n_action_history=HIST,
+                      privileged_obs=ASYM, dr_width=(DR_WIDTH if ASYM else 0.0))
     # Per-env open spline trajectories (TRACK-01 06-09: tilt-budget speed-scheduled controller; STRAIGHT
     # 8.6 m/s clean live). Prepend spawn so spline covers the launch leg too.
     global _TRAJS
@@ -175,7 +184,24 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
     _TRAJS = [GateTrajectory(np.vstack([spawn3[None, :], np.array(g3_env)]),
                               v_cruise=VDES, tilt_budget_deg=35.0, c_drag=0.057, margin=0.6)
               for g3_env in G3]
+    env._trajs = _TRAJS   # bind this env's splines so the residual anchor survives global clobber
     return env, np.array(G3)
+
+
+class ResidualVecEnv(VecEnvAdapter):
+    """Policy outputs a bounded delta; the env steps with anchor(FF spline)+delta.
+    The analytic anchor guarantees stability, so PPO can only add tanh-bounded
+    corrections and CANNOT erode it (HANDOFF 06-14 #1). The deploy script must
+    mirror this exact anchor+delta math."""
+    def __init__(self, env, gates):
+        super().__init__(env)
+        self._gates = gates
+
+    def step_async(self, deltas):
+        S = self.env._states
+        anchor = ff_batch(S, *aim(S, self._gates, self.env._gate_indices, trajs=self.env._trajs))
+        applied = np.clip(anchor + np.tanh(deltas) * DELTA_SCALE, -1.0, 1.0)
+        super().step_async(applied.astype(np.float32))
 
 
 def policy_mean(model, obs_np):
@@ -190,7 +216,8 @@ def eval_gates(model, seed=7, NE=16, gate_radius=None):
     # curriculum); else falls back to RAD_END (the final/target radius, NOT RAD_START -- prior
     # bug was eval always at RAD_START so curriculum eval lied)
     eval_rad = gate_radius if gate_radius is not None else RAD_END
-    env, gates = make_env(NE, seed, train=False, gate_radius=eval_rad); venv = VecEnvAdapter(env); obs = venv.reset()
+    env, gates = make_env(NE, seed, train=False, gate_radius=eval_rad)
+    venv = ResidualVecEnv(env, gates) if RESIDUAL else VecEnvAdapter(env); obs = venv.reset()
     peak = np.zeros(NE, int); fr = np.zeros(NE, bool); lstm = None; starts = np.ones(NE, bool)
     for _ in range(EP_STEPS + 200):
         if REC:
@@ -207,8 +234,9 @@ def eval_gates(model, seed=7, NE=16, gate_radius=None):
 def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
-    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} hist={HIST} wsm={WSMOOTH} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} steps={STEPS}", flush=True)
-    env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} hist={HIST} wsm={WSMOOTH} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} residual={RESIDUAL} asym={ASYM} dscale={DELTA_SCALE} drw={DR_WIDTH} steps={STEPS}", flush=True)
+    env, gates = make_env(NENV, 1)
+    venv = ResidualVecEnv(env, gates) if RESIDUAL else VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
     # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the
     # warm-start. From-scratch (warm=0) needs real exploration, so log_std 0 + entropy + larger LR.
@@ -230,11 +258,22 @@ def main():
                           device="cuda" if torch.cuda.is_available() else "cpu", verbose=1)
         if TKL > 0:
             ppo_kwargs["target_kl"] = TKL   # KL early-stop guard against destroying warm-start
-        model = PPO("MlpPolicy", venv, **ppo_kwargs)
+        if ASYM:
+            from control.policies.asymmetric import AsymmetricActorCriticPolicy
+            ppo_policy = AsymmetricActorCriticPolicy   # Dict obs -> actor=obs, critic=obs+privileged
+        else:
+            ppo_policy = "MlpPolicy"
+        model = PPO(ppo_policy, venv, **ppo_kwargs)
     with torch.no_grad():
-        model.policy.action_net.bias[:] = torch.tensor([HOVER_U0, 0, 0, 0], dtype=model.policy.action_net.bias.dtype)
+        if ASYM:
+            pass   # asymmetric actor_mlp is near-zero-init -> policy starts at the FF anchor
+        elif RESIDUAL:
+            model.policy.action_net.bias[:] = 0.0   # delta starts ~0 -> policy = anchor (no hover bias)
+        else:
+            model.policy.action_net.bias[:] = torch.tensor([HOVER_U0, 0, 0, 0], dtype=model.policy.action_net.bias.dtype)
 
-    if WARM:
+    best_dag = -1.0   # defined even when BC/DAgger is skipped (residual/asym anchor IS the warm start)
+    if WARM and not RESIDUAL and not ASYM:
         vdes_run = VDES; VDES = VDES_WARM   # teacher demos/relabels at the curriculum speed
         print(f"FT: FF demos + BC... (vdes_warm={VDES_WARM})", flush=True)
         obs = venv.reset(); X = []; Y = []
@@ -334,7 +373,7 @@ def main():
         VDES = vdes_run   # PPO + eval at the target speed
 
     class GateEval(BaseCallback):
-        def __init__(s, every): super().__init__(); s.every = every; s.last = 0; s.best = best_dag if WARM else -1.0
+        def __init__(s, every): super().__init__(); s.every = every; s.last = 0; s.best = best_dag
         def _on_step(s):
             # TRANSFER-10 radius curriculum: linearly anneal gate_passage_radius RAD_START -> RAD_END
             # over RAD_STEPS PPO steps. Wider gates first = looser basin of attraction = more
