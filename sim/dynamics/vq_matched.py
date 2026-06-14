@@ -207,10 +207,15 @@ class VQMatchedDynamics:
     # them for the actor). dr_factors (n_envs, 11) is the privileged vector handed to the
     # critic, centered at 0: factor-1 for the multiplicative params, raw for dist_scale.
     _DR_KEYS = ("Dx", "Dy", "qx", "qy", "qz", "Dz", "f0", "df")
+    # thrust params get a TIGHTER band: ±40% on f0/df makes plants unable to hover -> instant
+    # fall. Scale matches the validated per-round DR (dr_model_path: f0 ±10%, df ±15% at width 0.4).
+    _DR_WIDTH_SCALE = {"f0": 0.25, "df": 0.375}
 
     def randomize(self, rng, n_envs: int, width: float = 0.4) -> None:
         nom = {k: float(getattr(self, k)) for k in self._DR_KEYS}
-        fac = {k: 1.0 + rng.uniform(-width, width, n_envs) for k in self._DR_KEYS}
+        fac = {k: 1.0 + rng.uniform(-width * self._DR_WIDTH_SCALE.get(k, 1.0),
+                                    width * self._DR_WIDTH_SCALE.get(k, 1.0), n_envs)
+               for k in self._DR_KEYS}
         for k in self._DR_KEYS:
             setattr(self, k, nom[k] * fac[k])
         # weathervane v2 speed-slope (roll b, yaw b) -- the live-divergent term (WV-DYNAMIC)
