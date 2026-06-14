@@ -59,6 +59,50 @@
 - `scripts/rl/rl_finetune.py` — `--hist`, `--wsmooth`, `--brake`, `--vgate`, spline-following `aim()`, vq_waypoint2 features in `ff_batch`
 - `/tmp/vq_deploy_teacher.py` — live teacher diagnostic runner (push to laptop as needed)
 
+## ★ RECOMMENDED NEXT EXPERIMENT (user-vetted 06-14 evening from NeuroBEM/Crazyflow/GustPilot strategy doc)
+
+**User proposed a 5-section RL architecture (TRPY hierarchical action + history-aware obs + residual learning + reward shaping + sim-to-real alignment).** Cross-checked vs what we already implemented:
+
+| Item | Status | Today's evidence |
+|------|--------|------------------|
+| TRPY normalized [-1,1] | ✓ done | wp2 teacher live-stable to v=14 — action space isn't the limit |
+| History 50-100ms | ✓ `--hist 8` at 72Hz = 110ms | NeuroBEM hist alone REFUTED live (0/6) |
+| DAgger warm-start | ✓ wired | spline DAgger 4.5m no-tumble = today's breakthrough |
+| Sideslip penalty (vy²) | ✓ `--ws` | REFUTED live across 3 prior trials |
+| Action smoothness w=1.4 | ✓ `--wsmooth 1.4` | helped in-env, not live |
+| DR + latency 0-30ms | ✓ Phase 0 widened | still 0/6 past 8.7m |
+
+These are wired. None alone closed sim-to-VQ.
+
+**GENUINELY NEW + HIGH-LEVERAGE (priority order)**:
+
+1. **Residual learning** — `Action = FF_spline(state) + NN(history)`. **Untried, highest leverage.** Directly addresses today's pattern: DAgger checkpoint transfers (4.5m, tilt=12°), PPO erodes it (4.3m + tumble). Residual structure means RL learns ONLY the missing dynamics; the FF baseline guarantees stability. PPO cannot erode the analytic anchor. Implementation: wrap policy as `final_action = ff_batch_anchor(S) + tanh(network_output) * delta_scale`. Add `--residual_ff` flag.
+
+2. **Asymmetric privileged critic** — `control/algorithms/ppo_asymmetric.py` exists, never used. Critic sees true drag/wv/rotor speeds, actor sees observable. Cleaner advantage signal for "live-unsafe" states. Code already there, just wire it. Add `--asymmetric_critic` flag.
+
+3. **DAgger-only champion** (no PPO erosion): `--steps 0 --dagger 12` — more DAgger rounds, skip PPO that erodes live stability. Cheapest test; runs in ~3min on pod. Predicts: in-env weaker but live closest could drop below 4.3m AND no tumble.
+
+**WEAK / NOT FROM TODAY'S DATA**:
+
+- **Saturation priority roll/pitch > collective/yaw**: 9-cell sweep showed drone runs out of cross-track authority at tilt=45°, not yaw authority. Marginal.
+- **INDI inner-loop** (GustPilot DRL-INDI 94.7% OSR): major architectural shift (~weeks); needs torque-level + IMU angular accel. Today's evidence: teacher already flies stably at v=11 tilt=23° WITHOUT INDI. Not gated on inner-loop stability — gated on policy aggressiveness at higher speeds. Overkill here.
+- **Dense progress reward `exp(-2|p-p_goal|)`**: already in monorace_reward (gate_progress=2.0, gate_passage=15). Just a re-parameterization.
+
+**SUGGESTED NEXT-SESSION COMMAND (single run, testable on existing pod)**:
+```bash
+ssh runpod-cor127 "cd /workspace/algo_src_cor127 && PYTHONPATH=. python scripts/rl/rl_finetune.py \
+    --residual_ff \           # NEW: policy outputs delta on top of spline teacher
+    --asymmetric_critic \     # NEW: critic sees drag/wv true params
+    --maxw 6 --thrmax 0.6 --slew 40 --scatter --dr \
+    --hist 8 --vdes 3 --brake 1.0 --vgate 1.0 \
+    --steps 0 --dagger 12 \   # DAgger only, no PPO erosion
+    --tag pscale_residual_dagger_12"
+```
+
+Watch for: live closest < 4.3m AND no tumble at closest. If residual still tumbles live → sim drift IS the real bottleneck → must refit matched-sim drag (TRANSFER-03) before more RL.
+
+**ALTERNATIVE PARALLEL TRACK (cheap, ~30min)**: refit matched-sim drag in v=5-20 band via `scripts/sysid/fit_drag_quad.py` on deploy recordings. If sim and live agree on cruise speed, future training at higher vdes is safe.
+
 ---
 
 ## (06-12 era and before — kept for reference)
