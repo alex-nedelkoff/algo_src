@@ -163,6 +163,8 @@ class VQMatchedDynamics:
         # off everywhere by default; rl_finetune's per-round DR copies set it).
         _dd = model.get("dr_rate_disturbance") or {}
         self._dist_scale = float(_dd.get("scale", 0.0))
+        self._dd_raw = _dd                 # kept so randomize() can inject the field on a scale=0 model
+        self.dr_factors = None             # (n_envs, 11) privileged vector; set by randomize()
         if self._dist_scale > 0.0:
             bins = _dd["bins"]
             self._dist_lo = np.array([b["tilt_deg"][0] for b in bins], float)
@@ -198,6 +200,39 @@ class VQMatchedDynamics:
             T = np.diag([1.0, -1.0, -1.0])
             self.A1_r2 = T @ self.A1_r2 @ T; self.A2_r2 = T @ self.A2_r2 @ T
             self.B0_r2 = T @ self.B0_r2 @ T; self.B1_r2 = T @ self.B1_r2 @ T
+
+    # ---- per-env domain randomization (asymmetric-critic privileged channel) ----
+    # Scalar aero/thrust/wv params become per-env arrays (broadcast cleanly in step());
+    # the rate-loop matrices stay nominal (dt-specific + validated; per-round DR scatters
+    # them for the actor). dr_factors (n_envs, 11) is the privileged vector handed to the
+    # critic, centered at 0: factor-1 for the multiplicative params, raw for dist_scale.
+    _DR_KEYS = ("Dx", "Dy", "qx", "qy", "qz", "Dz", "f0", "df")
+
+    def randomize(self, rng, n_envs: int, width: float = 0.4) -> None:
+        nom = {k: float(getattr(self, k)) for k in self._DR_KEYS}
+        fac = {k: 1.0 + rng.uniform(-width, width, n_envs) for k in self._DR_KEYS}
+        for k in self._DR_KEYS:
+            setattr(self, k, nom[k] * fac[k])
+        # weathervane v2 speed-slope (roll b, yaw b) -- the live-divergent term (WV-DYNAMIC)
+        if self.wv2 is not None:
+            a_r, b_r, a_y, b_y, vclip = self.wv2
+            fr = 1.0 + rng.uniform(-width, width, n_envs)
+            fy = 1.0 + rng.uniform(-width, width, n_envs)
+            self.wv2 = (a_r, b_r * fr, a_y, b_y * fy, vclip)
+            wv_rb, wv_yb = fr - 1.0, fy - 1.0
+        else:
+            wv_rb = wv_yb = np.zeros(n_envs)
+        # measured disturbance field magnitude (the DEPLOY-02 snap mechanism); nominal 0..2
+        dist = rng.uniform(0.0, 2.0, n_envs)
+        self._dist_scale_arr = dist
+        if self._dd_raw and not hasattr(self, "_dist_sig"):   # build tables on a scale=0 model
+            bins = self._dd_raw["bins"]
+            self._dist_lo = np.array([b["tilt_deg"][0] for b in bins], float)
+            self._dist_sig = np.array([b["sigma"] for b in bins], float)
+            self._dist_steps = max(1, int(round(float(self._dd_raw.get("block_s", 0.5)) / self.dt)))
+        self.dr_factors = np.column_stack(
+            [fac[k] - 1.0 for k in self._DR_KEYS] + [wv_rb, wv_yb, dist]
+        ).astype(np.float32)
 
     def reset(self, n_envs: int) -> NDArray[np.float64]:
         """Hover initial state (level, at rest, z=0): (n_envs, 13)."""
@@ -265,7 +300,10 @@ class VQMatchedDynamics:
             om_new[:, 0] += self._roll_wv_sign * (self.roll_wv0 + self.roll_wv1 * vb[:, 0]) * vb[:, 1] * dt
             om_new[:, 2] += self.yaw_wv * vb[:, 1] * dt   # yaw-wv invariant under the NED<->ENU basis change
         # --- measured disturbance field (DR): tilt-scaled correlated rate bias ---
-        if self._dist_scale > 0.0:
+        # per-env scale (randomize()) overrides the scalar; nominal model -> scalar path unchanged
+        dist_scale = getattr(self, "_dist_scale_arr", None)
+        dist_active = dist_scale if dist_scale is not None else self._dist_scale
+        if np.any(dist_active > 0.0):
             n = states.shape[0]
             if self._dist_bias is None or self._dist_bias.shape[0] != n:
                 self._dist_bias = np.zeros((n, 3)); self._dist_k = 0
@@ -273,7 +311,8 @@ class VQMatchedDynamics:
                 tilt = np.degrees(np.arccos(np.clip(np.abs(R[:, 2, 2]), -1.0, 1.0)))
                 idx = np.searchsorted(self._dist_lo, tilt, side="right") - 1
                 sig = self._dist_sig[np.clip(idx, 0, len(self._dist_sig) - 1)]
-                self._dist_bias = np.random.normal(0.0, 1.0, (n, 3)) * sig * self._dist_scale
+                scl = np.asarray(dist_active)[:, None] if np.ndim(dist_active) else dist_active
+                self._dist_bias = np.random.normal(0.0, 1.0, (n, 3)) * sig * scl
             self._dist_k += 1
             om_new += self._dist_bias * dt
 
