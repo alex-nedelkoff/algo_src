@@ -102,23 +102,23 @@ def ff_batch(S, tgt_pos, tgt_vel, tgt_yaw):
 
 
 def aim(S, gates, gp):
-    # anti-velocity yaw = camera-forward racing (corner_speed law); hold yaw while slow
+    # NOSE-ANTI-GATE yaw (camera-at-gate). vq_waypoint2-style: position-derived target, NOT
+    # velocity-derived. Anti-velocity yaw (old) flips when drone overshoots gate -> live teacher
+    # diagnostic flew tail-first 438 m in 32 s on overshoot (no turn-around logic). Position-derived
+    # target stays consistent: when drone is past gate, nose still points anti-(gate-pos), i.e.
+    # nose-toward-future-travel-dir / camera-back-at-gate, so reverse-braking accel is geometrically
+    # consistent with attitude. Reuses the proven vq_waypoint2 racing convention (RING-09 vault
+    # warning: do NOT re-derive).
     idx = np.clip(gp, 0, NG-1); gate = gates[np.arange(len(gp)), idx]
     dxy = (gate - S[:, POS])[:, :2]; dist = np.linalg.norm(dxy, axis=1, keepdims=True)+1e-6
-    # gate-braking taper (RING-05): target speed ramps down inside ~VDES/BRAKE m so the policy
-    # arrives with margin. Live accelerates ~20% faster than the model in the approach (run-8/9
-    # |v| replay), so the constant-VDES teacher over-speeds live -> overshoot. A distance-scaled
-    # speed gives the policy a brake profile robust to that plant-speed mismatch. V_GATE floor
-    # keeps it committing through the aperture.
-    # aggressive brake taper (TRANSFER-01: live overshoots gate 0 to 8.7 m at v6-10, can't turn
-    # in within the 1.5 m gate; train to arrive SLOW). Target ~2 m/s by 4 m out.
     BRAKE = 0.5; V_GATE = 1.5
     vtgt = np.clip(BRAKE * dist, V_GATE, VDES)
     tv = np.zeros((len(gp), 3)); tv[:, :2] = vtgt*dxy/dist
-    vel = S[:, VEL][:, :2]; spd = np.linalg.norm(vel, axis=1)
-    R = quat_to_rotmat_batch(S[:, QUAT]); yaw_cur = np.arctan2(R[:, 1, 0], R[:, 0, 0])
-    yaw_av = np.arctan2(-vel[:, 1], -vel[:, 0])
-    return gate, tv, np.where(spd > 1.0, yaw_av, yaw_cur)
+    # camera-at-gate: nose direction = OPPOSITE the gate direction (= -dxy/dist), so camera (=-body_x)
+    # points toward gate. Constant within a leg, smooth at gate transitions, no velocity-flip.
+    nose_dir = -dxy / dist
+    tgt_yaw = np.arctan2(nose_dir[:, 1], nose_dir[:, 0])
+    return gate, tv, tgt_yaw
 
 
 def _yaw_quat(th):
