@@ -96,6 +96,11 @@ def ff_batch(S, tgt_pos, tgt_vel, tgt_yaw):
     w[:, 0] += (ROLL_WV0 + ROLL_WV1*vb[:, 0]) * vb[:, 1]
     w[:, 2] += -YAW_WV * vb[:, 1]
     cos_t = np.maximum(R[:, 2, 2], 0.5); c = (G + a[:, 2])/cos_t
+    # vq_waypoint2 tilt-conditional collective clamp: drop ceiling when over-tilted to prevent
+    # thrust-runs-away-with-tilt (live RL signature; ff_batch had no such cap)
+    tilt_deg = np.degrees(np.arccos(np.clip(R[:, 2, 2], -1, 1)))
+    c_max = np.where(tilt_deg > 40.0, 10.0, 18.0)
+    c = np.minimum(c, c_max)
     thr = np.clip((F0+c)/(-DF), 0.0, 1.0)
     u = np.empty((S.shape[0], 4)); u[:, 0] = np.clip(2*thr/THRMAX-1, -1, 1); u[:, 1:4] = np.clip(w/GAIN/MAXW, -1, 1)
     cap = YR_CAP/abs(GAIN[2])/MAXW   # corner_speed yaw-rate cap (resonance guard)
@@ -111,13 +116,24 @@ def aim(S, gates, gp):
     # nose-toward-future-travel-dir / camera-back-at-gate, so reverse-braking accel is geometrically
     # consistent with attitude. Reuses the proven vq_waypoint2 racing convention (RING-09 vault
     # warning: do NOT re-derive).
-    idx = np.clip(gp, 0, NG-1); gate = gates[np.arange(len(gp)), idx]
+    n_envs = len(gp)
+    idx = np.clip(gp, 0, NG-1); gate = gates[np.arange(n_envs), idx]
     dxy = (gate - S[:, POS])[:, :2]; dist = np.linalg.norm(dxy, axis=1, keepdims=True)+1e-6
-    vtgt = np.clip(BRAKE * dist, V_GATE, VDES)
-    tv = np.zeros((len(gp), 3)); tv[:, :2] = vtgt*dxy/dist
-    # camera-at-gate: nose direction = OPPOSITE the gate direction (= -dxy/dist), so camera (=-body_x)
-    # points toward gate. Constant within a leg, smooth at gate transitions, no velocity-flip.
-    nose_dir = -dxy / dist
+    # vq_waypoint2 bidirectional velocity loop: per-leg course direction (cam_fwd) = vector from
+    # previous gate to current gate (for gp=0, gate0->gate1 forward direction). e_al = signed
+    # along-course error; vtgt allows NEGATIVE (gentle reverse) when drone overshoots gate.
+    # Old aim() always commanded vtgt > 0 along dxy/dist -> no turn-around -> live ran 438 m away.
+    prev_idx = np.where(idx >= 1, idx - 1, 0)
+    next_idx = np.where(idx >= 1, idx, np.minimum(idx + 1, NG - 1))
+    leg = gates[np.arange(n_envs), next_idx] - gates[np.arange(n_envs), prev_idx]
+    leg_xy = leg[:, :2]; leg_n = np.linalg.norm(leg_xy, axis=1, keepdims=True) + 1e-6
+    cam_fwd = leg_xy / leg_n
+    e_al = np.sum(dxy * cam_fwd, axis=1)               # signed along-course distance to gate
+    vtgt = np.clip(BRAKE * e_al, -V_GATE, VDES)        # bidirectional: gentle reverse at overshoot
+    tv = np.zeros((n_envs, 3))
+    tv[:, :2] = vtgt[:, None] * cam_fwd                # target velocity along course direction
+    # camera-at-course: nose anti-course (camera (=-body_x) points along course forward).
+    nose_dir = -cam_fwd
     tgt_yaw = np.arctan2(nose_dir[:, 1], nose_dir[:, 0])
     return gate, tv, tgt_yaw
 
