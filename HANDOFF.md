@@ -11,14 +11,14 @@
 - Privileged Dict obs in `GateRaceEnv` (`privileged_obs`, `dr_width`) + Dict passthrough in `VecEnvAdapter`.
 - Local TDD: 9 tests green (`test_vq_matched_dr`, `test_privileged_obs`, `test_residual_anchor`). Pod 32k smoke: exit 0, one env hit max 6 gates → full chain works. fps 233 → 5M ≈ ~6h.
 
-**RUN LAUNCHED (pod runpod-cor127, nohup, pid 2895):**
+**RUN DONE (pod runpod-cor127, ~35 min — steady-state ~2400 fps, NOT 6h; smoke's 233 fps was startup-dominated):**
 ```
 PYTHONPATH=. python scripts/rl/rl_finetune.py --residual_ff --asymmetric_critic \
   --maxw 6 --thrmax 0.6 --slew 40 --scatter --dr --hist 8 --vdes 3 --brake 1.0 --vgate 1.0 \
   --delta_scale 0.15 --dr_width 0.4 --log_std -2.5 --ent 0.005 --steps 5000000 \
-  --eval_every 250000 --tag residual_asym_5M > logs/residual_asym_5M.log 2>&1 &
+  --eval_every 250000 --tag residual_asym_5M
 ```
-Healthy at launch (std shrinking, losses finite). Champion saved best-by-eval: `ft_residual_asym_5M_best.zip`; final `ft_residual_asym_5M.zip`. Watch `logs/residual_asym_5M.log`.
+In-env eval (on DR'd plants): 250k→1M→5M all ~3.2–3.5/6, FLAT (no PPO erosion — the residual structure working as intended), max 5, fin 0/16, final dist `[2 0 2 4 5 3 0]`. **3.5/6 is the DAgger-transfer sweet spot** (spline DAgger 3.5/6 → 4.5m live no-tumble; PPO 4.6/6 → tumbled). Champion `ft_residual_asym_5M_best.zip` (best-by-eval ~3.5, plateaued ~1M), final `ft_residual_asym_5M.zip`. **Champion already pulled to Mac `/tmp/ft_residual_asym_5M_best.zip`.** Only blocker to live test = laptop sim being up.
 
 **LIVE TEST (do when run done + laptop sim up):** pull champion, deploy with the residual mirror.
 ```
