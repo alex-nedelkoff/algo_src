@@ -16,6 +16,20 @@ from stable_baselines3.common.vec_env import VecEnv
 from metrics.contract import validate_episode_metrics, ContractViolation
 
 
+def _as_batched(obs):
+    """Add a leading batch dim to flat or Dict obs (Dict = asymmetric privileged channel)."""
+    if isinstance(obs, dict):
+        return {k: (v[None, :] if v.ndim == 1 else v) for k, v in obs.items()}
+    return obs[None, :] if obs.ndim == 1 else obs
+
+
+def _slice_obs(obs, i):
+    """Per-env slice of batched flat or Dict obs (for terminal_observation)."""
+    if isinstance(obs, dict):
+        return {k: v[i] for k, v in obs.items()}
+    return obs[i]
+
+
 class VecEnvAdapter(VecEnv):
     """Adapt an internally-vectorized racing env to the SB3 VecEnv interface.
 
@@ -50,9 +64,7 @@ class VecEnvAdapter(VecEnv):
         """Reset all environments and return observations."""
         obs, _ = self.env.reset(seed=self._pending_seed)
         self._pending_seed = None
-        if obs.ndim == 1:
-            obs = obs[None, :]
-        return obs
+        return _as_batched(obs)
 
     def step_async(self, actions: NDArray[np.float32]) -> None:
         """Store actions for step_wait()."""
@@ -69,8 +81,7 @@ class VecEnvAdapter(VecEnv):
 
         obs, rewards, terminated, truncated, info = self.env.step(self._actions)
 
-        if obs.ndim == 1:
-            obs = obs[None, :]
+        obs = _as_batched(obs)
         if rewards.ndim == 0:
             rewards = rewards[None]
         if terminated.ndim == 0:
@@ -80,14 +91,14 @@ class VecEnvAdapter(VecEnv):
 
         dones = terminated | truncated
 
-        # terminal_obs is always (n_envs, OBS_DIM) from _compute_obs_batched()
+        # terminal_obs: batched (n_envs, OBS_DIM) flat array, or a Dict of such (privileged)
         terminal_obs = info.get("terminal_obs")
         episode_metrics = info.get("episode")
         infos: list[dict[str, Any]] = []
         for i in range(self.num_envs):
             env_info: dict[str, Any] = {}
             if dones[i] and terminal_obs is not None:
-                env_info["terminal_observation"] = terminal_obs[i]
+                env_info["terminal_observation"] = _slice_obs(terminal_obs, i)
                 env_info["TimeLimit.truncated"] = bool(truncated[i]) and not bool(terminated[i])
                 if episode_metrics is not None:
                     # Extract per-env scalars from batched arrays
