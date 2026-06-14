@@ -1,6 +1,56 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-14 evening)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-14 night)
 
-## ★ NEXT = TRAIN RL DRONE TO FLY BEYOND VQ-SIM STABLE REGIME (spline teacher cracked 8.7m wall → 4.3m; need to push past stable cruise envelope)
+## ★ NEXT = LIVE-TEST the residual+asymmetric-critic champion once the 5M run finishes (RESIDUAL-ASYM-01)
+
+**RESIDUAL-ASYM-01 (06-14 night): built + launched residual-FF learning + asymmetric privileged critic.** Implements HANDOFF #1 (residual) + #2 (asymmetric critic). NOTE: the prior recommended command was self-contradictory — `--steps 0` nullifies BOTH new flags, and `control/algorithms/ppo_asymmetric.py` did NOT exist. Corrected: built from scratch, run with `--steps 5000000`.
+
+**What shipped (commits 9868fe7→fc14374, all pushed):**
+- `--residual_ff`: policy outputs a bounded delta; `ResidualVecEnv` steps with `applied = clip(ff_spline_anchor(S) + tanh(delta)*0.15, -1,1)`. The analytic anchor guarantees stability → PPO CANNOT erode it (structurally addresses the DAgger>PPO erosion finding). BC/DAgger skipped (anchor IS the warm start; near-zero actor init). Anchor uses `env._trajs` (per-env splines) so it survives the eval_gates `_TRAJS` global-clobber.
+- `--asymmetric_critic`: `control/policies/asymmetric.py` `AsymmetricActorCriticPolicy` — actor reads `obs["policy"]`, critic reads `concat(policy, privileged)`. Bypasses SB3's shared mlp_extractor (version-robust). Pod self-test PASSED.
+- Per-env DR in `VQMatchedDynamics.randomize()` (scalar aero/thrust/wv → per-env arrays; matrices nominal). `dr_factors (n_envs,11)` = privileged vector. **Bit-identical to validated dynamics when off (tested).** Thrust band tightened (f0 ±10%, df ±15%) — ±40% made plants unable to hover.
+- Privileged Dict obs in `GateRaceEnv` (`privileged_obs`, `dr_width`) + Dict passthrough in `VecEnvAdapter`.
+- Local TDD: 9 tests green (`test_vq_matched_dr`, `test_privileged_obs`, `test_residual_anchor`). Pod 32k smoke: exit 0, one env hit max 6 gates → full chain works. fps 233 → 5M ≈ ~6h.
+
+**RUN LAUNCHED (pod runpod-cor127, nohup, pid 2895):**
+```
+PYTHONPATH=. python scripts/rl/rl_finetune.py --residual_ff --asymmetric_critic \
+  --maxw 6 --thrmax 0.6 --slew 40 --scatter --dr --hist 8 --vdes 3 --brake 1.0 --vgate 1.0 \
+  --delta_scale 0.15 --dr_width 0.4 --log_std -2.5 --ent 0.005 --steps 5000000 \
+  --eval_every 250000 --tag residual_asym_5M > logs/residual_asym_5M.log 2>&1 &
+```
+Healthy at launch (std shrinking, losses finite). Champion saved best-by-eval: `ft_residual_asym_5M_best.zip`; final `ft_residual_asym_5M.zip`. Watch `logs/residual_asym_5M.log`.
+
+**LIVE TEST (do when run done + laptop sim up):** pull champion, deploy with the residual mirror.
+```
+scp -O runpod-cor127:/workspace/algo_src_cor127/ft_residual_asym_5M_best.zip /tmp/
+scp -O /tmp/ft_residual_asym_5M_best.zip laptop:"C:/Users/alexj/.../aigp-client/"
+~/.rerun33-venv/bin/rerun --port 9876 --save /Users/alex/Documents/aigp_residual_HHMMSS.rrd
+ssh laptop "... python -u vq_deploy4_hist.py --policy ft_residual_asym_5M_best.zip \
+  --residual_ff --delta_scale 0.15 --maxw 6 --thrmax 0.6 --slew 40 --hist 8 --gates 6"
+```
+**DEPLOY MIRROR (vq_deploy4_hist.py, laptop — MUST add or the residual policy won't fly).** Run the deploy with the SAME flags so `rl_finetune` module constants align, then:
+```python
+import scripts.rl.rl_finetune as RLF   # importing only sets constants + defines fns (no training)
+from sim.gate_traj import GateTrajectory
+# once, after gate poses known (gate_poses = (NG,3) world ENU):
+trajs = [GateTrajectory(np.vstack([[0.,0.,1.0], gate_poses]), v_cruise=RLF.VDES,
+                        tilt_budget_deg=35.0, c_drag=0.057, margin=0.6)]
+gates_arr = gate_poses[None, ...]                      # (1,NG,3)
+# per step, when --residual_ff:
+delta, _ = model.predict(obs, deterministic=True)
+S = live_state[None, :]                                # (1,17) ENU [pos,vel,quat,omega,...]
+anchor = RLF.ff_batch(S, *RLF.aim(S, gates_arr, np.array([cur_gate_idx]), trajs=trajs))
+action = np.clip(anchor + np.tanh(delta) * RLF.DELTA_SCALE, -1, 1)[0]
+```
+Asymmetric critic needs NO deploy change (critic discarded at deploy; actor reads obs only — `model.predict` on the Dict obs ignores privileged).
+
+**COMPARE vs baselines:** target live closest < 4.3m AND low tilt-at-closest (no tumble; 4.5m DAgger champion held tilt=12°). Use TRUE (qfix) tilt for abort/diagnostics. If residual still tumbles live → sim drag drift IS the bottleneck → pivot to `scripts/sysid/fit_drag_quad.py` on deploy recordings (TRANSFER-03, ~30min).
+
+Plan + full task breakdown: `docs/superpowers/plans/2026-06-14-residual-asymmetric-critic.md`.
+
+---
+
+## (06-14 evening) TRAIN RL DRONE TO FLY BEYOND VQ-SIM STABLE REGIME (spline teacher cracked 8.7m wall → 4.3m; need to push past stable cruise envelope)
 
 **SPLINE-LIVE-01 (06-14): TRACK-01 spline planner ported into RL teacher; CRACKED THE 8.7m WALL → 4.3m closest live.** Vault TRACK-01 (06-09) demonstrated live: open arc-length spline through gates + tilt-budget speed schedule. Ported `sim/gate_traj.py` (numpy+scipy only). New `aim()` projects drone to per-env spline (`nearest_s`), samples LEAD=2.5m ahead → `tgt_pos = ref["pos"]`, `tgt_vel = ref["v"] * ref["tang"]`, `tgt_yaw = ref["yaw"]` (nose anti-tangent, camera-forward).
 - **Live results (`ft_pscale_spline_5M_best`)**: closest 4.3m at v=7.8 (vs prior best 8.7m cap6brake). Early DAgger checkpoint hit 4.5m at **tilt=12°** sustained (no tumble), late PPO checkpoint hit 4.3m but tumbled (tilt=87° at closest).
