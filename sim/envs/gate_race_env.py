@@ -313,8 +313,11 @@ class GateRaceEnv(gym.Env):
         vq_zvd: bool = False,
         vq_slew: float | None = None,
         start_behind_max: float | None = None,
+        privileged_obs: bool = False,
+        dr_width: float = 0.0,
     ) -> None:
         super().__init__()
+        self._privileged_obs = privileged_obs
 
         if isinstance(action_mode, str):
             action_mode = ActionMode(action_mode)
@@ -398,10 +401,21 @@ class GateRaceEnv(gym.Env):
             with open(vq_model_path) as f:
                 self._matched = VQMatchedDynamics(json.load(f), dt=dt, frame="ENU",
                                                   latency_s=vq_latency_s, thrust_lag_s=vq_thrust_lag_s)
+            if dr_width > 0.0:
+                self._matched.randomize(np.random.default_rng(0), n_envs, dr_width)
+        # privileged channel width (per-env DR factors); 0 when no DR / not vq_rate
+        self._priv_dim = (self._matched.dr_factors.shape[1]
+                          if self._matched is not None and self._matched.dr_factors is not None
+                          else 0)
 
         # Gymnasium spaces — normalized action space [-1, 1] per MonoRace paper
         obs_high = np.full(self._obs_dim, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
+        if self._privileged_obs:   # actor sees "policy"; critic also sees "privileged" (true per-env params)
+            self.observation_space = spaces.Dict({
+                "policy": self.observation_space,
+                "privileged": spaces.Box(-np.inf, np.inf, shape=(self._priv_dim,), dtype=np.float32),
+            })
         self.action_space = spaces.Box(
             low=-np.ones(4, dtype=np.float32),
             high=np.ones(4, dtype=np.float32),
@@ -606,7 +620,7 @@ class GateRaceEnv(gym.Env):
         self._update_gate_tracking(all_indices)
 
         obs = self._compute_obs()
-        return obs, {}
+        return self._wrap_obs(obs), {}
 
     def _esc_to_omega(self, u: NDArray[np.float64]) -> NDArray[np.float64]:
         """Map normalized action [-1, 1] to motor speed [rad/s] via ESC curve.
@@ -1110,13 +1124,25 @@ class GateRaceEnv(gym.Env):
         obs = self._compute_obs()
 
         # Copy to avoid aliasing between returned obs and terminal_obs
-        info: dict[str, Any] = {"terminal_obs": pre_reset_obs.copy()}
+        info: dict[str, Any] = {"terminal_obs": self._wrap_obs(pre_reset_obs.copy())}
 
         # Episode metrics for done envs (SB3 auto-logs these)
         if ep_info is not None:
             info["episode"] = ep_info
 
-        return obs, rewards, terminated, truncated, info
+        return self._wrap_obs(obs), rewards, terminated, truncated, info
+
+    def _wrap_obs(self, flat):
+        """Pair the observable obs with the privileged per-env DR factors (asymmetric critic).
+        No-op (returns the flat array) unless privileged_obs is on."""
+        if not self._privileged_obs:
+            return flat
+        priv = self._matched.dr_factors
+        if priv is None:
+            priv = np.zeros((self.n_envs, self._priv_dim), dtype=np.float32)
+        if np.ndim(flat) == 1:                       # single-env squeeze path
+            return {"policy": flat, "privileged": priv[0]}
+        return {"policy": flat, "privileged": priv.astype(np.float32)}
 
     def _compute_obs_batched(self) -> NDArray[np.float32]:
         """Compute observation vectors for all environments.
