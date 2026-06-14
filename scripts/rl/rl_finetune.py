@@ -54,6 +54,8 @@ RAD_END   = argf("--rad_end",   1.0)  # final radius after anneal
 RAD_STEPS = int(argf("--rad_steps", 0))   # anneal duration in PPO steps; 0 = no curriculum (rad=RAD_START)
 HIST   = int(argf("--hist", 0))           # NeuroBEM history stack: prev-action steps in obs (handoff fix)
 WSMOOTH = argf("--wsmooth", 0.0)          # NLM rec: action smoothness weight (anti 11Hz ring); try 1.4
+BRAKE = argf("--brake", 0.5)              # aim() brake-taper slope; bigger = brake harder per meter
+V_GATE = argf("--vgate", 1.5)             # min commit speed near gate; lower = arrive slower
 REWARD = {"gate_progress": 2.0, "gate_passage": 15.0, "gate_offset": 0.5,
           "body_rate": 0.005, "crash_penalty": 10.0, "sideslip": WSIDE,
           "aperture": WAPER, "gate_centering": WCNTR, "action_smoothness": WSMOOTH}
@@ -111,7 +113,6 @@ def aim(S, gates, gp):
     # warning: do NOT re-derive).
     idx = np.clip(gp, 0, NG-1); gate = gates[np.arange(len(gp)), idx]
     dxy = (gate - S[:, POS])[:, :2]; dist = np.linalg.norm(dxy, axis=1, keepdims=True)+1e-6
-    BRAKE = 0.5; V_GATE = 1.5
     vtgt = np.clip(BRAKE * dist, V_GATE, VDES)
     tv = np.zeros((len(gp), 3)); tv[:, :2] = vtgt*dxy/dist
     # camera-at-gate: nose direction = OPPOSITE the gate direction (= -dxy/dist), so camera (=-body_x)
