@@ -52,9 +52,11 @@ WCNTR = argf("--wc", 0.0)   # gate-centering weight (existing, near-plane latera
 RAD_START = argf("--rad_start", 1.0)  # TRANSFER-10: gate radius curriculum -- start loose, anneal to 1.0
 RAD_END   = argf("--rad_end",   1.0)  # final radius after anneal
 RAD_STEPS = int(argf("--rad_steps", 0))   # anneal duration in PPO steps; 0 = no curriculum (rad=RAD_START)
+HIST   = int(argf("--hist", 0))           # NeuroBEM history stack: prev-action steps in obs (handoff fix)
+WSMOOTH = argf("--wsmooth", 0.0)          # NLM rec: action smoothness weight (anti 11Hz ring); try 1.4
 REWARD = {"gate_progress": 2.0, "gate_passage": 15.0, "gate_offset": 0.5,
           "body_rate": 0.005, "crash_penalty": 10.0, "sideslip": WSIDE,
-          "aperture": WAPER, "gate_centering": WCNTR}
+          "aperture": WAPER, "gate_centering": WCNTR, "action_smoothness": WSMOOTH}
 
 
 def mat_to_quat_batch(m):
@@ -147,7 +149,8 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
                       vq_model_path=vq_path, tracks=tracks, random_gate_start=scat,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
                       gate_collision=True, gate_passage_radius=(gate_radius if gate_radius is not None else RAD_START),
-                      arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG)
+                      arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG,
+                      n_action_history=HIST)
     return env, np.array(G3)
 
 
@@ -180,7 +183,7 @@ def eval_gates(model, seed=7, NE=16, gate_radius=None):
 def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
-    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} steps={STEPS}", flush=True)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} hist={HIST} wsm={WSMOOTH} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1); venv = VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
     # not swamp them), no entropy bonus, gentle LR + tight trust region, few epochs -> don't destroy the
