@@ -15,6 +15,8 @@ from sim.envs.gate_race_env import GateRaceEnv
 from sim.envs.vec_env_adapter import VecEnvAdapter
 from sim.tracks import Track, GateState
 from sim.dynamics.numpy_quad import POS, VEL, QUAT, OMEGA, quat_to_rotmat_batch
+from sim.gate_traj import GateTrajectory
+_TRAJS = []                                       # per-env spline planners, populated by make_env
 
 G = 9.81
 def argf(f, d): return float(sys.argv[sys.argv.index(f)+1]) if f in sys.argv else d
@@ -109,33 +111,31 @@ def ff_batch(S, tgt_pos, tgt_vel, tgt_yaw):
 
 
 def aim(S, gates, gp):
-    # NOSE-ANTI-GATE yaw (camera-at-gate). vq_waypoint2-style: position-derived target, NOT
-    # velocity-derived. Anti-velocity yaw (old) flips when drone overshoots gate -> live teacher
-    # diagnostic flew tail-first 438 m in 32 s on overshoot (no turn-around logic). Position-derived
-    # target stays consistent: when drone is past gate, nose still points anti-(gate-pos), i.e.
-    # nose-toward-future-travel-dir / camera-back-at-gate, so reverse-braking accel is geometrically
-    # consistent with attitude. Reuses the proven vq_waypoint2 racing convention (RING-09 vault
-    # warning: do NOT re-derive).
+    # SPLINE-FOLLOWING teacher (TRACK-01 port). Each env has an open arc-length spline through
+    # spawn + gates (built in make_env). Drone projects to spline (nearest_s), reference is
+    # LEAD m ahead. tgt_pos = ref["pos"], tgt_vel = ref["v"] * ref["tang"] (tilt-budget speed),
+    # tgt_yaw = ref["yaw"] (nose anti-tangent, camera-forward). Smooth tangent + analytic
+    # curvature + tilt-budget speed schedule -> drone follows a smoother trajectory than
+    # point-to-point PD; live tilt budget pre-scheduled before each gate (predictive braking).
     n_envs = len(gp)
-    idx = np.clip(gp, 0, NG-1); gate = gates[np.arange(n_envs), idx]
-    dxy = (gate - S[:, POS])[:, :2]; dist = np.linalg.norm(dxy, axis=1, keepdims=True)+1e-6
-    # vq_waypoint2 bidirectional velocity loop: per-leg course direction (cam_fwd) = vector from
-    # previous gate to current gate (for gp=0, gate0->gate1 forward direction). e_al = signed
-    # along-course error; vtgt allows NEGATIVE (gentle reverse) when drone overshoots gate.
-    # Old aim() always commanded vtgt > 0 along dxy/dist -> no turn-around -> live ran 438 m away.
-    prev_idx = np.where(idx >= 1, idx - 1, 0)
-    next_idx = np.where(idx >= 1, idx, np.minimum(idx + 1, NG - 1))
-    leg = gates[np.arange(n_envs), next_idx] - gates[np.arange(n_envs), prev_idx]
-    leg_xy = leg[:, :2]; leg_n = np.linalg.norm(leg_xy, axis=1, keepdims=True) + 1e-6
-    cam_fwd = leg_xy / leg_n
-    e_al = np.sum(dxy * cam_fwd, axis=1)               # signed along-course distance to gate
-    vtgt = np.clip(BRAKE * e_al, -V_GATE, VDES)        # bidirectional: gentle reverse at overshoot
-    tv = np.zeros((n_envs, 3))
-    tv[:, :2] = vtgt[:, None] * cam_fwd                # target velocity along course direction
-    # camera-at-course: nose anti-course (camera (=-body_x) points along course forward).
-    nose_dir = -cam_fwd
-    tgt_yaw = np.arctan2(nose_dir[:, 1], nose_dir[:, 0])
-    return gate, tv, tgt_yaw
+    LEAD = 2.5
+    out_pos = np.zeros((n_envs, 3))
+    out_vel = np.zeros((n_envs, 3))
+    out_yaw = np.zeros(n_envs)
+    if len(_TRAJS) < n_envs:                          # fallback if trajs not built (smoke/test path)
+        idx = np.clip(gp, 0, NG-1); gate = gates[np.arange(n_envs), idx]
+        dxy = (gate - S[:, POS])[:, :2]; dist = np.linalg.norm(dxy, axis=1, keepdims=True) + 1e-6
+        nose_dir = -dxy / dist
+        return gate, np.zeros((n_envs, 3)), np.arctan2(nose_dir[:, 1], nose_dir[:, 0])
+    for i in range(n_envs):
+        traj = _TRAJS[i]
+        s_d = traj.nearest_s(S[i, POS])
+        s_ref = float(min(s_d + LEAD, traj.s_max))
+        ref = traj.sample(s_ref)
+        out_pos[i] = ref["pos"]
+        out_vel[i] = float(ref["v"]) * ref["tang"]
+        out_yaw[i] = float(ref["yaw"])
+    return out_pos, out_vel, out_yaw
 
 
 def _yaw_quat(th):
@@ -168,6 +168,13 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
                       gate_collision=True, gate_passage_radius=(gate_radius if gate_radius is not None else RAD_START),
                       arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG,
                       n_action_history=HIST)
+    # Per-env open spline trajectories (TRACK-01 06-09: tilt-budget speed-scheduled controller; STRAIGHT
+    # 8.6 m/s clean live). Prepend spawn so spline covers the launch leg too.
+    global _TRAJS
+    spawn3 = np.array([0.0, 0.0, 1.0])
+    _TRAJS = [GateTrajectory(np.vstack([spawn3[None, :], np.array(g3_env)]),
+                              v_cruise=VDES, tilt_budget_deg=35.0, c_drag=0.057, margin=0.6)
+              for g3_env in G3]
     return env, np.array(G3)
 
 
