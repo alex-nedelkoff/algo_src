@@ -1,6 +1,29 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-14 night)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-15)
 
-## ★ NEXT = LIVE-TEST the residual+asymmetric-critic champion once the 5M run finishes (RESIDUAL-ASYM-01)
+## ★ NEXT = UNLOCK HIGH-SPEED GATE CAPTURE: fix the anchor's speed PLAN + drag-bootstrap (RESIDUAL-ASYM-02)
+
+**RESIDUAL-ASYM-01 LIVE RESULT (06-15): residual+asym champion is STABLE live but 0/6 — overshoots gate 0 at v17.** Deploy `ft_residual_asym_5M_best.zip` (mirror via `spline_anchor.py` + `--residual_ff`): **no tumble, tilt 28–58° the whole 33s** (vs PPO baseline's 87° tumble) — residual stability transferred as designed. But closest 8.6m then fled monotonically to 465m. Cause: drone cruises at **v17** (live drag-saturation) while the spline anchor's tilt-budget speed law plans a **v8.5 line** (`v=sqrt(6.87·0.6/0.057)=8.5`) → threads a half-speed line at full speed → overshoots every gate → anchor saturates at course-end → flees. **Not too fast; flying a line built for half its speed.** (DAgger spline champ got 4.5m because there speed≈plan, at v7.8.)
+
+**DECISION (user): unlock higher speed, don't cap it.** Fix the anchor's PLAN so it lays a v14–17 line:
+1. **Lower `c_drag` in `GateTrajectory`** (0.057 → ~0.026) to live's true high-v drag → schedule predicts v14–17 → anchor banks + brakes EARLY for the real speed. (This is what the drag refit feeds.)
+2. **Raise `tilt_budget_deg` 35→45** (ENVELOPE-SWEEP: 45° stable live → v14; brake 6.9→9.8 m/s², enough lateral authority to thread 1.5m @ v17).
+3. **Raise `VDES`** so the in-sim policy practices v14–17 threading (sim already reaches v17).
+Then retrain residual+asym, redeploy. Geometrically v17 threading is feasible at 45°.
+
+**DRAG BOOTSTRAP STATUS (the c_drag refit):**
+- `replay_cmds` on the residual deploy recording: **sim steady-state v16.7 ≈ live 17 (high-v drag ~right); only a ~2 m/s ramp lag at v8–14.** Gap is modest.
+- `fit_drag_quad` on the closed-loop residual recording = **TRANSFER-04 trap** (qx<0, z garbage — policy recordings too dithery; do NOT fit on them).
+- Clean collector `collect_vq_ramp --v1 18 --tiltcap 40` **WALLED at v8** (weathervane wall — race_cruise's live-frame `desired_attitude`; RING-09). Clean cruise data only **v0–8**; does NOT cover the v8–17 gap band. Recording safe at laptop `vq_data/20260615T000445_collect_vq_ramp` (2068 rows).
+- **NEXT-SESSION TODO (fit deferred — laptop went unreachable before pull):**
+  - (a) pull `20260615T000445_collect_vq_ramp/data.npz`, `fit_drag_quad` the clean v0–8 window (trim t<8.3s before the tumble).
+  - (b) for the v8–17 band: collect with a **non-walling flier** — `vq_deploy_teacher` (wp2, flew stable v11 33s) or the residual policy at swept speed, true-frame. The race_cruise ramp can't reach it.
+  - (c) set c_drag from the fit, apply knobs 1–3, retrain residual+asym, redeploy.
+
+**STATE:** pod `8as5qcqtrb4dq2` (= `runpod-cor127`, A4500, port 25826) **STOPPED 06-15** (resume `runpodctl pod start 8as5qcqtrb4dq2`; /workspace persists). Champion on Mac `/tmp/ft_residual_asym_5M_best.zip`. Deploy mirror files on laptop worktree (`spline_anchor.py`, `gate_traj.py`, edited `vq_deploy4_hist.py`). Recordings on Mac `/tmp/vq_replay/` (residual deploy) + laptop (ramp). All code pushed (commit chain 9868fe7→9f3a0cd). Plan: `docs/superpowers/plans/2026-06-14-residual-asymmetric-critic.md`.
+
+---
+
+## (06-14 night) LIVE-TEST the residual+asymmetric-critic champion (RESIDUAL-ASYM-01) — DONE, see above
 
 **RESIDUAL-ASYM-01 (06-14 night): built + launched residual-FF learning + asymmetric privileged critic.** Implements HANDOFF #1 (residual) + #2 (asymmetric critic). NOTE: the prior recommended command was self-contradictory — `--steps 0` nullifies BOTH new flags, and `control/algorithms/ppo_asymmetric.py` did NOT exist. Corrected: built from scratch, run with `--steps 5000000`.
 
