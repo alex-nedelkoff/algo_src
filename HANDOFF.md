@@ -14,10 +14,11 @@ Then retrain residual+asym, redeploy. Geometrically v17 threading is feasible at
 - `replay_cmds` on the residual deploy recording: **sim steady-state v16.7 ≈ live 17 (high-v drag ~right); only a ~2 m/s ramp lag at v8–14.** Gap is modest.
 - `fit_drag_quad` on the closed-loop residual recording = **TRANSFER-04 trap** (qx<0, z garbage — policy recordings too dithery; do NOT fit on them).
 - Clean collector `collect_vq_ramp --v1 18 --tiltcap 40` **WALLED at v8** (weathervane wall — race_cruise's live-frame `desired_attitude`; RING-09). Clean cruise data only **v0–8**; does NOT cover the v8–17 gap band. Recording safe at laptop `vq_data/20260615T000445_collect_vq_ramp` (2068 rows).
-- **NEXT-SESSION TODO (fit deferred — laptop went unreachable before pull):**
-  - (a) pull `20260615T000445_collect_vq_ramp/data.npz`, `fit_drag_quad` the clean v0–8 window (trim t<8.3s before the tumble).
-  - (b) for the v8–17 band: collect with a **non-walling flier** — `vq_deploy_teacher` (wp2, flew stable v11 33s) or the residual policy at swept speed, true-frame. The race_cruise ramp can't reach it.
-  - (c) set c_drag from the fit, apply knobs 1–3, retrain residual+asym, redeploy.
+- **CLEAN FIT DONE (06-15):** trimmed ramp to clean window (t<8.2, tilt<25, v1.5–8.5; `sysid/ramp_clean_v0_8.npz`). `fit_drag_quad`: **Dx=0.0376, qx=0.0429** (resid RMS 0.04 vs raw 2.57 — clean, physical). z thrust map confirmed (|f0|=5.75≈5.17, |df|=58.6≈56; recording acc_z sign-flipped vs fit convention). y ignored (no body-y signal on a straight ramp).
+  - **Model over-drags at low v** (D_eff: v2 fit 0.12 vs model 0.16; converge ~v8) → THIS is the ~2 m/s ramp lag.
+  - **DO NOT write this to the model:** extrapolated to v17, D_eff=0.0376+0.0429·17=0.77 > current 0.64 → would over-drag at high v and BREAK the replay-validated v17 match. Drag is **sub-quadratic** (steep low, flat high — live saturates v17). A single quadratic can't span v0–17. (TRANSFER-04 trap.)
+  - **STILL NEED v8–17 clean data** to set the high-speed c_drag for the anchor plan: collect with a **non-walling flier** — `vq_deploy_teacher` (wp2, stable v11 33s) or residual at swept speed (true-frame). race_cruise walls at v8.
+  - Then: set c_drag from the v8–17 fit (likely a per-band / saturating drag form, not one quadratic), apply knobs 1–3 (tilt_budget 45, VDES↑), retrain residual+asym, redeploy.
 
 **STATE:** pod `8as5qcqtrb4dq2` (= `runpod-cor127`, A4500, port 25826) **STOPPED 06-15** (resume `runpodctl pod start 8as5qcqtrb4dq2`; /workspace persists). Champion on Mac `/tmp/ft_residual_asym_5M_best.zip`. Deploy mirror files on laptop worktree (`spline_anchor.py`, `gate_traj.py`, edited `vq_deploy4_hist.py`). Recordings on Mac `/tmp/vq_replay/` (residual deploy) + laptop (ramp). All code pushed (commit chain 9868fe7→9f3a0cd). Plan: `docs/superpowers/plans/2026-06-14-residual-asymmetric-critic.md`.
 
