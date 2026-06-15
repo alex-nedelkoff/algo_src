@@ -218,6 +218,7 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
                       max_body_rate=MAXW, vq_max_thrust=THRMAX, vq_zvd=ZVD,
                       vq_slew=(SLEW if SLEW > 0 else None),
                       start_behind_max=34.0 if scat else None,
+                      start_pos=(rc_spawn if REALCOURSE else None),   # spawn at the descending course's top, not the z=1 default
                       vq_model_path=vq_path, tracks=tracks, random_gate_start=scat,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
                       gate_collision=True, gate_passage_radius=(gate_radius if gate_radius is not None else RAD_START),

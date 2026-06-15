@@ -313,6 +313,7 @@ class GateRaceEnv(gym.Env):
         vq_zvd: bool = False,
         vq_slew: float | None = None,
         start_behind_max: float | None = None,
+        start_pos: NDArray[np.float64] | None = None,
         privileged_obs: bool = False,
         dr_width: float = 0.0,
     ) -> None:
@@ -347,6 +348,11 @@ class GateRaceEnv(gym.Env):
         # mirror branch this policy never flies). Covers |obs0| up to start_behind_max so a
         # live gate miss is in-distribution instead of an OOD thrust-max flee.
         self.start_behind_max = start_behind_max
+        # Explicit spawn for the STANDARD start (overrides the hardcoded z=1 default spawn). Needed
+        # for the real VQ1 course, which descends 26m: the drone must spawn at the course TOP
+        # (z~29) or it can't reach the lifted gates. Scattered (mid-course recovery) starts still
+        # spawn behind random gates; only the standard-start envs use this.
+        self.start_pos = None if start_pos is None else np.asarray(start_pos, dtype=np.float64)
         self.start_vel_std = start_vel_std
         self.start_att_std = start_att_std
         self.start_omega_std = start_omega_std
@@ -537,6 +543,17 @@ class GateRaceEnv(gym.Env):
             )
             self._states[idx, MOTOR] = hover_omega_i
 
+    def _apply_standard_start(self, env_indices: NDArray[np.intp]) -> None:
+        """Place standard-start envs at the explicit course spawn (start_pos), targeting gate 0.
+
+        Overrides the hardcoded z=1 spawn from (make_)reset_states. Used for the real VQ1
+        course (spawns at the descending course's top). Called BEFORE any scatter override, so
+        scattered (mid-course recovery) envs are re-placed behind random gates afterwards.
+        """
+        self._states[env_indices, POS] = self.start_pos
+        self._gate_indices[env_indices] = 0
+        self._start_gate_indices[env_indices] = 0
+
     def _update_gate_tracking(self, env_indices: NDArray[np.intp]) -> None:
         """Recompute prev_gate_dists and prev_along_normal for given envs.
 
@@ -589,6 +606,9 @@ class GateRaceEnv(gym.Env):
         self._first_gate_step[:] = -1
 
         all_indices = np.arange(self.n_envs)
+
+        if self.start_pos is not None:
+            self._apply_standard_start(all_indices)   # scatter (below) overrides its subset
 
         if self._domain_randomizer is not None:
             self._apply_domain_rand(all_indices)
@@ -1103,6 +1123,9 @@ class GateRaceEnv(gym.Env):
             self._episode_speed_sum[done] = 0.0
             self._episode_speed_count[done] = 0
             self._first_gate_step[done] = -1
+
+            if self.start_pos is not None:
+                self._apply_standard_start(done_indices)   # scatter (below) overrides its subset
 
             if self.track_generator is not None:
                 for idx in done_indices:
