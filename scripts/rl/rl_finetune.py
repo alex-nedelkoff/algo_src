@@ -180,6 +180,17 @@ def _real_course():
 def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=None):
     rng = np.random.default_rng(seed); tracks = []; G3 = []
     rc_spawn, rc_gates = (_real_course() if REALCOURSE else (np.array([0.0, 0.0, 1.0]), None))
+    rc_ceiling = 10.0
+    if REALCOURSE:
+        # The real sim descends 26m into a pit; the env floors at z<=0 and ceils at 10. Lift the whole
+        # course so its LOWEST point clears the floor by FLOOR_MARGIN, and raise the ceiling to fit.
+        # Absolute z is invisible to the gate-relative obs -- only the 26m descent geometry matters.
+        FLOOR_MARGIN = 3.0
+        allz = np.concatenate([[rc_spawn[2]], rc_gates[:, 2]])
+        lift = FLOOR_MARGIN - float(allz.min())
+        rc_spawn = rc_spawn + np.array([0.0, 0.0, lift])
+        rc_gates = rc_gates + np.array([0.0, 0.0, lift])
+        rc_ceiling = float(allz.max()) + lift + 6.0
     for _ in range(n):
         sp = rng.uniform(9, 18); amp = rng.uniform(1.0, 3.0); ph = rng.uniform(0, 6.28)   # deploy courses use space 14-16; 9-13 left them OOD-long (grid weak cells)
         gs = []
@@ -211,6 +222,7 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
                       gate_collision=True, gate_passage_radius=(gate_radius if gate_radius is not None else RAD_START),
                       arena_bounds=(float(np.abs(rc_gates[:, :2]).max()) + 20.0 if REALCOURSE else 120.0),  # 164m course needs >120; DEPLOY obs arena_extent must mirror /10
+                      ceiling=rc_ceiling,   # realcourse: ~35m to fit the lifted descent (default 10)
                       reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG,
                       n_action_history=HIST,
                       privileged_obs=ASYM, dr_width=(DR_WIDTH if ASYM else 0.0))
