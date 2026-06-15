@@ -110,10 +110,12 @@ def ff_batch(S, tgt_pos, tgt_vel, tgt_yaw):
     w[:, 0] += (ROLL_WV0 + ROLL_WV1*vb[:, 0]) * vb[:, 1]
     w[:, 2] += -YAW_WV * vb[:, 1]
     cos_t = np.maximum(R[:, 2, 2], 0.5); c = (G + a[:, 2])/cos_t
-    # vq_waypoint2 tilt-conditional collective clamp: drop ceiling when over-tilted to prevent
-    # thrust-runs-away-with-tilt (live RL signature; ff_batch had no such cap)
-    tilt_deg = np.degrees(np.arccos(np.clip(R[:, 2, 2], -1, 1)))
-    c_max = np.where(tilt_deg > 40.0, 10.0, 18.0)
+    # Collective cap that MAINTAINS LIFT while braking. The old flat c_max=10 at tilt>40 starved
+    # vertical thrust (c*cos_t < g) -> the drone fell during the brake -> gravity ran the speed away
+    # on the descent (06-15 brake diagnosis: thrust opposed velocity correctly but lift collapsed).
+    # New cap = max(18, hover-lift/cos_t * 1.25): always >= the collective needed to hover at this
+    # tilt, with 25% brake headroom; thrmax bounds the final thrust downstream.
+    c_max = np.maximum(18.0, (G / cos_t) * 1.25)
     c = np.minimum(c, c_max)
     thr = np.clip((F0+c)/(-DF), 0.0, 1.0)
     u = np.empty((S.shape[0], 4)); u[:, 0] = np.clip(2*thr/THRMAX-1, -1, 1); u[:, 1:4] = np.clip(w/GAIN/MAXW, -1, 1)
