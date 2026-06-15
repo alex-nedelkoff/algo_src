@@ -24,6 +24,8 @@ def args(f, d): return sys.argv[sys.argv.index(f)+1] if f in sys.argv else d
 STEPS = int(argf("--steps", 5_000_000)); NENV = int(argf("--envs", 64))
 DAGGER = int(argf("--dagger", 4)); BC_EPOCHS = int(argf("--bc_epochs", 20)); NG = 6
 VDES = argf("--vdes", 4.0); WARM = int(argf("--warmstart", 1)); CURVE = "--curve" in sys.argv
+REALCOURSE = "--realcourse" in sys.argv     # train on the ACTUAL VQ1 track (live TRACK_INFO) not the synthetic arc
+RCPATH = args("--rcpath", "sysid/vq1_track_real_course.json")   # optional json override of the embedded coords
 VDES_WARM = argf("--vdes_warm", VDES)   # curriculum: BC/DAgger demos at an easier speed (teacher 48/48 @v4-curve)
 LAT = argf("--latency", 0.0); TLAG = argf("--thrust_lag", 0.0)
 REC = "--recurrent" in sys.argv; TAG = args("--tag", "v1"); DR = "--dr" in sys.argv
@@ -150,12 +152,46 @@ def _yaw_quat(th):
     return np.array([np.cos(th/2), 0.0, 0.0, np.sin(th/2)])
 
 
+# Real VQ1 course (captured live via probe_track.py -> ENCAP_TRACK_INFO, 2026-06-15).
+# Course frame = env ENU (x forward, z up), spawn-relative: x=-x_ned, y=y_ned, z=-z_ned+1.
+# Row 0 = spawn; rows 1-6 = the 6 gates. Real track: ~164 m, DESCENDS 26 m, spacing 23-37 m
+# (vs the synthetic CURVE arc: flat, 9-18 m spacing). Embedded so a pod git-pull is self-contained;
+# --rcpath json (sysid/vq1_track_real_course.json) overrides if present.
+VQ1_REAL_COURSE = np.array([
+    [0.0,          0.0,         1.0],          # spawn
+    [23.29761696, -0.39988279,  1.0524707],    # gate 0
+    [46.89339828, -2.49997067, -4.04752922],   # gate 1
+    [74.59339905,  1.20002925, -12.64752865],  # gate 2
+    [111.49339294, -5.09997082, -23.54752922], # gate 3
+    [135.49339294, -0.79997069, -24.33514023], # gate 4
+    [159.19338989, -4.39997053, -24.94752884], # gate 5
+])
+
+def _real_course():
+    """(spawn(3,), gates(NG,3)) in env ENU course frame. JSON at RCPATH overrides embedded."""
+    import os
+    arr = VQ1_REAL_COURSE
+    if os.path.exists(RCPATH):
+        arr = np.array(json.load(open(RCPATH))["gates"], float)
+    assert arr.shape[0] == NG + 1, f"real course needs {NG+1} rows (spawn+{NG} gates), got {arr.shape}"
+    return arr[0], arr[1:]
+
+
 def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=None):
     rng = np.random.default_rng(seed); tracks = []; G3 = []
+    rc_spawn, rc_gates = (_real_course() if REALCOURSE else (np.array([0.0, 0.0, 1.0]), None))
     for _ in range(n):
         sp = rng.uniform(9, 18); amp = rng.uniform(1.0, 3.0); ph = rng.uniform(0, 6.28)   # deploy courses use space 14-16; 9-13 left them OOD-long (grid weak cells)
         gs = []
-        if CURVE:
+        if REALCOURSE:
+            # fixed VQ1 track (live TRACK_INFO): descends 26 m, spacing 23-37 m. Gates upright (yaw only,
+            # like the real quat_ned_wxyz [.707,0,0,.707]); yaw = heading of the leg into each gate.
+            prev = rc_spawn
+            for i in range(NG):
+                d = rc_gates[i] - prev
+                gs.append(GateState(position=rc_gates[i].copy(), orientation=_yaw_quat(np.arctan2(d[1], d[0]))))
+                prev = rc_gates[i]
+        elif CURVE:
             hd = 0.0; pos = np.array([8.0, 0.0, 1.0]); turn = rng.uniform(0.12, 0.28)*rng.choice([-1, 1])
             for i in range(NG):
                 hd += turn; pos = pos + sp*np.array([np.cos(hd), np.sin(hd), 0.0])
@@ -165,7 +201,7 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
             for i in range(NG):
                 gs.append(GateState(position=np.array([8.0+sp*i, amp*np.sin(i*0.9+ph), 1.0]),
                                     orientation=np.array([1.0, 0, 0, 0])))
-        tracks.append(Track(gates=gs, name="c", start_position=np.array([0, 0, 1.0]))); G3.append([g.position for g in gs])
+        tracks.append(Track(gates=gs, name=("vq1" if REALCOURSE else "c"), start_position=rc_spawn.copy())); G3.append([g.position for g in gs])
     scat = SCATTER and train
     env = GateRaceEnv(n_envs=n, dt=DT, max_steps=EP_STEPS, action_mode="vq_rate",
                       max_body_rate=MAXW, vq_max_thrust=THRMAX, vq_zvd=ZVD,
@@ -174,13 +210,14 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
                       vq_model_path=vq_path, tracks=tracks, random_gate_start=scat,
                       start_behind_dist=1.0, start_vel_std=0.4, start_att_std=0.08, start_omega_std=0.3,
                       gate_collision=True, gate_passage_radius=(gate_radius if gate_radius is not None else RAD_START),
-                      arena_bounds=120.0, reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG,
+                      arena_bounds=(float(np.abs(rc_gates[:, :2]).max()) + 20.0 if REALCOURSE else 120.0),  # 164m course needs >120; DEPLOY obs arena_extent must mirror /10
+                      reward_weights=REWARD, vq_latency_s=LAT, vq_thrust_lag_s=TLAG,
                       n_action_history=HIST,
                       privileged_obs=ASYM, dr_width=(DR_WIDTH if ASYM else 0.0))
     # Per-env open spline trajectories (TRACK-01 06-09: tilt-budget speed-scheduled controller; STRAIGHT
     # 8.6 m/s clean live). Prepend spawn so spline covers the launch leg too.
     global _TRAJS
-    spawn3 = np.array([0.0, 0.0, 1.0])
+    spawn3 = rc_spawn.copy()
     _TRAJS = [GateTrajectory(np.vstack([spawn3[None, :], np.array(g3_env)]),
                               v_cruise=VDES, tilt_budget_deg=35.0, c_drag=0.057, margin=0.6)
               for g3_env in G3]
@@ -234,7 +271,7 @@ def eval_gates(model, seed=7, NE=16, gate_radius=None):
 def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
-    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} hist={HIST} wsm={WSMOOTH} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} residual={RESIDUAL} asym={ASYM} dscale={DELTA_SCALE} drw={DR_WIDTH} steps={STEPS}", flush=True)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} realcourse={REALCOURSE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} hist={HIST} wsm={WSMOOTH} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} residual={RESIDUAL} asym={ASYM} dscale={DELTA_SCALE} drw={DR_WIDTH} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1)
     venv = ResidualVecEnv(env, gates) if RESIDUAL else VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
