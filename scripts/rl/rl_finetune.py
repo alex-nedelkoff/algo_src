@@ -39,7 +39,7 @@ THRMAX = argf("--thrmax", 1.0)  # thrust-authority cap: u0=+1 -> thr THRMAX (tea
 ZVD = "--zvd" in sys.argv       # ZVD-shape the wire rate cmds (EXP-20b ring killer on the policy path); deploy must match
 SLEW = argf("--slew", 0.0)      # rad/s^2 wire-rate slew cap (RING-06: prevents the hard kick that triggers the nonlinear 11 Hz ring); 0=off
 SCATTER = "--scatter" in sys.argv  # miss-recovery starts: random gate, behind 1-34 m, racing yaw (training envs only)
-DT = 1.0 / 72.0; EP_STEPS = 1080   # MIMO rate loop is dt-specific (fit 1/72); ~15 s episodes
+DT = 1.0 / 72.0; EP_STEPS = int(argf("--ep_steps", 1080))   # MIMO rate loop is dt-specific (fit 1/72); 1080=~15s (synthetic 75-100m); real VQ1 is 164m -> need ~2160 (30s) to reach gate 5
 # weathervane-FF (corner_speed teacher term, WV-DYNAMIC coeffs), ENU env frame signs
 ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
 YR_CAP = 1.5   # rad/s yaw-rate cap (corner_speed)
