@@ -67,9 +67,12 @@ DELTA_SCALE = argf("--delta_scale", 0.15)  # residual delta magnitude cap
 # Asymmetric privileged critic (HANDOFF #2): critic sees true per-env plant params, actor only obs.
 ASYM = "--asymmetric_critic" in sys.argv
 DR_WIDTH = argf("--dr_width", 0.4)         # per-env plant DR width feeding the privileged channel
+WSPEED = argf("--wspeed", 0.0)   # 06-15: penalize |v| above VCAP_TRAIN (keep policy below the ~v5 live runaway threshold)
+VCAP_TRAIN = argf("--vcap", 4.0) # m/s speed cap for the penalty
 REWARD = {"gate_progress": 2.0, "gate_passage": 15.0, "gate_offset": 0.5,
           "body_rate": 0.005, "crash_penalty": 10.0, "sideslip": WSIDE,
-          "aperture": WAPER, "gate_centering": WCNTR, "action_smoothness": WSMOOTH}
+          "aperture": WAPER, "gate_centering": WCNTR, "action_smoothness": WSMOOTH,
+          "speed": WSPEED, "speed_cap": VCAP_TRAIN}
 
 
 def mat_to_quat_batch(m):
@@ -284,7 +287,7 @@ def eval_gates(model, seed=7, NE=16, gate_radius=None):
 def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
-    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} realcourse={REALCOURSE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} hist={HIST} wsm={WSMOOTH} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} residual={RESIDUAL} asym={ASYM} dscale={DELTA_SCALE} drw={DR_WIDTH} steps={STEPS}", flush=True)
+    print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} realcourse={REALCOURSE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} wspeed={WSPEED}@vcap{VCAP_TRAIN} hist={HIST} wsm={WSMOOTH} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} residual={RESIDUAL} asym={ASYM} dscale={DELTA_SCALE} drw={DR_WIDTH} steps={STEPS}", flush=True)
     env, gates = make_env(NENV, 1)
     venv = ResidualVecEnv(env, gates) if RESIDUAL else VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must

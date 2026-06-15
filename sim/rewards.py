@@ -43,6 +43,8 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "gate_centering": 0.0,     # disabled by default
     "sideslip": 0.0,           # TRANSFER-06 lever: penalize body-y velocity^2
     "aperture": 0.0,           # TRANSFER-08 lever: Gaussian proximity bonus across approach
+    "speed": 0.0,              # 06-15: penalize |v| above speed_cap^2 (keep policy below the ~v5 live runaway threshold)
+    "speed_cap": 4.0,          # m/s; penalty only bites above this
 }
 
 
@@ -112,6 +114,19 @@ def sideslip_penalty(state: QuadState) -> float:
     rzy = 2.0 * (y * z + w * x)
     vby = rxy * state.vel[0] + ryy * state.vel[1] + rzy * state.vel[2]
     return -float(vby * vby)
+
+
+def speed_penalty(state: QuadState, v_cap: float = 4.0) -> float:
+    """Penalize speed above v_cap: -(max(0, |v| - v_cap))^2.
+
+    06-15: the live VQ has a sharp rate-loop runaway threshold ~v5-6 the matched sim lacks
+    (it holds any speed). A policy trained slow in-sim still ACCELERATES through v5 live ->
+    runaway. This term forces the policy to crawl below the threshold (vq_course threads 6/6
+    live only at v1.4). Quadratic above the cap; zero below.
+    """
+    v = float(np.linalg.norm(state.vel))
+    excess = max(0.0, v - v_cap)
+    return -(excess * excess)
 
 
 def aperture_proximity_reward(
@@ -248,7 +263,11 @@ def monorace_reward(
     aperture_val = w.get("aperture", 0.0) * aperture_proximity_reward(state, gate_state)
     components["aperture"] = aperture_val
 
-    total = progress_val + body_rate_val + action_smooth_val + sideslip_val + aperture_val
+    # Speed penalty (06-15; weight 0 = disabled = default) -- keep policy below the live v5 runaway
+    speed_val = w.get("speed", 0.0) * speed_penalty(state, w.get("speed_cap", 4.0))
+    components["speed"] = speed_val
+
+    total = progress_val + body_rate_val + action_smooth_val + sideslip_val + aperture_val + speed_val
     return RewardResult(total=total, components=components)
 
 
