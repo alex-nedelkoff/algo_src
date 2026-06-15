@@ -59,6 +59,7 @@ RAD_STEPS = int(argf("--rad_steps", 0))   # anneal duration in PPO steps; 0 = no
 HIST   = int(argf("--hist", 0))           # NeuroBEM history stack: prev-action steps in obs (handoff fix)
 WSMOOTH = argf("--wsmooth", 0.0)          # NLM rec: action smoothness weight (anti 11Hz ring); try 1.4
 BRAKE = argf("--brake", 0.5)              # aim() brake-taper slope; bigger = brake harder per meter
+VZMAX = argf("--vzmax", 1e9)              # controlled-sink: cap spline descent rate (m/s); slow forward speed on descents (1e9=off)
 V_GATE = argf("--vgate", 1.5)             # min commit speed near gate; lower = arrive slower
 # Residual learning (HANDOFF 06-14 #1): action = clip(FF_spline_anchor + tanh(net)*delta_scale).
 # The anchor guarantees stability so PPO can only add bounded deltas -> CANNOT erode it. Deploy mirrors.
@@ -237,7 +238,7 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
     global _TRAJS
     spawn3 = rc_spawn.copy()
     _TRAJS = [GateTrajectory(np.vstack([spawn3[None, :], np.array(g3_env)]),
-                              v_cruise=VDES, tilt_budget_deg=35.0, c_drag=0.057, margin=0.6)
+                              v_cruise=VDES, tilt_budget_deg=35.0, c_drag=0.057, margin=0.6, vz_max=VZMAX)
               for g3_env in G3]
     env._trajs = _TRAJS   # bind this env's splines so the residual anchor survives global clobber
     return env, np.array(G3)
