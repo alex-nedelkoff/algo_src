@@ -1,4 +1,18 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-15)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-16)
+
+## ★★ START HERE (06-16): the VQ1/RL blockers are now CONTROL bugs, not plant limits — fix them before more RL
+
+Three things were untangled 06-16 (full detail: vault Experiment Log rows STRAFE-ENVELOPE, LATSIGN-FIX, JITTER-RING, BRAKE-CLAMP-01, RING-REFIT-01; session note `2026-06-15 AI-GP VQ1 real-course RL + rate-loop ring wall`):
+
+1. **★ THE RL LATERAL-TRANSFER BUG — lateral-y SIGN inversion.** The "lateral wall / weathervane / crab / lateral-capture-miss" is a deploy-adapter lateral sign inversion (deploy frame is a y-mirror of the training-env frame). **⚠ CORRECTION (06-16 LATE, A/B 5×5 confirmed): the FIX is `--latflip` (negate the lateral accel command `a[1]` in `ff_one`), NOT the `to_enu` pos/vel-y MIRROR.** The committed `to_enu` MIRROR default (commit fd9e7b1, `--nomirror` to revert) is **BROKEN — 0/6 on all 5 runs**; `--nomirror --latflip` captures gates (0,0,1,4,1 — best 4/6). They are NOT equivalent: MIRROR also flips gate-y → changes `tgt_yaw` (leg headings) while `qe` stays unflipped → inconsistent frame → tumble. latflip is a clean single-axis negate. **DEPLOY DEFAULT IS NOW `nomirror + latflip`** (working tree; the committed mirror-default is wrong). 6-DOF strafe sanity (heading locked, latflip): all of FWD/BACK/LEFT/RIGHT/UP/DOWN track clean, tilt ≤17°. The 0-4/6 variance with latflip = the SEPARATE 12Hz ring (item 3), NOT the lateral sign. Memory `feedback_lateral_sign_not_plant_wall` (corrected). Also fixed: vq_model pitch `gain_G`/`rate_loop_2nd` B sign-corrected to live (raw command-replay holdout 53%→95%; net-neutral on flight, makes the model a clean twin).
+2. **The 11Hz camera-jitter ring IS killable** — the campaign's ZVD was mistuned (delay 7 = 5Hz); **`--zvddelay 3` (tuned to 11Hz) drops pitch-gyro 0.5→0.00.** Use it on the wire-rate cmds (train+deploy).
+3. **Brake-clamp bug fixed** (`c_max=max(18,g/cos_t·1.25)` — old flat 10 starved lift, drone fell while braking; commit 06cce1c). RING-REFIT-01: the live ring is NONLINEAR/amplitude-triggered (detonates >45° tilt) — a LINEAR `rate_loop_2nd` can't reproduce it (11Hz refit didn't close the in-sim gap).
+
+**Plant envelope (06-16):** forward/back controllable ~v8; lateral controllable with correct sign (authority-limited at high v); ~v12Hz ring dormant <45° tilt, detonates above (sustained-maneuver only — brief transients recover). Straight cruise stable ~v8.
+
+**The honest VQ1 status:** `vq_course` already completes VQ1 LIVE 6/6 (~118s) — ship it. The RL/spline path's failures were CONTROL bugs (lateral sign, brake clamp, mistuned ZVD, wrong course), now mostly fixed. **Recommended next: rebuild the RL/teacher deploy with (a) in-flight lateral-sign probe, (b) ZVD delay-3, (c) the brake-fix, (d) nose-forward yaw-steering — then the real-course training (`--realcourse`, already wired) has a chance to transfer.** Tools: `sysid/vq_deploy_teacher_real.py` (strafe/straight/sweep/latflip/camflip/zvddelay flags), `vq_deploy_policy_real.py`, `scripts/rl/export_course_map.py`. Pod `3zbsvsfnhknzo2` STOPPED.
+
+---
 
 ## ★ NEXT = UNLOCK HIGH-SPEED GATE CAPTURE: fix the anchor's speed PLAN + drag-bootstrap (RESIDUAL-ASYM-02)
 

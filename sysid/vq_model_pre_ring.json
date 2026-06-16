@@ -268,18 +268,5 @@
     ],
     "note": "RING-01 06-12: MIMO 2nd-order rate loop (underdamped ~7 Hz pole pair); fit on deploy+tumble pooled, mirror-symmetrized; dt=1/72",
     "note_q": "RING-REFIT 06-15: roll/pitch poles set to live 11Hz (RING-05) at |p|0.92, DC rate-gain preserved by rescaling B0/B1; yaw unchanged"
-  },
-  "ring_nonlinear": {
-    "f_hz": 12.0,
-    "tilt_deg": 45.0,
-    "width_deg": 8.0,
-    "zeta_lo": 0.14,
-    "zeta_hi": -0.06,
-    "drive": 0.03,
-    "axes": [
-      0,
-      1
-    ],
-    "clip": 30.0
   }
 }

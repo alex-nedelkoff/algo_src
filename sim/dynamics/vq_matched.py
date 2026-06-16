@@ -120,6 +120,26 @@ class VQMatchedDynamics:
             self.A1_r2 = None
         self._om_prev: NDArray[np.float64] | None = None
         self._wcmd_prev: NDArray[np.float64] | None = None
+        # NONLINEAR inner-loop ring (COR-127 06-16): the live VQ rate loop is under-damped (~12 Hz) and
+        # DETONATES above ~45 deg tilt (motor saturation removes damping). The linear rate_loop_2nd cannot
+        # reproduce this (decays at any pole; RING-REFIT-01). Model it as a per-axis 12 Hz resonator whose
+        # damping zeta(tilt) is positive (decay) below the threshold and ramps NEGATIVE (growth) above it,
+        # driven by command energy. Added to omega. Opt-in via model["ring_nonlinear"]; absent -> exact old
+        # behavior. Purpose: the policy trains against a sim that punishes >threshold tilt like live does.
+        _rn = model.get("ring_nonlinear")
+        if _rn:
+            self.ring_f = float(_rn["f_hz"])
+            self.ring_thresh = np.radians(float(_rn["tilt_deg"]))
+            self.ring_width = np.radians(float(_rn.get("width_deg", 8.0)))
+            self.ring_z0 = float(_rn["zeta_lo"])     # >0 : damped (dormant jitter) below the threshold
+            self.ring_z1 = float(_rn["zeta_hi"])     # <0 : growth (detonation) above the threshold
+            self.ring_drive = float(_rn.get("drive", 0.02))
+            self.ring_axes = tuple(_rn.get("axes", (0, 1)))   # roll, pitch (yaw quiet in the data)
+            self.ring_clip = float(_rn.get("clip", 30.0))     # cap the resonator state (rad/s) to keep it finite
+        else:
+            self.ring_f = None
+        self._ring: NDArray[np.float64] | None = None
+        self._ring_prev: NDArray[np.float64] | None = None
         d = model["drag_linear_body"]
         self.Dx, self.Dy = d["Dx"], d["Dy"]
         # quadratic body drag (COR-127 REPLAY-01): the linear fit has no authority at high v —
@@ -248,6 +268,8 @@ class VQMatchedDynamics:
         self._dist_k = 0
         self._om_prev = None
         self._wcmd_prev = None
+        self._ring = None
+        self._ring_prev = None
         return s
 
     def step(self, states: NDArray[np.float64], actions: NDArray[np.float64],
@@ -320,6 +342,28 @@ class VQMatchedDynamics:
                 self._dist_bias = np.random.normal(0.0, 1.0, (n, 3)) * sig * scl
             self._dist_k += 1
             om_new += self._dist_bias * dt
+
+        # --- NONLINEAR inner-loop ring: per-axis 12 Hz resonator, damping flips negative above the tilt
+        # threshold (motor-saturation detonation). zeta(tilt): z0>0 (decay, dormant jitter) -> z1<0 (growth).
+        # Added to omega; positive feedback above the threshold -> the ring grows -> tumble (RING/TILTCAP-01).
+        if self.ring_f is not None:
+            n = states.shape[0]
+            if self._ring is None or self._ring.shape[0] != n:
+                self._ring = np.zeros((n, 3)); self._ring_prev = np.zeros((n, 3))
+            tilt_r = np.arccos(np.clip(np.abs(R[:, 2, 2]), -1.0, 1.0))               # current tilt (rad)
+            frac = np.clip((tilt_r - self.ring_thresh) / self.ring_width, 0.0, 1.0)[:, None]
+            zeta = self.ring_z0 + (self.ring_z1 - self.ring_z0) * frac                # z0 -> z1 across the threshold
+            wring = 2.0 * np.pi * self.ring_f * dt
+            rho = np.exp(-zeta * wring)                                               # >1 when zeta<0 -> growth
+            # process noise seeds the resonant mode (a DC command can't excite a resonator; real rings are
+            # seeded by turbulence/sensor noise/command kicks). Scaled up by command activity. Below thresh
+            # rho<1 -> bounded jitter (dormant ring); above thresh rho>1 -> the resonant mode grows -> tumble.
+            drive = self.ring_drive * np.random.normal(0.0, 1.0, wcmd.shape) * (1.0 + np.abs(wcmd))
+            ring_new = 2.0 * np.cos(wring) * rho * self._ring - (rho ** 2) * self._ring_prev + drive
+            ring_new = np.clip(ring_new, -self.ring_clip, self.ring_clip)
+            self._ring_prev = self._ring; self._ring = ring_new
+            for ax in self.ring_axes:
+                om_new[:, ax] += self._ring[:, ax]
 
         # --- attitude integrate via axis-angle exp(0.5 om dt) ---
         ang = np.linalg.norm(om_new, axis=1) * dt

@@ -59,11 +59,15 @@ def quat_to_euler(q):
 MIRROR = "--nomirror" not in sys.argv   # ADAPTER FIX (default ON, 06-16): to_enu inverted lateral-y vs the RL env (B=[1,-1,-1]
 # y-flip = "world-y mirror") -> policy lateral sign inverted live -> lateral runaway/crab. Flip drone pos/vel y. (Synthetic gates
 # here are built from camfwd=to_enu(ds0) so they inherit the fix.) `--nomirror` = old buggy frame.
+MIRRORATT = "--mirroratt" in sys.argv   # COMPLETE the mirror: also reflect the ENU attitude quat [w,x,y,z]->[w,-x,y,-z] (flips world
+# roll + yaw to match the mirrored pos/vel; pitch invariant; body omega untouched = body frame). Plain MIRROR flips pos/vel only ->
+# roll/yaw stayed un-mirrored, consistent only at ~0 tilt (strafe). Banked turns need this. A/B this vs plain MIRROR.
 def to_enu(ds):
     q_true = qfix(ds.quat_wxyz); Rt = quat_to_R(q_true)
     vel_w = Rt @ ds.vel_ned; om_t = ds.omega*np.array([1.0, -1.0, 1.0])
     pos, vel, q, om = ds.pos_ned*B, vel_w*B, quat_mul(quat_mul(bq, q_true), bqc), om_t*B
     if MIRROR: pos = pos*np.array([1.,-1.,1.]); vel = vel*np.array([1.,-1.,1.])
+    if MIRROR and MIRRORATT: q = q*np.array([1.,-1.,1.,-1.])
     return pos, vel, q, om
 
 s = Store(); m = MavlinkIO(s)
@@ -147,7 +151,7 @@ while time.time()-t0 < MAX_T and gi < NG:
         c.send_attitude_target(np.clip(wd/RG, -4, 4), thr); phase = "LVL"
     else:
         # Phase 2: POLICY flies
-        thr = float((uc[0]+1)/2*THRMAX); rates = np.array([uc[1], -uc[2], -uc[3]])*MAXW   # ENU->VQ via B
+        thr = float((uc[0]+1)/2*THRMAX); rates = np.array([uc[1], uc[2], -uc[3]])*MAXW   # pitch un-flipped (06-16 PITCH-FIX: model pitch sign corrected to live)
         if ZVD:
             _zvd_buf = np.roll(_zvd_buf, 1, axis=0); _zvd_buf[0] = rates
             rates = np.array([ZVD_AMP[0]*_zvd_buf[0, ax] + ZVD_AMP[1]*_zvd_buf[ZVD_DELAY[ax], ax]

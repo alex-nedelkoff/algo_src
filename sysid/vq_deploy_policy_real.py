@@ -42,10 +42,14 @@ def qfix(q): return np.array([q[1], q[2], q[3], q[0]])
 B = np.array([1.0, -1.0, -1.0]); bq = np.array([0.0, 1.0, 0.0, 0.0]); bqc = np.array([0.0, -1.0, 0.0, 0.0])
 MIRROR = "--nomirror" not in sys.argv   # ADAPTER FIX (default ON): to_enu inverted lateral-y vs the training env (the "world-y mirror")
 # -> the policy's lateral sign was inverted live -> lateral runaway/crab. Flip drone pos/vel y + gate y so deploy frame matches train.
+MIRRORATT = "--mirroratt" in sys.argv   # COMPLETE the mirror: also reflect the ENU attitude quat [w,x,y,z]->[w,-x,y,-z] (flips world
+# roll + yaw to match the mirrored pos/vel; pitch invariant; body omega untouched = body frame). Plain MIRROR flips pos/vel only ->
+# o[6] roll / o[8] yaw stayed un-mirrored, consistent only at ~0 tilt (strafe). Banked gate turns need this. A/B this vs plain MIRROR.
 def to_enu(ds):
     q_true = qfix(ds.quat_wxyz); Rt = quat_to_R(q_true)
     pos, vel, q, om = ds.pos_ned*B, (Rt @ ds.vel_ned)*B, quat_mul(quat_mul(bq, q_true), bqc), (ds.omega*np.array([1.0, -1.0, 1.0]))*B
     if MIRROR: pos = pos*np.array([1.,-1.,1.]); vel = vel*np.array([1.,-1.,1.])
+    if MIRROR and MIRRORATT: q = q*np.array([1.,-1.,1.,-1.])
     return pos, vel, q, om
 def wrap(a): return (a + np.pi) % (2*np.pi) - np.pi
 def rotxy(v, yaw):
@@ -125,7 +129,7 @@ while time.time()-t0 < MAX_T and gi < NG:
     else:
         obs = build_obs(pe, ve, qe, ome, gi, prev_act, hist)
         u = np.clip(policy(obs), -1, 1)
-        thr = float((u[0]+1)/2*THRMAX); rates = np.array([u[1], -u[2], -u[3]]) * MAXW
+        thr = float((u[0]+1)/2*THRMAX); rates = np.array([u[1], u[2], -u[3]]) * MAXW   # pitch un-flipped (06-16 PITCH-FIX: model pitch sign corrected to live)
         if ZVD:   # ring killer BEFORE slew (matches env vq_zvd->vq_slew order)
             _zvd_buf = np.roll(_zvd_buf, 1, axis=0); _zvd_buf[0] = rates
             rates = np.array([ZVD_AMP[0]*_zvd_buf[0, ax] + ZVD_AMP[1]*_zvd_buf[ZVD_DELAY[ax], ax]

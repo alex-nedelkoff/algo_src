@@ -22,6 +22,7 @@ from gate_traj import GateTrajectory
 import aigp.flight_telemetry as ftm
 
 def argf(f, d): return float(sys.argv[sys.argv.index(f)+1]) if f in sys.argv else d
+def args(f, d): return sys.argv[sys.argv.index(f)+1] if f in sys.argv else d
 G = 9.81
 MAXW = argf("--maxw", 6.0); THRMAX = argf("--thrmax", 0.6); VDES = argf("--vdes", 8.0); MAX_T = argf("--maxt", 45.0)
 SLEW = argf("--slew", 40.0)   # rad/s^2 wire-rate slew cap -- MUST mirror training (RING-06 ring killer); un-slewed kicks ring the live plant
@@ -36,7 +37,9 @@ STRAFE = "--strafe" in sys.argv     # hold spawn yaw (camera fixed forward), tra
 STRAFEV = argf("--strafev", 3.0); STRAFEDUR = argf("--strafedur", 4.0)  # strafe speed (m/s) + seconds per direction
 STRAFEDIR = int(argf("--strafedir", -1))   # -1=cycle FWD/BACK/LEFT/RGHT; 0/1/2/3 = hold ONE direction from hover (isolate it)
 STRAFESWEEP = argf("--strafesweep", 0.0)    # >0: ramp commanded lateral speed 0->STRAFEV over this many s (find the ceiling)
-ZVD_AMP = np.array([0.371, 0.476, 0.153]); _zd = int(argf("--zvddelay", 7)); ZVD_DELAY = (_zd, _zd, _zd); _zvd_buf = np.zeros((4*_zd+2, 3))  # delay = ring half-period in frames; 11Hz@75Hz = ~3
+CIRCLE = "--circle" in sys.argv     # coordinated-turn probe: fly a constant-radius camera-forward circle (isolates the roll<->yaw
+CIRCR = argf("--circr", 12.0); CIRCV = argf("--circv", 5.0)   # turn coupling -- the gate-turn regime without the full course)
+ZVD_AMP = np.array([0.371, 0.476, 0.153]); _zd = int(argf("--zvddelay", 3)); ZVD_DELAY = (_zd, _zd, _zd); _zvd_buf = np.zeros((4*_zd+2, 3))  # delay = ring half-period; 11Hz@75Hz = 3 (default; old 7 was mistuned to ~5Hz). live-confirmed: pitch-gyro HF 0.60->0.11
 GOV_TILT = np.tan(np.radians(50.0)) * G   # allow more horizontal authority for the brake than the 35deg cruise clamp
 GATE_R = argf("--gater", 2.0); ABORT_TILT = 100.0; LEVEL_T = 2.0; GRACE = LEVEL_T + 1.5
 # teacher constants (rl_finetune.py, verbatim)
@@ -51,19 +54,20 @@ IDLE = mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
 
 def qfix(q): return np.array([q[1], q[2], q[3], q[0]])
 B = np.array([1.0, -1.0, -1.0]); bq = np.array([0.0, 1.0, 0.0, 0.0]); bqc = np.array([0.0, -1.0, 0.0, 0.0])
-MIRROR = "--nomirror" not in sys.argv   # ADAPTER FIX (default ON): to_enu inverted the lateral-y vs the training env (the
-# campaign "world-y mirror" / B=[1,-1,-1] y-flip) -> the policy's lateral sign was inverted live -> the lateral runaway/crab/
-# "weathervane wall". Flip the y of the drone state (pos/vel) + the gate y so the deploy frame matches train. --nomirror = old buggy frame.
+MIRROR = "--mirror" in sys.argv         # legacy opt-in, default OFF (gates_enu[:,1] flip line below). The lateral latflip bug is
+# NOT in this adapter -- verified: attitude conjugation == clean M-conjugation (dot=1.0); omega map [1,1,-1] is correct (the unified
+# all-M rebuild was REFUTED live: omega->[1,-1,-1] inverts pitch-rate damping -> tumble). Adapter is correct; latflip = plant aero.
 def to_enu(ds):
     q_true = qfix(ds.quat_wxyz); Rt = quat_to_R(q_true)
     vel_w = Rt @ ds.vel_ned; om_t = ds.omega * np.array([1.0, -1.0, 1.0])
     pos, vel, q, om = ds.pos_ned * B, vel_w * B, quat_mul(quat_mul(bq, q_true), bqc), om_t * B
-    if MIRROR:   # the deploy lateral-y is inverted vs the training env; flip the y of pos+vel the control reads
+    if MIRROR:
         pos = pos * np.array([1.0, -1.0, 1.0]); vel = vel * np.array([1.0, -1.0, 1.0])
     return pos, vel, q, om
 def wrap(a): return (a + np.pi) % (2 * np.pi) - np.pi
 
-LATFLIP = "--latflip" in sys.argv   # negate the lateral (world-y) accel -> test if the lateral runaway is a SIGN inversion (tuneable) vs a real instability
+LATFLIP = "--nolatflip" not in sys.argv   # DEFAULT ON (06-16 live A/B): negate the lateral (world-y) accel command -- THE lateral-sign
+# fix. --nomirror --latflip captured gates 1-3 live; plain input-mirror tumbled 0/6. `--nolatflip` = old buggy (positive-feedback) sign.
 def ff_one(pos, vel, q, om, tgt_pos, tgt_vel, tgt_yaw):
     """Scalar port of rl_finetune.ff_batch (single drone). q = ENU quat wxyz."""
     a = KP_POS * (tgt_pos - pos) + KD_POS * (tgt_vel - vel)
@@ -107,6 +111,15 @@ def ff_one(pos, vel, q, om, tgt_pos, tgt_vel, tgt_yaw):
     cap = YR_CAP / abs(GAIN[2]) / MAXW
     u[3] = np.clip(u[3], -cap, cap)
     return u
+
+# --- open-loop roll-rate sign probe (isolate plant/adapter lateral sign; convention-free pos log) ---
+OSGN = [float(x) for x in args("--osign", "1,1,-1").split(",")]   # output [roll,pitch,yaw]. pitch un-flipped (PITCH-FIX: vq_model
+# pitch gain_G/B sign-corrected to live -> teacher u2 flipped -> keep wire identical by NOT flipping pitch output). yaw stays flipped.
+ROLLPROBE = "--rollprobe" in sys.argv
+PROBEROLL = argf("--proberoll", 0.3)    # constant WIRE rate sent open-loop on PROBEAX (matches vq_matched wcmd[ax])
+PROBEAX   = int(argf("--probeax", 0))   # 0=roll 1=pitch 2=yaw -- which body-rate axis to probe open-loop
+PROBEDUR  = argf("--probedur", 1.2)     # seconds of probe after LVL settle
+PROBETHR  = argf("--probethr", 0.27)    # hover thrust (wire)
 
 # --- connect + reset ---
 s = Store(); m = MavlinkIO(s)
@@ -154,7 +167,8 @@ if STRAFE:
     perp = np.array([-cam[1], cam[0], 0.0])                       # left of the camera
     nose0 = (quat_to_R(qfix(ds0.quat_wxyz))[:, 0]) * B
     yaw_fixed = float(np.arctan2(nose0[1], nose0[0]))            # hold spawn nose -> camera stays forward
-    STRAFE_DIRS = [cam, -cam, perp, -perp]; STRAFE_NAMES = ['FWD ', 'BACK', 'LEFT', 'RGHT']
+    up = np.array([0.0, 0.0, 1.0])   # ENU up (+z); 6-DOF sanity: FWD/BACK/LEFT/RGHT/UP/DOWN, heading locked
+    STRAFE_DIRS = [cam, -cam, perp, -perp, up, -up]; STRAFE_NAMES = ['FWD ', 'BACK', 'LEFT', 'RGHT', 'UP  ', 'DOWN']
     print(f"STRAFE: cam={cam.round(2)} perp={perp.round(2)} yaw_fixed={np.degrees(yaw_fixed):.0f} v={STRAFEV} dur={STRAFEDUR}s/dir", flush=True)
 traj = GateTrajectory(np.vstack([pos0[None, :], gates_enu]), v_cruise=VDES,
                       tilt_budget_deg=(argf("--tiltbudget", 45.0) if STRAIGHT > 0 else 35.0), c_drag=0.057, margin=0.6, vz_max=VZMAX)
@@ -169,7 +183,7 @@ rec = Recorder(s, script="vq_deploy_teacher_real", mode="rate",
 flog = ftm.from_args(sys.argv, RG, run_name="teacher_real", store=s)
 t0 = time.time(); gi = 0; last = -1; maxgi = 0; prev_rates = np.zeros(3); t_prev = t0; sname = "LVL"
 if STRAFE:
-    MAX_T = STRAFESWEEP + LEVEL_T + 3 if STRAFESWEEP > 0 else (STRAFEDUR + LEVEL_T + 1 if STRAFEDIR >= 0 else STRAFEDUR * 4 + LEVEL_T + 1)
+    MAX_T = STRAFESWEEP + LEVEL_T + 3 if STRAFESWEEP > 0 else (STRAFEDUR + LEVEL_T + 1 if STRAFEDIR >= 0 else STRAFEDUR * 6 + LEVEL_T + 1)
 while time.time()-t0 < MAX_T and gi < NG:
     ds = s.get_drone()
     if ds is None: time.sleep(0.01); continue
@@ -183,14 +197,28 @@ while time.time()-t0 < MAX_T and gi < NG:
         wd[2] = -0.3 * float(ds.omega[2])
         thr = accel_to_thrust_norm(collective_accel(a, ds.quat_wxyz), 0.2675, 62.0)
         c.send_attitude_target(np.clip(wd/RG, -4, 4), thr); phase = "LVL"
+    elif ROLLPROBE:   # open-loop constant wire rate on PROBEAX, NO feedback -> measure plant response sign vs the cmd
+        rates = np.zeros(3); rates[PROBEAX] = PROBEROLL; thr = PROBETHR; sname = "PRB "
+        c.send_attitude_target(rates, thr); phase = "PRB"
+        rec.log([float(rates[0]), float(rates[1]), float(rates[2]), float(thr)])
+        if (t - LEVEL_T) > PROBEDUR:
+            R = quat_to_R(qfix(ds.quat_wxyz)); hd = np.degrees(np.arctan2(R[1, 0], R[0, 0]))
+            print(f"  PROBE DONE ax={PROBEAX} cmd={PROBEROLL:+.2f} pe=[{pe[0]:+.2f},{pe[1]:+.2f},{pe[2]:+.2f}] "
+                  f"omega={ds.omega.round(2)} hdg={hd:+.0f} pos_ned={ds.pos_ned.round(2)}", flush=True); break
     else:
-        if STRAFE:   # hold yaw (camera fixed), translate in the current direction (velocity-only, no spline)
+        if CIRCLE:   # coordinated camera-forward circle: tgt follows a constant-radius arc, nose anti-tangent
+            tau = t - LEVEL_T; w = CIRCV / CIRCR; th = w * tau; ramp = min(1.0, tau / 2.0)
+            tgt_pos = pos0 + CIRCR * np.array([np.sin(th), 1.0 - np.cos(th), 0.0])
+            tgt_vel = CIRCV * ramp * np.array([np.cos(th), np.sin(th), 0.0])
+            tgt_yaw = float(np.arctan2(tgt_vel[1], tgt_vel[0])) + np.pi   # camera-forward (anti-tangent)
+            sname = "CIRC"
+        elif STRAFE:   # hold yaw (camera fixed), translate in the current direction (velocity-only, no spline)
             if STRAFESWEEP > 0:   # ramp commanded lateral speed 0->STRAFEV slowly to find the runaway ceiling
                 sidx = STRAFEDIR if STRAFEDIR >= 0 else 2; ramp = min(1.0, (t - LEVEL_T) / STRAFESWEEP)
             elif STRAFEDIR >= 0:
                 sidx = STRAFEDIR; ramp = min(1.0, (t - LEVEL_T) / 0.8)   # single direction from hover
             else:
-                sidx = int((t - LEVEL_T) / STRAFEDUR) % 4; ramp = min(1.0, ((t - LEVEL_T) % STRAFEDUR) / 0.8)
+                sidx = int((t - LEVEL_T) / STRAFEDUR) % len(STRAFE_DIRS); ramp = min(1.0, ((t - LEVEL_T) % STRAFEDUR) / 0.8)
             tgt_vel = STRAFE_DIRS[sidx] * STRAFEV * ramp; tgt_pos = pe.copy(); tgt_yaw = yaw_fixed
             sname = STRAFE_NAMES[sidx] + (f"{STRAFEV*ramp:.1f}" if STRAFESWEEP > 0 else "")
         else:
@@ -199,7 +227,8 @@ while time.time()-t0 < MAX_T and gi < NG:
             tgt_pos = ref["pos"]; tgt_vel = float(ref["v"]) * ramp * ref["tang"]
             tgt_yaw = float(ref["yaw"]) + (np.pi if CAMFLIP else 0.0); sname = "TCH"
         u = ff_one(pe, ve, qe, ome, tgt_pos, tgt_vel, tgt_yaw)
-        thr = float((u[0]+1)/2*THRMAX); rates = np.array([u[1], -u[2], -u[3]]) * MAXW   # ENU->VQ via B
+        thr = float((u[0]+1)/2*THRMAX)
+        rates = np.array([OSGN[0]*u[1], OSGN[1]*u[2], OSGN[2]*u[3]]) * MAXW   # ENU->VQ wire output sign map (sweepable, default [1,-1,-1])
         if ZVD:   # EXP-20b ring killer BEFORE slew
             _zvd_buf = np.roll(_zvd_buf, 1, axis=0); _zvd_buf[0] = rates
             rates = np.array([ZVD_AMP[0]*_zvd_buf[0, ax] + ZVD_AMP[1]*_zvd_buf[ZVD_DELAY[ax], ax]
