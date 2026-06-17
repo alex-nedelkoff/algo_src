@@ -42,11 +42,22 @@ CIRCR = argf("--circr", 12.0); CIRCV = argf("--circv", 5.0)   # turn coupling --
 ZVD_AMP = np.array([0.371, 0.476, 0.153]); _zd = int(argf("--zvddelay", 3)); ZVD_DELAY = (_zd, _zd, _zd); _zvd_buf = np.zeros((4*_zd+2, 3))  # delay = ring half-period; 11Hz@75Hz = 3 (default; old 7 was mistuned to ~5Hz). live-confirmed: pitch-gyro HF 0.60->0.11
 GOV_TILT = np.tan(np.radians(50.0)) * G   # allow more horizontal authority for the brake than the 35deg cruise clamp
 GATE_R = argf("--gater", 2.0); ABORT_TILT = 100.0; LEVEL_T = 2.0; GRACE = LEVEL_T + 1.5
-# teacher constants (rl_finetune.py, verbatim)
-KP_POS = np.array([0.6, 0.6, 2.0]); KD_POS = np.array([1.2, 1.2, 3.0])
+HOME = "--home" in sys.argv         # gate-homing override (default OFF -- superseded by the perpendicular-spline waypoints)
+DHOME = argf("--dhome", 8.0)        # start homing this many m before the gate plane (along the normal)
+HOME_LEAD = argf("--homelead", 2.5) # aim point past the centroid along the normal -> drive THROUGH centered (no stall)
+GATED = argf("--gated", 3.0)        # spline perpendicular-crossing: insert approach/exit waypoints gate +/- gnorm*GATED so the
+# spline is locally STRAIGHT and perpendicular through each (vertical) gate plane -> centered crossing, no corner-cut. 0=off.
+RECOVER = "--norecover" not in sys.argv  # PIN-RECOVERY (default ON): if the drone wedges on a gate frame (low v + ongoing gate
+V_STALL = argf("--vstall", 0.9)          # collisions), back off along -gnorm and re-approach -> a graze is no longer terminal (kills the grind).
+RECOVER_BACK = argf("--recoverback", 5.0); RECOVER_DUR = argf("--recoverdur", 1.3); MAX_RETRY = int(argf("--maxretry", 3))
+VGATE = argf("--vgate", 5.0)             # cap target speed within SLOWD of a gate plane -> gentler contact (no crash-reset) + better centering
+SLOWD = argf("--slowd", 7.0)             # gate-slowdown zone (m before the plane). VGATE=0 disables.
+# teacher constants (rl_finetune.py, verbatim) -- lateral (xy) PD now tunable to cut the ~0.7m cross-track LAG that clips gates
+KPXY = argf("--kpxy", 0.6); KDXY = argf("--kdxy", 1.2)   # raise KPXY to reduce lateral tracking lag; KDXY damps the resulting overshoot
+KP_POS = np.array([KPXY, KPXY, 2.0]); KD_POS = np.array([KDXY, KDXY, 3.0])
 KP_ATT = np.array([6.0, 6.0, 4.0]) * argf("--kpatt", 1.0); KD_ATT = np.array([1.2, 1.2, 0.0]) * argf("--kdatt", 1.0); KP_YAW = 4.0; KD_YAW = 0.5  # lower kpatt / raise kdatt to stop the 11Hz ring exciting
 ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
-YR_CAP = 1.5; TILT_MAX = np.tan(np.radians(argf("--tiltbudget", 35.0))) * G; LEAD = 2.5   # cap commanded tilt -> bounds the live rate-loop overshoot (1.8x) that rings into runaway
+YR_CAP = 1.5; TILT_MAX = np.tan(np.radians(argf("--tiltbudget", 35.0))) * G; LEAD = argf("--lead", 2.5)   # spline lookahead (m); lower = aim closer to the gate = less corner-cut lateral miss on curves (gate threading)
 vqm = json.load(open("sysid/vq_model.json")); F0 = vqm["thrust"]["f0"]; DF = vqm["thrust"]["df_dthr"]
 GAIN = np.array([vqm["rate_loop"][n]["gain_G"] for n in ("roll", "pitch", "yaw")])
 r = json.load(open("sysid/sim_response.json")); RG = np.array([r["rate_gain_axes"]["roll"], r["rate_gain_axes"]["pitch"], r["rate_gain_axes"]["yaw"]])
@@ -155,21 +166,22 @@ gates_enu = gates_ned * B               # NED->deploy ENU (same convention as to
 if MIRROR: gates_enu[:, 1] *= -1.0       # match the to_enu lateral-y fix (consistent gate-relative obs); STRAIGHT rebuilds from camfwd below so it's already consistent
 c.arm()
 ds0 = s.get_drone(); pos0, _, _, _ = to_enu(ds0)
-ANCHOR = "--noanchor" not in sys.argv   # DEFAULT ON: the TRACK_INFO ABSOLUTE origin jumps per reset (gate0 seen at
-# -23 one run, +102/+886 the next) but the gate-to-gate RELATIVE layout is constant (shared world orientation, only the
-# translation jumps). Trusting absolute coords -> drone arrives off-center (clips/pins gate0) or chases a gate 886m up.
-# Fix: re-anchor the reliable relative layout to the SPAWN via camfwd (drone faces down-course at spawn), so every run is
-# identical regardless of the absolute jump. D0 = spawn->gate0 distance (canonical real course). --noanchor = old absolute.
+camfwd_g = -(quat_to_R(qfix(ds0.quat_wxyz))[:, 0]) * B; camfwd_g[2] = 0.0; camfwd_g /= (np.linalg.norm(camfwd_g) + 1e-9)
+gnorm = -camfwd_g   # travel / gate-normal direction (course goes -camfwd; gates are vertical, normal = this horizontal axis)
+ANCHOR = "--noanchor" not in sys.argv   # ALWAYS ON: the TRACK_INFO ABSOLUTE origin changes EVERY run (gate0 observed at
+# -23/+88/+886, z 0/+25/+886) -> raw coords are unusable. The gate-to-gate RELATIVE layout is constant. So rebuild the
+# course from the reliable relative layout, anchored to the SPAWN along -camfwd (course dir). --noanchor = old raw absolute.
 if ANCHOR and STRAIGHT == 0:
-    camfwd_a = -(quat_to_R(qfix(ds0.quat_wxyz))[:, 0]) * B; camfwd_a[2] = 0.0
-    camfwd_a /= (np.linalg.norm(camfwd_a) + 1e-9)
     D0 = argf("--d0", 23.3)
-    rel = gates_enu - gates_enu[0]              # constant gate-to-gate layout (incl. z descents)
-    gate0_anchor = pos0 + camfwd_a * D0; gate0_anchor[2] = pos0[2]   # gate0 straight ahead, course-centered, ~spawn alt
-    course_dir = rel[1] / (np.linalg.norm(rel[1]) + 1e-9)            # track gate0->gate1 dir, for the sanity check
+    rel = gates_enu - gates_enu[0]              # constant gate-to-gate layout (incl. z descents + true lateral jogs)
+    # COURSE IS ALONG -camfwd (verified live 06-16 via gate viz: camfwd=+x but real TRACK_INFO gates at -x).
+    gate0_anchor = pos0 + gnorm * D0; gate0_anchor[2] = pos0[2]   # gate0 along travel (-camfwd), ~spawn alt
     gates_enu = gate0_anchor + rel
-    print(f"ANCHOR: camfwd={camfwd_a.round(2)} track_dir={course_dir.round(2)} D0={D0} gate0 {gates_enu[0].round(1)} "
-          f"gate5 {gates_enu[-1].round(1)} (re-anchored to spawn; abs origin jump ignored)", flush=True)
+    print(f"ANCHOR: gnorm={gnorm.round(2)} D0={D0} gate0 {gates_enu[0].round(1)} gate5 {gates_enu[-1].round(1)}", flush=True)
+ZLIFT = argf("--zlift", 0.0)   # raise all gate-z targets (m, ENU up). Drone was passing UNDER gates -> TRACK_INFO z may be the
+if ZLIFT != 0.0 and STRAIGHT == 0:   # gate base (not aperture center) and/or the analytic z-loop sags ~1m below z_ref (z-hang).
+    gates_enu[:, 2] += ZLIFT
+    print(f"ZLIFT: raised gate z by {ZLIFT}m -> gate0_z={gates_enu[0,2]:.1f} gate5_z={gates_enu[-1,2]:.1f}", flush=True)
 if STRAIGHT > 0:   # flat straight line along the SPAWN camera-forward dir (where the drone is pointing),
     # NOT toward TRACK_INFO gate0 (its coords jump per session -> mis-aligned course -> crab/wrong-way)
     fwd = -(quat_to_R(qfix(ds0.quat_wxyz))[:, 0]) * B; fwd[2] = 0.0; fwd /= (np.linalg.norm(fwd) + 1e-9)
@@ -185,9 +197,19 @@ if STRAFE:
     up = np.array([0.0, 0.0, 1.0])   # ENU up (+z); 6-DOF sanity: FWD/BACK/LEFT/RGHT/UP/DOWN, heading locked
     STRAFE_DIRS = [cam, -cam, perp, -perp, up, -up]; STRAFE_NAMES = ['FWD ', 'BACK', 'LEFT', 'RGHT', 'UP  ', 'DOWN']
     print(f"STRAFE: cam={cam.round(2)} perp={perp.round(2)} yaw_fixed={np.degrees(yaw_fixed):.0f} v={STRAFEV} dur={STRAFEDUR}s/dir", flush=True)
-traj = GateTrajectory(np.vstack([pos0[None, :], gates_enu]), v_cruise=VDES,
-                      tilt_budget_deg=(argf("--tiltbudget", 45.0) if STRAIGHT > 0 else 35.0), c_drag=0.057, margin=0.6, vz_max=VZMAX)
 NG = len(gates_enu)
+# Build the spline waypoints. With GATED>0, surround each gate centroid with approach/exit points along the gate normal
+# (gnorm) so the spline crosses each (vertical) gate plane STRAIGHT + perpendicular + centered (no corner-cut on the y-jogs).
+if GATED > 0 and STRAIGHT == 0:
+    wps = [pos0]
+    for gc in gates_enu:
+        wps += [gc - gnorm * GATED, gc, gc + gnorm * GATED]   # gnorm = travel dir: approach, center, exit
+    spline_wps = np.array(wps)
+    print(f"SPLINE: perpendicular gate waypoints (GATED={GATED}m), {len(spline_wps)} pts", flush=True)
+else:
+    spline_wps = np.vstack([pos0[None, :], gates_enu])
+traj = GateTrajectory(spline_wps, v_cruise=VDES,
+                      tilt_budget_deg=(argf("--tiltbudget", 45.0) if STRAIGHT > 0 else 35.0), c_drag=0.057, margin=0.6, vz_max=VZMAX)
 print(f"spawn_enu={pos0.round(1)} gates_enu[0]={gates_enu[0].round(1)} gates_enu[-1]={gates_enu[-1].round(1)} "
       f"arc_len={traj.s_max:.1f}m NG={NG} vdes={VDES} maxw={MAXW} thrmax={THRMAX}", flush=True)
 
@@ -196,13 +218,25 @@ rec = Recorder(s, script="vq_deploy_teacher_real", mode="rate",
                notes="pure analytic spline teacher on REAL TRACK_INFO course",
                extra_meta={"cmd_layout": ["wx", "wy", "wz", "thrust"]})
 flog = ftm.from_args(sys.argv, RG, run_name="teacher_real", store=s)
+if flog is not None:   # overlay gate positions on the 3D NED trajectory (telemetry world frame = NED = ds.pos_ned)
+    flog.log_gates(gates_enu * B, name="Gaim", color=(0, 255, 0), radii=GATE_R)  # ANCHORED centers the drone aims at (green, 2m = the geometric-pass radius)
+    flog.log_gates(gates_ned, name="Gtrk", color=(255, 0, 255), radii=1.0)       # RAW TRACK_INFO absolute gates (magenta, may be origin-jumped)
+    print(f"VIZ gates: anchored(green) gate0_ned={(gates_enu[0]*B).round(1)} | trackinfo(magenta) gate0_ned={gates_ned[0].round(1)}", flush=True)
+    for _gi in range(NG): print(f"   GATE{_gi} enu={gates_enu[_gi].round(1)}", flush=True)
 t0 = time.time(); gi = 0; last = -1; maxgi = 0; prev_rates = np.zeros(3); t_prev = t0; sname = "LVL"
+# GROUND-TRUTH watchers (sim judge + collisions) -- the geometric gi counter (dist<GATE_R) is an ESTIMATE; these are real.
+rs0 = s.get_race(); prev_agi = int(rs0["active_gate_index"]) if rs0 else -1; prev_lgt = (rs0 or {}).get("last_gate_time", 0)
+_c0 = s.get_collision(); prev_cseq = _c0[1] if _c0 else 0; judge_passes = 0; ncoll = 0; last_coll_t = -1.0
+hgi = 0   # homing target gate index (advances when the drone crosses each gate plane along gnorm)
+stall_t0 = -1.0; recover_until = -1.0; recover_anchor = pos0.copy(); retry_n = 0   # pin-recovery state
+was_live = False; finished = False   # finish detection: at 6/6 the course ENDS (odometry cuts, record page) -> race finishes
 if STRAFE:
     MAX_T = STRAFESWEEP + LEVEL_T + 3 if STRAFESWEEP > 0 else (STRAFEDUR + LEVEL_T + 1 if STRAFEDIR >= 0 else STRAFEDUR * 6 + LEVEL_T + 1)
-while time.time()-t0 < MAX_T and gi < NG:
+while time.time()-t0 < MAX_T:   # run on the REAL judge (below), NOT the geometric gi (which trips ~2m early and cut gate5 short)
     ds = s.get_drone()
     if ds is None: time.sleep(0.01); continue
     t = time.time()-t0; pe, ve, qe, ome = to_enu(ds)
+    vmag = float(np.linalg.norm(ds.vel_ned))
     t_now = time.time(); dt_loop = max(1e-3, t_now - t_prev); t_prev = t_now
     if t < LEVEL_T:
         # settle hover (live-frame, hold spawn attitude) -- no flip; spawn already camera-forward
@@ -237,10 +271,40 @@ while time.time()-t0 < MAX_T and gi < NG:
             tgt_vel = STRAFE_DIRS[sidx] * STRAFEV * ramp; tgt_pos = pe.copy(); tgt_yaw = yaw_fixed
             sname = STRAFE_NAMES[sidx] + (f"{STRAFEV*ramp:.1f}" if STRAFESWEEP > 0 else "")
         else:
-            s_d = traj.nearest_s(pe); ref = traj.sample(min(s_d + LEAD, traj.s_max))
             ramp = min(1.0, (t - LEVEL_T) / max(RAMP, 1e-3))   # gentle speed onset -> never enter the runaway regime
-            tgt_pos = ref["pos"]; tgt_vel = float(ref["v"]) * ramp * ref["tang"]
-            tgt_yaw = float(ref["yaw"]) + (np.pi if CAMFLIP else 0.0); sname = "TCH"
+            # advance the homing gate once the drone crosses its plane (along the gate normal gnorm)
+            while hgi < NG - 1 and float(np.dot(gates_enu[hgi] - pe, gnorm)) < 0.0:
+                hgi += 1; retry_n = 0; stall_t0 = -1.0   # cleanly crossed a gate -> reset recovery state
+            gate_c = gates_enu[hgi]; to_plane = float(np.dot(gate_c - pe, gnorm))
+            cyaw = float(np.arctan2(gnorm[1], gnorm[0])) + (np.pi if CAMFLIP else 0.0)
+            # PIN-RECOVERY: detect a wedge (slow + ongoing gate collisions near a gate) -> back off along -gnorm, re-approach
+            if RECOVER and t > recover_until and t > GRACE and vmag < V_STALL and (t - last_coll_t) < 0.3 and 0 < to_plane < DHOME:
+                if stall_t0 < 0: stall_t0 = t
+                if t - stall_t0 > 0.4:   # confirmed wedge
+                    retry_n += 1
+                    if retry_n > MAX_RETRY:   # give up on this gate -> skip past it (avoid an infinite back-off loop)
+                        print(f"  ~~~ PIN-RECOVER: GATE{hgi} unthreadable after {MAX_RETRY} tries -> skip ~~~", flush=True)
+                        hgi = min(hgi + 1, NG - 1); retry_n = 0; stall_t0 = -1.0
+                    else:
+                        recover_until = t + RECOVER_DUR; recover_anchor = pe - gnorm * RECOVER_BACK; recover_anchor[2] = gate_c[2]
+                        print(f"  ~~~ PIN-RECOVER #{retry_n} GATE{hgi} t={t:.1f} v={vmag:.1f}: back off {RECOVER_BACK}m + re-approach ~~~", flush=True)
+                        stall_t0 = -1.0
+            elif vmag > V_STALL:
+                stall_t0 = -1.0   # moving fine -> clear the stall timer
+            if t < recover_until:   # RECOVERING: drive back off the gate frame, then normal guidance resumes
+                tgt_pos = recover_anchor; tgt_vel = -gnorm * 1.5; tgt_yaw = cyaw; sname = "RCVR"
+            elif HOME and to_plane < DHOME:   # GATE-HOMING: aim THROUGH the centroid perpendicular to the (vertical) gate plane
+                tgt_pos = gate_c + gnorm * HOME_LEAD          # centerline point just past the gate -> centered + keeps drive (no stall)
+                tgt_vel = gnorm * (VDES * ramp)               # cross perpendicular -> kills the curve's lateral velocity at the plane
+                tgt_yaw = cyaw; sname = "HOME"
+            else:   # between gates: follow the spline path
+                s_d = traj.nearest_s(pe); ref = traj.sample(min(s_d + LEAD, traj.s_max))
+                tgt_pos = ref["pos"]; tgt_vel = float(ref["v"]) * ramp * ref["tang"]
+                tgt_yaw = float(ref["yaw"]) + (np.pi if CAMFLIP else 0.0); sname = "TCH"
+            if VGATE > 0 and sname != "RCVR" and 0 < to_plane < SLOWD:   # gate-slowdown: gentle contact + centering time
+                sp = float(np.linalg.norm(tgt_vel))
+                if sp > VGATE: tgt_vel = tgt_vel * (VGATE / sp)
+                sname = sname + "s"
         u = ff_one(pe, ve, qe, ome, tgt_pos, tgt_vel, tgt_yaw)
         thr = float((u[0]+1)/2*THRMAX)
         rates = np.array([OSGN[0]*u[1], OSGN[1]*u[2], OSGN[2]*u[3]]) * MAXW   # ENU->VQ wire output sign map (sweepable, default [1,-1,-1])
@@ -256,10 +320,37 @@ while time.time()-t0 < MAX_T and gi < NG:
     # TRUE tilt (qfix) for abort, not the warped live-frame
     Rt = quat_to_R(qfix(ds.quat_wxyz)); tilt = float(np.degrees(np.arccos(np.clip(Rt[2, 2], -1, 1))))
     vmag = float(np.linalg.norm(ds.vel_ned))
-    dist = float(np.linalg.norm(gates_enu[gi] - pe))   # 3D dist to current gate
-    if dist < GATE_R:
+    dist = float(np.linalg.norm(gates_enu[min(gi, NG-1)] - pe))   # 3D dist to current gate (clamped; loop runs on the judge now)
+    if dist < GATE_R and gi < NG:
         gi += 1; maxgi = max(maxgi, gi)
-        print(f"  >>> GATE {gi}/{NG} t={t:.1f} v={vmag:.1f} tilt={tilt:.0f}", flush=True)
+        print(f"  >>> GATE {gi}/{NG} (geom dist<{GATE_R}) t={t:.1f} v={vmag:.1f} tilt={tilt:.0f}", flush=True)
+    # --- GROUND TRUTH: sim judge (active_gate_index / last_gate_time) = the REAL "gate threaded" broadcast ---
+    rs = s.get_race()
+    if rs is not None:
+        agi = int(rs["active_gate_index"]); lgt = rs.get("last_gate_time", prev_lgt)
+        if agi > prev_agi and lgt > 0:   # REAL forward gate pass (ignore agi->0 / lgt=-1 race resets)
+            judge_passes += 1
+            print(f"  >>>JUDGE GATE PASS<<<: active_gate_index {prev_agi}->{agi} last_gate_time={lgt} t={t:.1f} v={vmag:.1f} (geom gi={gi})", flush=True)
+        elif agi < prev_agi:
+            print(f"  (race reset: active_gate_index {prev_agi}->{agi} t={t:.1f} v={vmag:.1f})", flush=True)
+        prev_agi = agi; prev_lgt = lgt
+        if judge_passes >= NG:   # all gates ticked per the sim judge -> done
+            print(f"  *** ALL {NG} GATES THREADED (judge) t={t:.1f} ***", flush=True); finished = True; break
+        # FINISH: threading the LAST gate ENDS the course (odometry cuts, record page) -> the race finishes (no 6th tick fires).
+        live = bool(rs.get("race_live", False)); fin = rs.get("race_finish_ns", 0) or 0
+        if live: was_live = True
+        if (fin > 0) or (was_live and not live and judge_passes >= NG - 1):
+            print(f"  *** COURSE COMPLETE / FINISH t={t:.1f}: judge_passes={judge_passes}, race ended (finish_ns={fin}, live={live}) -> 6/6 ***", flush=True)
+            finished = True; break
+    # --- collisions (the COLLISION broadcast): id 1001=gate, 1002=env; impulse = hit magnitude ---
+    cev, cseq = s.get_collision()
+    if cseq != prev_cseq and cev is not None:
+        ncoll += 1
+        if (cev.get("impulse", 0.0) > 0.4 or cev.get("id") == 1001) and (t - last_coll_t) > 0.25:   # throttle grind spam
+            ng_i = int(np.argmin(np.linalg.norm(gates_enu - pe, axis=1))); off = pe - gates_enu[ng_i]   # miss vector vs nearest gate
+            print(f"  !!! COLLISION id={cev.get('id')} imp={cev.get('impulse'):.2f} t={t:.1f} nearest=GATE{ng_i} off(along,lat,vert? enu xyz)=[{off[0]:+.1f},{off[1]:+.1f},{off[2]:+.1f}] !!!", flush=True)
+            last_coll_t = t
+        prev_cseq = cseq
     if flog is not None: flog.push(t, ds, {"thr": thr}, cruise=VDES, running=s.get_race_live(), armed=True)
     if tilt > ABORT_TILT and t > GRACE:
         print(f"  ABORT true_tilt={tilt:.0f} t={t:.1f} gate {gi}/{NG}", flush=True); break
@@ -271,5 +362,5 @@ while time.time()-t0 < MAX_T and gi < NG:
     time.sleep(0.01)
 idle(); rec.close()
 if flog is not None: flog.close()
-verdict = "TEACHER FLIES REAL VQ" if maxgi >= NG*0.7 else ("partial" if maxgi >= 2 else "FAILED")
-print(f"DONE: reached {maxgi}/{NG} gates  z_final={pe[2]:.1f}  [{verdict}]", flush=True)
+verdict = "COURSE COMPLETE 6/6 (FINISH)" if finished else ("TEACHER FLIES REAL VQ" if judge_passes >= NG*0.7 else ("partial" if judge_passes >= 2 else "FAILED"))
+print(f"DONE: JUDGE gate passes={judge_passes}/{NG} finished={finished} (geom maxgi={maxgi})  collisions={ncoll}  z_final={pe[2]:.1f}  [{verdict}]", flush=True)
