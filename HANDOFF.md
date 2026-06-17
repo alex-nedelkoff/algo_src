@@ -1,4 +1,42 @@
-# AI-GP HANDOFF — next agent starts here (updated 2026-06-16)
+# AI-GP HANDOFF — next agent starts here (updated 2026-06-17)
+
+## ★★ START HERE (06-17): TEACHER SOLVED (6/6 live + clean in-sim). NEXT = retrain the RL.
+
+**State today.** The analytic teacher now COMPLETES the live VQ real course — **6/6 gates, ZERO collisions, deterministic (7/7 runs), finishes/sets records.** Run: `sysid/vq_deploy_teacher_real.py --vdes 8 --zvd --viz` (the clean config is the default). Judge-confirmed (active_gate_index 0→6 + finish), NOT geometric. Commits 8c392ee, 5aa64a8, 8c4cd02.
+
+**The gate-capture wall was a STACK OF CONTROL/FRAME/CONFIG BUGS — never a plant limit** (the ring/weathervane/speed framings were all wrong). In order of discovery:
+1. **TRACK_INFO absolute origin JUMPS every reset** (gate0 seen at −23/+88/+886) — the relative layout is constant. Anchor the layout to the spawn via **−camfwd**. (+camfwd was a sign bug → a PHANTOM "6/6 ×4" where the drone flew empty air.)
+2. **camflip** — camera faces flight, no 180° turn-around (user-confirmed).
+3. **zlift 1.5** — was passing UNDER gates (TRACK_INFO z sat ~1m low).
+4. **perpendicular gated-spline** (gate ± normal·3) — straight/centered plane crossing, no corner-cut.
+5. **kpxy 0.6→1.4** (lateral position gain) — cut the ~0.7m cross-track LAG that clipped the descent-curve gates (2/6→5/6).
+6. **vgate 5** (gate-slowdown) — gentle contact (no crash-reset) + centering time (5/6→6/6).
+7. **kdxy 2.0→3.5** (lateral DAMPING) — kill the jog OVERSHOOT → **0 collisions**.
+8. **pin-recovery** — back off −gnorm + re-approach if wedged.
+
+**HARD RULE: judge by the SIM JUDGE (`active_gate_index` in RACE_STATUS) + COLLISION — NEVER the geometric dist<2 counter** (it's a phantom). At 6/6 the course ENDS (odometry cuts, record page) → detect finish, don't terminate on the geometric counter (it trips ~2m early). Gate pose (`parse_track_payload`) = pos(CENTROID)+quat+W/H; aperture 2.72×2.72m vertical, normal=course dir.
+
+**RL teacher (`rl_finetune.py`) FIDELITY FIXED.** The in-sim DAgger teacher had been failing (2–3/6) → the RL learned a failing teacher (policy 0/6 live, [feedback_vq_policy_deploy_sign_transfer]). Root cause was **config, NOT dynamics**: `EP_STEPS=1080` TRUNCATED the 164m course mid-flight (timeout; lower vdes→fewer gates = the tell), and gate radius 1.0 was tighter than the live aperture 1.36. Fixed (commit 6dbece1): EP_STEPS scales with vdes + REALCOURSE radius 1.36. Ported the clean teacher (kpxy1.4/kdxy3.5 + perpendicular gated-spline + vgate + zlift; commit ae145b6). **`--evalteacher` now reports 11–16/16 CLEAN full-course 6/6 in sim.**
+
+### ★ NEXT STEP — RETRAIN THE RL (DAgger now imitates a clean 6/6 teacher)
+1. **Sanity-check the in-sim teacher first (always):** `python -m scripts.rl.rl_finetune --realcourse --evalteacher --vdes 5 --zvd --slew 40` → expect ~12–16/16 clean. If not, fix the teacher BEFORE training.
+2. **Train:** `python -m scripts.rl.rl_finetune --realcourse --vdes 5 --zvd --slew 40 --maxw 6 --thrmax 0.6 --hist 8 --tag <name> --steps <N>` (defaults now correct: vdes-scaled ep_steps, radius 1.36, clean gains, gated-spline+vgate). DAgger transfers better than PPO-best — keep the DAgger checkpoint ([feedback_dagger_vs_ppo_live_transfer]).
+3. **Deploy + validate live:** `vq_deploy_policy_real.py --policy ft_<name>_best.zip --maxw 6 --thrmax 0.6 --slew 40 --hist 8 --nolatflip --viz` (nolatflip = roll +u1, matches teacher output). Judge by active_gate_index. NOTE: the policy deploy does NOT yet have the anchor/camflip/zlift/gate-aware path the teacher has — if the policy obs/course is off, port the teacher's anchor+build_obs into `vq_deploy_policy_real.py`.
+
+### ⚠ CAVEAT — the non-100% in-sim gate success rate likely needs fixing first
+`--evalteacher` is **11–16/16 clean, NOT 16/16 every run.** 1–4 of 16 envs miss a gate (gate0 occasionally; gate3/4/5). The DAgger demos carry those misses → the student inherits them, so **push the in-sim teacher toward 16/16 before/with the retrain.** Leads to chase:
+- **gate0 lat ≈ 1.34 is right at the 1.36 radius edge** — the launch/first-gate approach (LEVEL_T transient, or anchoring gate0's true lateral) is the likeliest fixable miss.
+- Per-run matched-plant variance (ring/rate-loop) at the descent/curve gates — try per-gate vgate/kpxy/kdxy, or confirm the live judge's true clearance vs the 1.36 half-width.
+- Faster vdes (8) is worse than 5 in sim — train at vdes ~5.
+
+### Tools / env
+- Laptop deploy+RL: `ssh laptop`; python `C:\Users\alexj\miniconda3\envs\aigp\python.exe` (base lacks pymavlink). Repo root `C:\Users\alexj\Documents\drone-ai-grand-prix\algo_src` (run rl_finetune as `python -m scripts.rl.rl_finetune`); deploy worktree `.claude\worktrees\aigp-client`.
+- Rerun dashboard: Mac `~/.rerun33-venv/bin/rerun --port 9876`; runs stream via `--viz`.
+- Diagnostics: `rl_finetune --evalteacher` (in-sim teacher gates+clean), `--tracegate` (NE=1 trace w/ termination reason). The teacher deploy logs JUDGE passes + collisions + finish.
+- Sim goes not-live after a 6/6 finish (record page) or many resets — the user re-enters the RACE in-game.
+
+---
+## ARCHIVED (pre-06-17 — superseded by the above; kept for history)
 
 ## ★★ START HERE (06-16): the VQ1/RL blockers are now CONTROL bugs, not plant limits — fix them before more RL
 
