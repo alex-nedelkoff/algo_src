@@ -43,7 +43,8 @@ DT = 1.0 / 72.0; EP_STEPS = int(argf("--ep_steps", 1080))   # MIMO rate loop is 
 # weathervane-FF (corner_speed teacher term, WV-DYNAMIC coeffs), ENU env frame signs
 ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
 YR_CAP = 1.5   # rad/s yaw-rate cap (corner_speed)
-KP_POS = np.array([0.6, 0.6, 2.0]); KD_POS = np.array([1.2, 1.2, 3.0])
+KPXY = argf("--kpxy", 1.4); KDXY = argf("--kdxy", 3.5)   # clean-teacher lateral PD (ported from live 06-17): KPXY cuts cross-track
+KP_POS = np.array([KPXY, KPXY, 2.0]); KD_POS = np.array([KDXY, KDXY, 3.0])   # lag, KDXY damps the jog overshoot -> 0-collision threading
 KP_ATT = np.array([6.0, 6.0, 4.0]); KD_ATT = np.array([1.2, 1.2, 0.0]); KP_YAW = 4.0; KD_YAW = 0.5
 TILT_MAX = np.tan(np.radians(35)) * G
 HOVER_U0 = 2*((F0+G)/(-DF))/THRMAX - 1
@@ -60,6 +61,10 @@ HIST   = int(argf("--hist", 0))           # NeuroBEM history stack: prev-action 
 WSMOOTH = argf("--wsmooth", 0.0)          # NLM rec: action smoothness weight (anti 11Hz ring); try 1.4
 BRAKE = argf("--brake", 0.5)              # aim() brake-taper slope; bigger = brake harder per meter
 VZMAX = argf("--vzmax", 1e9)              # controlled-sink: cap spline descent rate (m/s); slow forward speed on descents (1e9=off)
+GATED = argf("--gated", 3.0)              # clean-teacher: perpendicular gate-crossing waypoints (gate +/- leg_normal*GATED) -> straight,
+VGATE = argf("--vgate", 5.0); SLOWD = argf("--slowd", 7.0)   # centered plane crossing; + gate-approach speed cap within SLOWD m (gentle, centered)
+ZLIFT = argf("--zlift", 1.2)             # raise gate-z targets to cancel the analytic z-loop SAG (~1.2m z-hang, KP/KD-only no integral);
+# live masked this via the TRACK_INFO zlift -> without it the sim teacher arrives ~1.2m low at the descent gates -> clips the tight radius
 V_GATE = argf("--vgate", 1.5)             # min commit speed near gate; lower = arrive slower
 # Residual learning (HANDOFF 06-14 #1): action = clip(FF_spline_anchor + tanh(net)*delta_scale).
 # The anchor guarantees stability so PPO can only add bounded deltas -> CANNOT erode it. Deploy mirrors.
@@ -151,6 +156,12 @@ def aim(S, gates, gp, trajs=None):
         out_pos[i] = ref["pos"]
         out_vel[i] = float(ref["v"]) * ref["tang"]
         out_yaw[i] = float(ref["yaw"])
+        # clean-teacher gate-slowdown: cap target speed near the current gate -> gentle, centered crossing
+        if VGATE > 0:
+            gi = int(np.clip(gp[i], 0, gates.shape[1] - 1)); d_gate = float(np.linalg.norm(gates[i, gi] - S[i, POS]))
+            if d_gate < SLOWD:
+                sp = float(np.linalg.norm(out_vel[i]))
+                if sp > VGATE: out_vel[i] *= VGATE / sp
     return out_pos, out_vel, out_yaw
 
 
@@ -237,7 +248,15 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
     # 8.6 m/s clean live). Prepend spawn so spline covers the launch leg too.
     global _TRAJS
     spawn3 = rc_spawn.copy()
-    _TRAJS = [GateTrajectory(np.vstack([spawn3[None, :], np.array(g3_env)]),
+    def _gate_wps(seq):   # clean-teacher: surround each gate with approach/exit points along the leg normal so the
+        pts = [spawn3]; prev = spawn3   # spline crosses each gate plane STRAIGHT + perpendicular + centered (no corner-cut)
+        for g in seq:
+            g = np.asarray(g, float); nrm = (g - prev).copy(); nrm[2] = 0.0; nl = np.linalg.norm(nrm)
+            nrm = nrm / nl if nl > 1e-6 else np.array([1.0, 0.0, 0.0])
+            gz = g + np.array([0.0, 0.0, ZLIFT])   # raise gate z to cancel the z-hang sag (matched-sim z is true; drone sags ~ZLIFT below)
+            pts += ([gz - nrm * GATED, gz, gz + nrm * GATED] if GATED > 0 else [gz]); prev = g
+        return np.array(pts)
+    _TRAJS = [GateTrajectory(_gate_wps(g3_env),
                               v_cruise=VDES, tilt_budget_deg=35.0, c_drag=0.057, margin=0.6, vz_max=VZMAX)
               for g3_env in G3]
     env._trajs = _TRAJS   # bind this env's splines so the residual anchor survives global clobber
@@ -287,10 +306,32 @@ def eval_gates(model, seed=7, NE=16, gate_radius=None):
     return np.maximum(peak, env._gates_passed)
 
 
+def teacher_eval(seed=7, NE=16, gate_radius=None):
+    # Eval the analytic ff_batch+aim teacher itself (the DAgger demonstrator) in the matched sim.
+    # A gate collision TERMINATES the episode -> peak gates == NG iff the teacher threaded CLEAN (0 collisions).
+    eval_rad = gate_radius if gate_radius is not None else RAD_END
+    env, gates = make_env(NE, seed, train=False, gate_radius=eval_rad)
+    venv = VecEnvAdapter(env); venv.reset()
+    peak = np.zeros(NE, int); fr = np.zeros(NE, bool)
+    for _ in range(EP_STEPS + 200):
+        S = env._states
+        u = ff_batch(S, *aim(S, gates, env._gate_indices, trajs=env._trajs))
+        peak = np.maximum(peak, np.where(fr, peak, env._gates_passed))
+        _, _, dones, _ = venv.step(u); fr |= dones
+        if fr.all():
+            break
+    return np.maximum(peak, env._gates_passed)
+
+
 def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
     print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} realcourse={REALCOURSE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} wspeed={WSPEED}@vcap{VCAP_TRAIN} hist={HIST} wsm={WSMOOTH} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} residual={RESIDUAL} asym={ASYM} dscale={DELTA_SCALE} drw={DR_WIDTH} steps={STEPS}", flush=True)
+    if "--evalteacher" in sys.argv:   # verify the clean teacher in-sim, then exit (no training)
+        for rad in (RAD_END, 1.36):   # sim default radius + the live VQ aperture (1.36m)
+            pk = teacher_eval(NE=16, gate_radius=rad)
+            print(f"TEACHER EVAL (rad={rad}): gates {pk.mean():.2f}/{NG}  CLEAN(full-course) {int((pk>=NG).sum())}/16  dist={np.bincount(pk, minlength=NG+1).tolist()}", flush=True)
+        return
     env, gates = make_env(NENV, 1)
     venv = ResidualVecEnv(env, gates) if RESIDUAL else VecEnvAdapter(env)
     # Fine-tuning from a BC/DAgger warm-start: tiny exploration (rate actions are ~0.01-0.03; std must
