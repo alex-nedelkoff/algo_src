@@ -155,6 +155,21 @@ gates_enu = gates_ned * B               # NED->deploy ENU (same convention as to
 if MIRROR: gates_enu[:, 1] *= -1.0       # match the to_enu lateral-y fix (consistent gate-relative obs); STRAIGHT rebuilds from camfwd below so it's already consistent
 c.arm()
 ds0 = s.get_drone(); pos0, _, _, _ = to_enu(ds0)
+ANCHOR = "--noanchor" not in sys.argv   # DEFAULT ON: the TRACK_INFO ABSOLUTE origin jumps per reset (gate0 seen at
+# -23 one run, +102/+886 the next) but the gate-to-gate RELATIVE layout is constant (shared world orientation, only the
+# translation jumps). Trusting absolute coords -> drone arrives off-center (clips/pins gate0) or chases a gate 886m up.
+# Fix: re-anchor the reliable relative layout to the SPAWN via camfwd (drone faces down-course at spawn), so every run is
+# identical regardless of the absolute jump. D0 = spawn->gate0 distance (canonical real course). --noanchor = old absolute.
+if ANCHOR and STRAIGHT == 0:
+    camfwd_a = -(quat_to_R(qfix(ds0.quat_wxyz))[:, 0]) * B; camfwd_a[2] = 0.0
+    camfwd_a /= (np.linalg.norm(camfwd_a) + 1e-9)
+    D0 = argf("--d0", 23.3)
+    rel = gates_enu - gates_enu[0]              # constant gate-to-gate layout (incl. z descents)
+    gate0_anchor = pos0 + camfwd_a * D0; gate0_anchor[2] = pos0[2]   # gate0 straight ahead, course-centered, ~spawn alt
+    course_dir = rel[1] / (np.linalg.norm(rel[1]) + 1e-9)            # track gate0->gate1 dir, for the sanity check
+    gates_enu = gate0_anchor + rel
+    print(f"ANCHOR: camfwd={camfwd_a.round(2)} track_dir={course_dir.round(2)} D0={D0} gate0 {gates_enu[0].round(1)} "
+          f"gate5 {gates_enu[-1].round(1)} (re-anchored to spawn; abs origin jump ignored)", flush=True)
 if STRAIGHT > 0:   # flat straight line along the SPAWN camera-forward dir (where the drone is pointing),
     # NOT toward TRACK_INFO gate0 (its coords jump per session -> mis-aligned course -> crab/wrong-way)
     fwd = -(quat_to_R(qfix(ds0.quat_wxyz))[:, 0]) * B; fwd[2] = 0.0; fwd /= (np.linalg.norm(fwd) + 1e-9)

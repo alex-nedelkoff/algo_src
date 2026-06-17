@@ -24,7 +24,13 @@ G = 9.81
 MAXW = argf("--maxw", 6.0); THRMAX = argf("--thrmax", 0.6); MAX_T = argf("--maxt", 70.0)
 SLEW = argf("--slew", 40.0); HIST = int(argf("--hist", 8)); GATE_R = argf("--gater", 2.0)
 ZVD = "--zvd" in sys.argv   # EXP-20b ring killer on the policy rate cmds; MUST match training --zvd
-ZVD_AMP = np.array([0.371, 0.476, 0.153]); ZVD_DELAY = (7, 7, 4); _zvd_buf = np.zeros((15, 3))
+_zd = int(argf("--zvddelay", 3))   # 3 = 11Hz notch (old hardcoded 7 was mistuned to ~5Hz). MUST match training.
+ZVD_AMP = np.array([0.371, 0.476, 0.153]); ZVD_DELAY = (_zd, _zd, _zd); _zvd_buf = np.zeros((4*_zd + 2, 3))
+LATFLIP = "--latflip" in sys.argv   # DEFAULT OFF (06-16 live A/B with the retrained policy): roll output = +u[1] matches the
+# TEACHER's output convention (OSGN=[1,1,-1]: roll +u1, pitch +u2, yaw -u3). The teacher's latflip lives INSIDE ff_one (negates
+# accel a[1]) and is NOT an output flip -> the policy, which outputs rates directly, must NOT flip roll. --latflip (roll = -u[1])
+# caused an instant roll-rate runaway to -6 rad/s (tilt 0->120 in 0.5s); --nolatflip (default) flies w/o the instant flip.
+OBSFLIP = "--obsflip" in sys.argv   # alternative single flip: negate the gate-relative cross-track OBS (o[1] pos, o[4] vel)
 ABORT_TILT = 100.0; LEVEL_T = 2.0; GRACE = LEVEL_T + 1.5; MOTOR_NORM = 0.5114015
 vqm = json.load(open("sysid/vq_model.json")); F0 = vqm["thrust"]["f0"]; DF = vqm["thrust"]["df_dthr"]
 r = json.load(open("sysid/sim_response.json")); RG = np.array([r["rate_gain_axes"]["roll"], r["rate_gain_axes"]["pitch"], r["rate_gain_axes"]["yaw"]])
@@ -40,7 +46,7 @@ def policy(obs):
 
 def qfix(q): return np.array([q[1], q[2], q[3], q[0]])
 B = np.array([1.0, -1.0, -1.0]); bq = np.array([0.0, 1.0, 0.0, 0.0]); bqc = np.array([0.0, -1.0, 0.0, 0.0])
-MIRROR = "--nomirror" not in sys.argv   # ADAPTER FIX (default ON): to_enu inverted lateral-y vs the training env (the "world-y mirror")
+MIRROR = "--mirror" in sys.argv   # DEFAULT OFF (proven BROKEN 0/6 x5 on teacher 06-16; latflip is the fix). to_enu inverted lateral-y vs the training env (the "world-y mirror")
 # -> the policy's lateral sign was inverted live -> lateral runaway/crab. Flip drone pos/vel y + gate y so deploy frame matches train.
 MIRRORATT = "--mirroratt" in sys.argv   # COMPLETE the mirror: also reflect the ENU attitude quat [w,x,y,z]->[w,-x,y,-z] (flips world
 # roll + yaw to match the mirrored pos/vel; pitch invariant; body omega untouched = body frame). Plain MIRROR flips pos/vel only ->
@@ -103,6 +109,7 @@ def build_obs(pe, ve, qe, ome, gi, prev_act, hist):
     o = np.zeros(20 + 6 + 1 + 4*HIST, dtype=np.float32)
     o[0:2] = rotxy((pe-gate)[:2], gy); o[2] = pe[2]-gate[2]
     o[3:5] = rotxy(ve[:2], gy); o[5] = ve[2]
+    if OBSFLIP: o[1] *= -1.0; o[4] *= -1.0   # negate cross-track (lateral) pos+vel — policy lateral-sign A/B option
     roll, pitch, dyaw = quat_to_euler(qe); o[6] = roll; o[7] = pitch; o[8] = wrap(dyaw - gy)
     o[9:12] = ome; o[12:16] = MOTOR_NORM; o[16:20] = prev_act
     dg = gates[gi1] - gate
@@ -129,7 +136,8 @@ while time.time()-t0 < MAX_T and gi < NG:
     else:
         obs = build_obs(pe, ve, qe, ome, gi, prev_act, hist)
         u = np.clip(policy(obs), -1, 1)
-        thr = float((u[0]+1)/2*THRMAX); rates = np.array([u[1], u[2], -u[3]]) * MAXW   # pitch un-flipped (06-16 PITCH-FIX: model pitch sign corrected to live)
+        thr = float((u[0]+1)/2*THRMAX)
+        rates = np.array([(-u[1] if LATFLIP else u[1]), u[2], -u[3]]) * MAXW   # pitch un-flipped (PITCH-FIX); --latflip negates roll (lateral-sign)
         if ZVD:   # ring killer BEFORE slew (matches env vq_zvd->vq_slew order)
             _zvd_buf = np.roll(_zvd_buf, 1, axis=0); _zvd_buf[0] = rates
             rates = np.array([ZVD_AMP[0]*_zvd_buf[0, ax] + ZVD_AMP[1]*_zvd_buf[ZVD_DELAY[ax], ax]
