@@ -39,7 +39,11 @@ THRMAX = argf("--thrmax", 1.0)  # thrust-authority cap: u0=+1 -> thr THRMAX (tea
 ZVD = "--zvd" in sys.argv       # ZVD-shape the wire rate cmds (EXP-20b ring killer on the policy path); deploy must match
 SLEW = argf("--slew", 0.0)      # rad/s^2 wire-rate slew cap (RING-06: prevents the hard kick that triggers the nonlinear 11 Hz ring); 0=off
 SCATTER = "--scatter" in sys.argv  # miss-recovery starts: random gate, behind 1-34 m, racing yaw (training envs only)
-DT = 1.0 / 72.0; EP_STEPS = int(argf("--ep_steps", 1080))   # MIMO rate loop is dt-specific (fit 1/72); 1080=~15s (synthetic 75-100m); real VQ1 is 164m -> need ~2160 (30s) to reach gate 5
+DT = 1.0 / 72.0
+# EP_STEPS: synthetic=1080 (~15s). REALCOURSE is 164m -> scale with vdes so the episode COVERS the full course + margin.
+# FIDELITY (06-17): the old fixed 1080 TRUNCATED the real course mid-flight -> the in-sim teacher "capped" at 2-3 gates by
+# TIMEOUT (not dynamics; lower vdes -> fewer gates in 15s) -> RL learned a failing teacher. Now ~36s at v5, ~60s at v3.
+EP_STEPS = int(argf("--ep_steps", int(185.0 / max(VDES, 2.0) / DT * 1.25) if REALCOURSE else 1080))
 # weathervane-FF (corner_speed teacher term, WV-DYNAMIC coeffs), ENU env frame signs
 ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
 YR_CAP = 1.5   # rad/s yaw-rate cap (corner_speed)
@@ -54,8 +58,8 @@ HOVER_U0 = 2*((F0+G)/(-DF))/THRMAX - 1
 WSIDE = argf("--ws", 0.0)   # TRANSFER-06: sideslip penalty weight; 0 = off (campaign default)
 WAPER = argf("--wa", 0.0)   # TRANSFER-08: aperture-proximity bonus weight (Gaussian, sigma 5 m)
 WCNTR = argf("--wc", 0.0)   # gate-centering weight (existing, near-plane lateral penalty)
-RAD_START = argf("--rad_start", 1.0)  # TRANSFER-10: gate radius curriculum -- start loose, anneal to 1.0
-RAD_END   = argf("--rad_end",   1.0)  # final radius after anneal
+RAD_START = argf("--rad_start", 1.36 if REALCOURSE else 1.0)  # FIDELITY (06-17): REALCOURSE gate aperture = live W/H 2.72m -> radius
+RAD_END   = argf("--rad_end",   1.36 if REALCOURSE else 1.0)  # 1.36 (the old 1.0 was TIGHTER than live -> teacher clipped gate0 @ lat 1.34)
 RAD_STEPS = int(argf("--rad_steps", 0))   # anneal duration in PPO steps; 0 = no curriculum (rad=RAD_START)
 HIST   = int(argf("--hist", 0))           # NeuroBEM history stack: prev-action steps in obs (handoff fix)
 WSMOOTH = argf("--wsmooth", 0.0)          # NLM rec: action smoothness weight (anti 11Hz ring); try 1.4
@@ -63,6 +67,7 @@ BRAKE = argf("--brake", 0.5)              # aim() brake-taper slope; bigger = br
 VZMAX = argf("--vzmax", 1e9)              # controlled-sink: cap spline descent rate (m/s); slow forward speed on descents (1e9=off)
 GATED = argf("--gated", 3.0)              # clean-teacher: perpendicular gate-crossing waypoints (gate +/- leg_normal*GATED) -> straight,
 VGATE = argf("--vgate", 5.0); SLOWD = argf("--slowd", 7.0)   # centered plane crossing; + gate-approach speed cap within SLOWD m (gentle, centered)
+GATEFIXED = "--gatefixed" in sys.argv  # experiment: gates share ONE fixed course-axis orientation. Default OFF -- per-leg threads better in-sim
 ZLIFT = argf("--zlift", 1.2)             # raise gate-z targets to cancel the analytic z-loop SAG (~1.2m z-hang, KP/KD-only no integral);
 # live masked this via the TRACK_INFO zlift -> without it the sim teacher arrives ~1.2m low at the descent gates -> clips the tight radius
 V_GATE = argf("--vgate", 1.5)             # min commit speed near gate; lower = arrive slower
@@ -212,13 +217,15 @@ def make_env(n, seed, vq_path="sysid/vq_model.json", train=True, gate_radius=Non
         sp = rng.uniform(9, 18); amp = rng.uniform(1.0, 3.0); ph = rng.uniform(0, 6.28)   # deploy courses use space 14-16; 9-13 left them OOD-long (grid weak cells)
         gs = []
         if REALCOURSE:
-            # fixed VQ1 track (live TRACK_INFO): descends 26 m, spacing 23-37 m. Gates upright (yaw only,
-            # like the real quat_ned_wxyz [.707,0,0,.707]); yaw = heading of the leg into each gate.
-            prev = rc_spawn
+            # fixed VQ1 track (live TRACK_INFO): descends 26 m, spacing 23-37 m. FIDELITY FIX (06-17): the LIVE
+            # gates ALL share ONE fixed orientation along the course axis (TRACK_INFO quat identical for every gate,
+            # normal=course dir) -- NOT the per-leg heading. _gate_normal = local-x, so a fixed course-axis yaw makes
+            # every gate plane perpendicular to travel (matches live; the per-leg version clipped descent gate3 in sim).
+            cyaw = float(np.arctan2(rc_gates[-1][1] - rc_spawn[1], rc_gates[-1][0] - rc_spawn[0]))   # course primary axis
             for i in range(NG):
-                d = rc_gates[i] - prev
-                gs.append(GateState(position=rc_gates[i].copy(), orientation=_yaw_quat(np.arctan2(d[1], d[0]))))
-                prev = rc_gates[i]
+                gyaw = cyaw if GATEFIXED else float(np.arctan2((rc_gates[i] - (rc_gates[i-1] if i > 0 else rc_spawn))[1],
+                                                               (rc_gates[i] - (rc_gates[i-1] if i > 0 else rc_spawn))[0]))
+                gs.append(GateState(position=rc_gates[i].copy(), orientation=_yaw_quat(gyaw)))
         elif CURVE:
             hd = 0.0; pos = np.array([8.0, 0.0, 1.0]); turn = rng.uniform(0.12, 0.28)*rng.choice([-1, 1])
             for i in range(NG):
@@ -323,10 +330,41 @@ def teacher_eval(seed=7, NE=16, gate_radius=None):
     return np.maximum(peak, env._gates_passed)
 
 
+def teacher_trace(seed=7, gate_radius=1.36):
+    # NE=1 raw-env trace. The env auto-resets done sub-envs INSIDE step() (clearing reason), so capture the reason
+    # from BEFORE the step and keep a ring buffer of the last states -> SEE the exact crash mode on the descent leg.
+    from sim.envs.gate_race_env import _gate_normal, GATE_RACE_TERM_NAMES
+    from collections import deque
+    env, gates = make_env(1, seed, train=False, gate_radius=gate_radius)
+    env.reset(); prev_p = 0; ring = deque(maxlen=10)
+    for step in range(EP_STEPS):
+        S = env._states; gi = int(env._gate_indices[0]); trk = env._tracks[0]
+        gate = trk.gates[gi % trk.num_gates]; nrm = _gate_normal(gate); rel = S[0, POS] - gate.position
+        along = float(np.dot(rel, nrm)); latv = rel - along*nrm; lat = float(np.linalg.norm(latv))
+        q = S[0, QUAT]; tilt = np.degrees(np.arccos(np.clip(1 - 2*(q[2]**2 + q[3]**2), -1, 1)))
+        wmax = float(np.max(np.abs(S[0, OMEGA]))); v = float(np.linalg.norm(S[0, VEL]))
+        ring.append(f"  s{step:4d} gi={gi} pos={S[0,POS].round(1)} gate={gate.position.round(1)} lat={lat:.2f} along={along:+5.1f} z={S[0,POS][2]:.1f} v={v:.1f} tilt={tilt:.0f} wmax={wmax:.1f}")
+        u = ff_batch(S, *aim(S, gates, env._gate_indices, trajs=env._trajs))
+        before = int(env._termination_reasons[0])
+        obs, r, term, trunc, info = env.step(u)
+        if env._gates_passed[0] != prev_p and env._gates_passed[0] > prev_p:
+            print(f"  PASS gate{prev_p}->{int(env._gates_passed[0])} step{step} v={v:.1f} lat={lat:.2f}", flush=True); prev_p = int(env._gates_passed[0])
+        if step % 40 == 0:
+            print(ring[-1], flush=True)
+        if bool(term[0]) or bool(trunc[0]):
+            rsn = int(env._termination_reasons[0]) or before   # reason may be cleared by the in-step reset
+            print(f"  *** END step{step} reason={rsn} ({GATE_RACE_TERM_NAMES.get(rsn,'?')}) -- last 10 steps: ***", flush=True)
+            for ln in ring: print(ln, flush=True)
+            break
+    return
+
+
 def main():
     global VDES, LAT, TLAG
     torch.manual_seed(0)
     print(f"FT[{TAG}]: vdes={VDES} warm={WARM} curve={CURVE} realcourse={REALCOURSE} rec={REC} lat={LAT} tlag={TLAG} maxw={MAXW} thrmax={THRMAX} zvd={ZVD} slew={SLEW} ws={WSIDE} wa={WAPER} wc={WCNTR} wspeed={WSPEED}@vcap{VCAP_TRAIN} hist={HIST} wsm={WSMOOTH} rad_curr={RAD_START}->{RAD_END}@{RAD_STEPS} residual={RESIDUAL} asym={ASYM} dscale={DELTA_SCALE} drw={DR_WIDTH} steps={STEPS}", flush=True)
+    if "--tracegate" in sys.argv:   # NE=1 trace of the teacher (debug the descent-gate clip), then exit
+        teacher_trace(gate_radius=1.36); return
     if "--evalteacher" in sys.argv:   # verify the clean teacher in-sim, then exit (no training)
         for rad in (RAD_END, 1.36):   # sim default radius + the live VQ aperture (1.36m)
             pk = teacher_eval(NE=16, gate_radius=rad)
