@@ -32,7 +32,7 @@ VZMAX = argf("--vzmax", 1e9)  # controlled-sink: cap descent rate (m/s); forces 
 TILT_SOFT = argf("--tiltsoft", 30.0); TILT_HARD = argf("--tilthard", 90.0)  # actual-tilt cap: fade tilt-drive from SOFT->HARD measured tilt (stay below the ~45deg ring detonation). HARD>=90 = off
 STRAIGHT = int(argf("--straight", 0))  # N>0: override the TRACK_INFO course with N straight LEVEL gates 30m apart along camera-forward (drag-saturation speed test, no descent/turns)
 ZVD = "--zvd" in sys.argv   # EXP-20b ring killer on the wire-rate cmds (3-impulse ZVD prefilter)
-CAMFLIP = "--camflip" in sys.argv   # flip nose 180deg so the CAMERA faces the direction of travel
+CAMFLIP = "--nocamflip" not in sys.argv   # DEFAULT ON: nose holds spawn heading so the CAMERA faces travel (no 180deg turn-around)
 STRAFE = "--strafe" in sys.argv     # hold spawn yaw (camera fixed forward), translate FWD/BACK/LEFT/RIGHT in sequence
 STRAFEV = argf("--strafev", 3.0); STRAFEDUR = argf("--strafedur", 4.0)  # strafe speed (m/s) + seconds per direction
 STRAFEDIR = int(argf("--strafedir", -1))   # -1=cycle FWD/BACK/LEFT/RGHT; 0/1/2/3 = hold ONE direction from hover (isolate it)
@@ -53,11 +53,11 @@ RECOVER_BACK = argf("--recoverback", 5.0); RECOVER_DUR = argf("--recoverdur", 1.
 VGATE = argf("--vgate", 5.0)             # cap target speed within SLOWD of a gate plane -> gentler contact (no crash-reset) + better centering
 SLOWD = argf("--slowd", 7.0)             # gate-slowdown zone (m before the plane). VGATE=0 disables.
 # teacher constants (rl_finetune.py, verbatim) -- lateral (xy) PD now tunable to cut the ~0.7m cross-track LAG that clips gates
-KPXY = argf("--kpxy", 0.6); KDXY = argf("--kdxy", 1.2)   # raise KPXY to reduce lateral tracking lag; KDXY damps the resulting overshoot
+KPXY = argf("--kpxy", 1.4); KDXY = argf("--kdxy", 3.5)   # KPXY cuts cross-track lag; KDXY damps the jog overshoot -> 0-collision threading (06-17 clean 6/6)
 KP_POS = np.array([KPXY, KPXY, 2.0]); KD_POS = np.array([KDXY, KDXY, 3.0])
 KP_ATT = np.array([6.0, 6.0, 4.0]) * argf("--kpatt", 1.0); KD_ATT = np.array([1.2, 1.2, 0.0]) * argf("--kdatt", 1.0); KP_YAW = 4.0; KD_YAW = 0.5  # lower kpatt / raise kdatt to stop the 11Hz ring exciting
 ROLL_WV0, ROLL_WV1, YAW_WV = -0.105, -0.019, -0.149
-YR_CAP = 1.5; TILT_MAX = np.tan(np.radians(argf("--tiltbudget", 35.0))) * G; LEAD = argf("--lead", 2.5)   # spline lookahead (m); lower = aim closer to the gate = less corner-cut lateral miss on curves (gate threading)
+YR_CAP = 1.5; TILT_MAX = np.tan(np.radians(argf("--tiltbudget", 35.0))) * G; LEAD = argf("--lead", 2.6)   # spline lookahead (m); lower = aim closer to the gate = less corner-cut lateral miss on curves (gate threading)
 vqm = json.load(open("sysid/vq_model.json")); F0 = vqm["thrust"]["f0"]; DF = vqm["thrust"]["df_dthr"]
 GAIN = np.array([vqm["rate_loop"][n]["gain_G"] for n in ("roll", "pitch", "yaw")])
 r = json.load(open("sysid/sim_response.json")); RG = np.array([r["rate_gain_axes"]["roll"], r["rate_gain_axes"]["pitch"], r["rate_gain_axes"]["yaw"]])
@@ -178,7 +178,7 @@ if ANCHOR and STRAIGHT == 0:
     gate0_anchor = pos0 + gnorm * D0; gate0_anchor[2] = pos0[2]   # gate0 along travel (-camfwd), ~spawn alt
     gates_enu = gate0_anchor + rel
     print(f"ANCHOR: gnorm={gnorm.round(2)} D0={D0} gate0 {gates_enu[0].round(1)} gate5 {gates_enu[-1].round(1)}", flush=True)
-ZLIFT = argf("--zlift", 0.0)   # raise all gate-z targets (m, ENU up). Drone was passing UNDER gates -> TRACK_INFO z may be the
+ZLIFT = argf("--zlift", 1.5)   # raise all gate-z targets (m, ENU up). Drone was passing UNDER gates -> TRACK_INFO z may be the
 if ZLIFT != 0.0 and STRAIGHT == 0:   # gate base (not aperture center) and/or the analytic z-loop sags ~1m below z_ref (z-hang).
     gates_enu[:, 2] += ZLIFT
     print(f"ZLIFT: raised gate z by {ZLIFT}m -> gate0_z={gates_enu[0,2]:.1f} gate5_z={gates_enu[-1,2]:.1f}", flush=True)
