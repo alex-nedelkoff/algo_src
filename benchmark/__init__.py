@@ -1,1 +1,0 @@
-"""Golden set benchmark suite."""

@@ -30,12 +30,17 @@ G = 9.81
 class GateTrajectory:
     def __init__(self, gates, v_cruise: float = 2.5, phi_max_deg: float = 35.0,
                  samples_per_seg: int = 80, tilt_budget_deg: float = 25.0,
-                 c_drag: float = 0.057, margin: float = 0.6):
+                 c_drag: float = 0.057, margin: float = 0.6, vz_max: float = 1e9):
         gates = np.asarray(gates, float)
         if len(gates) < 2:
             raise ValueError("need >= 2 gates")
         self.gates = gates
         self.v_cruise = float(v_cruise)
+        # Controlled-sink: cap the DESCENT RATE (m/s) so a steep glideslope is flown at LOW forward
+        # speed (drop altitude slowly, vq_course-style) instead of gliding down at cruise speed. On
+        # the VQ1 descent, glideslope-at-speed overspeeds live (brake-vs-descend conflict, 06-15);
+        # capping vertical speed forces v_fwd = vz_max/sin(slope) -> slow descent. 1e9 = off.
+        self.vz_max = float(vz_max)
         self.a_lat_max = G * np.tan(np.radians(phi_max_deg))
         self.tilt_budget = G * np.tan(np.radians(tilt_budget_deg))   # horizontal accel budget
         self.c_drag = float(c_drag)                                  # REFIT-02 quadratic drag (/m)
@@ -91,6 +96,9 @@ class GateTrajectory:
         kabs = float(np.interp(u, self._u, self._kappa))
         ksig = float(np.interp(u, self._u, self._kappa_signed))
         v = self.speed_at(kabs)
+        # controlled-sink descent-rate cap: on a descent (tang_z < 0), limit v so v*|tang_z| <= vz_max
+        if tang[2] < -0.05:
+            v = min(v, self.vz_max / abs(tang[2]))
         yaw = float(np.arctan2(-tang[1], -tang[0]))       # body_x opposite travel (camera-forward)
         return dict(pos=pos, tang=tang, kappa=ksig, v=v, yaw=yaw,
                     yaw_rate=v * ksig, a_lat=v * v * ksig)

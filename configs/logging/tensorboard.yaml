@@ -1,6 +1,0 @@
-# TensorBoard local fallback logging
-backend: tensorboard
-
-log_dir: tb_logs/
-log_freq: 100
-log_video: false

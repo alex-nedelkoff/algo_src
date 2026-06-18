@@ -1,7 +1,0 @@
-# Experiment artifacts (tracked in results.tsv, not git)
-results.tsv
-diffs/
-train.py.orig
-checkpoints/
-viz/
-tb_logs/

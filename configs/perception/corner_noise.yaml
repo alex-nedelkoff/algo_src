@@ -1,7 +1,0 @@
-_target_: perception.wrappers.corner_noise_wrapper.CornerNoisePerceptionWrapper
-
-noise_scale: 1.0
-dropout_onset: null         # null = randomized per-env [0.05, 0.50]
-dropout_continuation: 0.7
-asymmetric: false           # set to true for phase 3
-noise_scale_range: null     # [lo, hi] for domain-rand noise scale

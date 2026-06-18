@@ -1,6 +1,0 @@
-# Selective domain randomization: mass and inertia only
-# Values are symmetric percentage deviations: U[nominal*(1-p), nominal*(1+p)]
-enabled: true
-params:
-  mass: 0.3           # +-30%
-  inertia: 0.3        # +-30% on diagonal

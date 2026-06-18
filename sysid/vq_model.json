@@ -3,18 +3,21 @@
   "n_train_rows": 21709,
   "n_runs": 12,
   "drag_linear_body": {
-    "Dx": 0.22873309222469504,
-    "Dy": 0.22873309222469504,
+    "Dx": 0.1,
+    "Dy": 0.1,
     "Dz": 0.0,
     "r2_x": 0.9703691093258373,
-    "r2_y": 0.040381394184816344
+    "r2_y": 0.040381394184816344,
+    "note": "REPLAY-01 joint refit: linear coeff reduced, quadratic added (drag_quadratic_body); old Dx=0.2287 absorbed quad over its 0-8 m/s fit range"
   },
   "thrust": {
     "f0": 5.17486323616102,
     "df_dthr": -56.01701968046062,
     "dCacc_dthr": 56.01701968046062,
     "thr_hover_pred": 0.2675055424519115,
-    "r2": 0.920222100318765
+    "r2": 0.920222100318765,
+    "thr_floor": 0.0924,
+    "floor_note": "REPLAY-01: linear map goes negative below thr=-f0/df=0.0924 (props pushing down); floor at zero-collective. Live may hold extra idle lift (braking run still sheds energy faster than the model) -- floor value not yet measured directly."
   },
   "rate_loop": {
     "roll": {
@@ -26,7 +29,7 @@
     "pitch": {
       "alpha": 0.5668647436195735,
       "tau_ms": 24.46468413984338,
-      "gain_G": 2.5321154109771684,
+      "gain_G": -2.5321154109771684,
       "r2": 0.9835299668504137
     },
     "yaw": {
@@ -71,71 +74,212 @@
   "rate_loop_mimo": {
     "A": [
       [
-        0.8440209823952773,
-        0.016206462955835388,
-        0.08599767890107675
+        0.7914847634843875,
+        0.0,
+        0.030806143475359815
       ],
       [
-        -0.009054134916833876,
-        0.6071004389758117,
-        0.003592511508197782
+        0.0,
+        0.7980814288643856,
+        0.0
       ],
       [
-        0.03260318622818206,
-        0.0028942679671630223,
-        0.9534977280535956
+        -0.01113396057443962,
+        0.0,
+        0.8889508221338844
       ]
     ],
     "B": [
       [
-        -0.44090103545328985,
-        -0.010958288662175672,
-        0.17558748373174943
+        -0.6373332349460007,
+        -0.0,
+        0.043930850478494224
       ],
       [
-        -0.02560108309307285,
-        0.9993884837451488,
-        0.014145631640285872
+        0.0,
+        -0.6041531331096269,
+        0.0
       ],
       [
-        0.15537504289892434,
-        0.000613195879840843,
-        -0.10769273346405209
+        0.03777572051767778,
+        -0.0,
+        -0.265357796534037
       ]
     ],
-    "note": "om[k+1]=A@om+B@wcmd+weathervane; MIMO refit incl corner runs (roll<->yaw coupling); WFIX omega, raw cmd frame",
-    "n_transitions": 57856,
-    "source_runs": [
-      "20260605T173136_collect_vq",
-      "20260605T173242_collect_vq",
-      "20260605T173803_collect_vq",
-      "20260605T173841_collect_vq",
-      "20260605T173924_collect_vq",
-      "20260605T174335_collect_vq",
-      "20260605T174422_collect_vq",
-      "20260605T174502_collect_vq",
-      "20260605T174550_collect_vq",
-      "20260605T174638_collect_vq",
-      "20260605T181304_collect_vq",
-      "20260605T181356_collect_vq",
-      "20260605T181446_collect_vq",
-      "20260607T204325_collect_vq",
-      "20260607T204954_collect_vq",
-      "20260607T205115_collect_vq",
-      "20260607T215941_collect_vq",
-      "20260607T220028_collect_vq",
-      "20260607T220115_collect_vq",
-      "20260608T163444_collect_vq",
-      "20260608T170211_collect_vq",
-      "20260609T094012_collect_vq",
-      "20260609T123342_corner_speed",
-      "20260609T123740_corner_speed",
-      "20260609T124117_corner_speed",
-      "20260609T125746_corner_speed",
-      "20260609T130258_corner_speed",
-      "20260609T130721_corner_speed",
-      "20260609T135925_corner_speed",
-      "20260609T140352_corner_speed"
-    ]
+    "note": "om[k+1]=A@om+B@wcmd+weathervane_v2; joint refit w/ speed-dep wv (06-10); incl brake runs; symmetrized; dt=1/72",
+    "n_transitions": 72139,
+    "ridge": 1.0
+  },
+  "weathervane_v2": {
+    "form": "om_ax += (a + b*min(|v|,vclip)) * v_body_y * dt, ax in {roll,yaw}",
+    "roll": {
+      "a": -0.6027948197810068,
+      "b": 0.10375256751356529
+    },
+    "yaw": {
+      "a": -0.1283237950094403,
+      "b": 0.04696786349997189
+    },
+    "vclip": 8.0,
+    "note": "speed-dependent wv, unifies directional-roll fit + WV-DYNAMIC flip + const yaw (06-10 brake-data refit); REFUTES vbx~0 braking-wv blowup"
+  },
+  "dr_rate_disturbance": {
+    "bins": [
+      {
+        "tilt_deg": [
+          0,
+          10
+        ],
+        "sigma": [
+          0.8881106464764565,
+          0.47806071795804445,
+          0.6366216033497643
+        ],
+        "n": 951
+      },
+      {
+        "tilt_deg": [
+          10,
+          20
+        ],
+        "sigma": [
+          2.189992106211892,
+          0.8988702147167812,
+          1.5301115441563489
+        ],
+        "n": 444
+      },
+      {
+        "tilt_deg": [
+          20,
+          30
+        ],
+        "sigma": [
+          2.62461857665288,
+          1.0852068898388023,
+          1.5616085526337915
+        ],
+        "n": 216
+      },
+      {
+        "tilt_deg": [
+          30,
+          45
+        ],
+        "sigma": [
+          4.433281659453128,
+          1.2440597322916915,
+          3.787995645438968
+        ],
+        "n": 69
+      },
+      {
+        "tilt_deg": [
+          45,
+          90
+        ],
+        "sigma": [
+          6.581903005449322,
+          1.6604297182244931,
+          5.461352658032968
+        ],
+        "n": 53
+      }
+    ],
+    "block_s": 0.5,
+    "note": "measured sustained unmodeled-moment field (block-mean residual RMS by TRUE tilt) -- DR retrain should inject per-axis bias noise of this magnitude, ~0.5-1s correlation"
+  },
+  "drag_quadratic_body": {
+    "qx": 0.032,
+    "qy": 0.032,
+    "qz": 0.0513,
+    "Dz": 0.0562,
+    "note": "REPLAY-01: D_eff(v)=D+q*|v| per body axis. Fit: per-|v|-bin D_eff medians (ramp+brake+deploy runs, v to 36) + replay calibration on DEPLOY-03 runs (sim vmax 35.7/24.2/12.8 vs live 36.1/23.8/13.0). y/z axes assumed = x (y-fit R2~0.04, no clean z data).",
+    "note_z": "LOWTHR-01 (06-12): clean open-loop thr-cut flight 20260612T105637; joint fit of the z residual on (vbz, vmag*vbz), controlled blocks |om|<1.5. Steady low-thr gap is small (~2 m/s^2); the -11..-16 deploy-pool residuals were a block-mean artifact (thr dither x floor nonlinearity + thrust-lag transients), not a steady force."
+  },
+  "rate_loop_2nd": {
+    "A1": [
+      [
+        1.0553806428859251,
+        0.0,
+        0.10052832295354872
+      ],
+      [
+        0.0,
+        1.0553806428859251,
+        0.0
+      ],
+      [
+        -0.007793524949617508,
+        0.0,
+        1.7438922333948808
+      ]
+    ],
+    "A2": [
+      [
+        -0.8464,
+        0.0,
+        -0.03180006613976067
+      ],
+      [
+        0.0,
+        -0.8464,
+        0.0
+      ],
+      [
+        0.0035513266587403453,
+        0.0,
+        -0.8464
+      ]
+    ],
+    "B0": [
+      [
+        -0.8758468120428006,
+        -0.0,
+        0.09278064096985325
+      ],
+      [
+        0.0,
+        -0.6966673796223409,
+        0.0
+      ],
+      [
+        -0.001204215827714986,
+        -0.0,
+        -0.1259085785596982
+      ]
+    ],
+    "B1": [
+      [
+        -1.1369385894588084,
+        -0.0,
+        0.14707421671352863
+      ],
+      [
+        0.0,
+        -1.1752157955275226,
+        0.0
+      ],
+      [
+        -0.0012082849867841134,
+        -0.0,
+        -0.11374349164092588
+      ]
+    ],
+    "note": "RING-01 06-12: MIMO 2nd-order rate loop (underdamped ~7 Hz pole pair); fit on deploy+tumble pooled, mirror-symmetrized; dt=1/72",
+    "note_q": "RING-REFIT 06-15: roll/pitch poles set to live 11Hz (RING-05) at |p|0.92, DC rate-gain preserved by rescaling B0/B1; yaw unchanged"
+  },
+  "ring_nonlinear": {
+    "f_hz": 12.0,
+    "tilt_deg": 45.0,
+    "width_deg": 8.0,
+    "zeta_lo": 0.14,
+    "zeta_hi": -0.06,
+    "drive": 0.03,
+    "axes": [
+      0,
+      1
+    ],
+    "clip": 30.0
   }
 }

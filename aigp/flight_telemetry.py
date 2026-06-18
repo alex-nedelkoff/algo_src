@@ -189,6 +189,20 @@ class FlightLog:
         except Exception:
             pass
 
+    def log_gates(self, points, name="gates", color=(0, 255, 0), radii=2.0):
+        """Log gate centers as labeled spheres + a connecting line (static). points in world NED.
+        radii defaults to the 2 m geometric-pass detection radius so the trail-vs-sphere overlap is visible."""
+        if not self.ok:
+            return
+        try:
+            p = np.asarray(points, float)
+            labels = [f"{name}{i}" for i in range(len(p))]
+            self._rr.log(f"world/{name}", self._rr.Points3D(p, radii=float(radii), colors=list(color), labels=labels),
+                         static=True)
+            self._rr.log(f"world/{name}_line", self._rr.LineStrips3D([p], colors=list(color)), static=True)
+        except Exception:
+            pass
+
     def _scal(self, path, v):
         self._rr.log(path, self._rr.Scalars(float(v)))
 

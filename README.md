@@ -1,31 +1,46 @@
-# algo_src
+# AI-GP Flight Control + Waypoint Demo
 
-Autonomous drone racing algorithm stack for the Anduril AI Grand Prix.
+Analytic flight control for the Anduril AI Grand Prix drone (VQ / DCL sim): a mass-agnostic
+PID attitude/position controller, guidance patterns, and the live-sim MAVLink + vision IO.
+Curated from the `aigp-gate-data-collection` branch for reuse.
 
-## Directory Structure
+## Fly waypoints
+
+Start the VQ / DCL sim (MAVLink on UDP 14550, vision JPEG on UDP 5600), then:
 
 ```
-algo_src/
-├── perception/        — Gate detection CNN pipeline (GateNet-equivalent)
-├── control/           — G&CNet RL control policy (PPO training, motor RPM output)
-├── state_estimation/  — EKF / VIO state estimation (camera + IMU fusion)
-└── sim/               — Quadrotor dynamics simulator and training environments
+python vq_waypoint2.py --mission 1 --v 2.2 --leg 12 --nwp 5
 ```
 
-### perception/
-Gate detection CNN pipeline. Responsible for detecting racing gates from monocular camera frames, producing bounding boxes and relative pose estimates (GateNet-equivalent architecture).
+- `--mission 1` (default): a straight course along the spawn camera axis with +/-3 m lateral
+  offsets, reachable by strafe at a fixed heading. Zero frame risk (the heading never leaves
+  the spawn yaw).
+- `--mission 2`: the course bends (`--turn 0.25` rad/leg); the yaw reference slews toward the
+  waypoint bearing (rate-capped, yaw-error governor).
+- Other flags: `--v` cruise speed, `--leg` leg length (m), `--nwp` waypoint count, `--dur`
+  duration (s), `--no-viz`.
 
-### control/
-Guidance and control network (G&CNet) reinforcement learning policy. Trains via PPO to output motor RPM commands from perceived gate state and vehicle state estimates.
+Frame signs are **auto-calibrated** from data in the first seconds of flight and printed
+(`s_lat` = lateral direction, `s_yawb` = yaw-steer direction). No manual frame tuning.
 
-### state_estimation/
-Extended Kalman Filter (EKF) and Visual-Inertial Odometry (VIO) for robust state estimation. Fuses monocular camera and IMU data to produce position, velocity, and attitude estimates.
+## Key files
 
-### sim/
-Quadrotor dynamics simulator and training environments. Provides the physics model and reward-shaped environments used for offline RL policy training before sim-to-real transfer.
+| File | Role |
+|---|---|
+| `aigp/attitude_control.py` | The controller. `AttitudeSetpointController`: pos+vel **PD** -> desired accel (horizontal-tilt clamped) -> desired attitude -> sim send-frame remap. Mass-agnostic thrust via probed hover / k_a. |
+| `aigp/control_math.py` | Attitude and thrust math: `desired_attitude`, thrust map, attitude-error quaternion, collective accel. |
+| `aigp/guidance.py` | Guidance patterns (orbit / approach / waypoint). |
+| `aigp/io_layer.py`, `aigp/state.py`, `aigp/protocol.py`, `aigp/commander.py` | Live-sim IO: MAVLink + vision receivers, thread-safe state store, chunked-JPEG vision decode, command sender. |
+| `fit_model.py` | `qfix` (quaternion order fix) and model helpers. |
+| `vq_waypoint2.py` | The waypoint demo (see above). |
 
-## Target Platform
+Other fliers included for reference: `vq_track_wp.py`, `vq_gate_wp.py`,
+`goto.py`, `traj_track.py`, `race_cruise.py`, `fly_gate3.py`.
 
-- **Sim platform:** DCL (Drone Champions League) simulator
-- **Onboard compute:** NVIDIA Jetson Orin NX 16GB
-- **Sensors:** Single monocular camera + IMU
+## Requirements
+
+```
+pip install pymavlink numpy opencv-python
+```
+
+Tests: `pytest tests/test_aigp/`.
