@@ -1,5 +1,5 @@
 import numpy as np
-from scripts.sysid.ring_loader import load_npz, RunSeries
+from scripts.sysid.ring_loader import load_npz, RunSeries, bin_coverage
 
 
 def _quat_from_tilt(tilt_deg):
@@ -23,3 +23,17 @@ def test_load_npz_maps_fields_and_computes_tilt(tmp_path):
     assert rs.cmd.shape == (T, 3) and rs.omega.shape == (T, 3)
     assert abs(rs.dt - (t[1] - t[0])) < 1e-9
     assert abs(rs.tilt_deg[-1] - 50.0) < 0.5          # tilt recovered from quat
+
+
+def test_bin_coverage_counts_cells():
+    T = 50
+    rs = RunSeries(dt=1/720,
+                   cmd=np.column_stack([np.full(T, 3.0), np.zeros(T), np.zeros(T)]),
+                   omega=np.zeros((T, 3)),
+                   tilt_deg=np.full(T, 47.0))
+    tilt_edges = np.array([0, 45, 60, 90])
+    amp_edges = np.array([0, 2, 4, 10])
+    cov = bin_coverage([rs], axis=0, tilt_edges=tilt_edges, amp_edges=amp_edges)
+    assert cov.shape == (3, 3)
+    assert cov[1, 1] == T          # tilt in [45,60), |cmd|=3 in [2,4)
+    assert cov.sum() == T
