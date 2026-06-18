@@ -38,18 +38,21 @@ def fit_axis(runs, axis, dt, x0=None) -> RateLoopParams:
         for x0_try in x0_candidates:
             try:
                 sol_try = least_squares(_residual, x0_try, bounds=(lb, ub),
-                                        args=(runs, axis, dt), method="trf", max_nfev=400)
+                                        args=(runs, axis, dt), method="trf", max_nfev=600)
                 if sol_try.cost < best_cost:
                     best_cost = sol_try.cost
                     best_sol = sol_try
-            except Exception:
+            except ValueError:
                 pass
-        sol = best_sol if best_sol is not None else \
-              least_squares(_residual, [1.0, 25.0, 0.3, 0.0], bounds=(lb, ub),
-                          args=(runs, axis, dt), method="trf", max_nfev=400)
+        if best_sol is not None:
+            sol = best_sol
+        else:
+            # All candidates raised ValueError; fall back to a single default solve.
+            sol = least_squares(_residual, [1.0, 25.0, 0.3, 0.0], bounds=(lb, ub),
+                                args=(runs, axis, dt), method="trf", max_nfev=600)
     else:
         sol = least_squares(_residual, x0, bounds=(lb, ub), args=(runs, axis, dt),
-                            method="trf", max_nfev=1000)
+                            method="trf", max_nfev=600)
 
     k, wn, z0, z1 = sol.x
     return RateLoopParams(k=float(k), wn=float(wn), zeta0=float(z0), zeta1=float(z1))
