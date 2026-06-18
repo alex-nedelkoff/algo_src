@@ -28,10 +28,11 @@ def run_id(npz_paths, keymap, out_dir, tilt_edges, amp_edges, holdout_frac=0.3) 
         cov[AXES[ax]] = bin_coverage(runs, ax, tilt_edges, amp_edges).tolist()
     max_tilts = [env[a]["max_tilt_deg"] for a in AXES]
     verdict = "go" if min(max_tilts) >= 55.0 else ("partial" if max(max_tilts) >= 45.0 else "no-go")
-    (open(os.path.join(out_dir, "vq_model_hightilt.json"), "w")
-        .write(json.dumps({"rate_loop": params, "dt": dt}, indent=2)))
+    with open(os.path.join(out_dir, "vq_model_hightilt.json"), "w") as f:
+        f.write(json.dumps({"rate_loop": params, "dt": dt}, indent=2))
     env_out = {a: {**env[a], "r2_by_tilt_bin": r2s[a], "coverage": cov[a]} for a in AXES}
-    open(os.path.join(out_dir, "ring_envelope.json"), "w").write(json.dumps(env_out, indent=2))
+    with open(os.path.join(out_dir, "ring_envelope.json"), "w") as f:
+        f.write(json.dumps(env_out, indent=2))
     report = {"verdict": verdict, "max_tilt_deg": dict(zip(AXES, max_tilts)),
               "tilt_edges": list(tilt_edges), "r2": r2s, "n_runs": len(runs)}
     md = [f"# Ring sysID report\n", f"**Verdict: {verdict}**  (per-axis max valid tilt: "
@@ -41,7 +42,8 @@ def run_id(npz_paths, keymap, out_dir, tilt_edges, amp_edges, holdout_frac=0.3) 
           "|" + "---|" * (len(tilt_edges)) ]
     for a in AXES:
         md.append(f"| {a} | " + " | ".join("—" if v is None else f"{v:.2f}" for v in r2s[a]) + " |")
-    open(os.path.join(out_dir, "ring_report.md"), "w").write("\n".join(md) + "\n")
+    with open(os.path.join(out_dir, "ring_report.md"), "w") as f:
+        f.write("\n".join(md) + "\n")
     return report
 
 
