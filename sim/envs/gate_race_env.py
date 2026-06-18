@@ -316,6 +316,7 @@ class GateRaceEnv(gym.Env):
         start_pos: NDArray[np.float64] | None = None,
         privileged_obs: bool = False,
         dr_width: float = 0.0,
+        lean_obs: bool = False,
     ) -> None:
         super().__init__()
         self._privileged_obs = privileged_obs
@@ -329,6 +330,10 @@ class GateRaceEnv(gym.Env):
         self._n_lookahead_gates = n_lookahead_gates
         self._n_action_history = n_action_history
         self._obs_dim = _compute_obs_dim(n_lookahead_gates, n_action_history)
+        self._lean_obs = lean_obs
+        # LEAN obs (--leanobs): expose informative subset -> [0:12] pos/vel/att/omega vs gate
+        # + first-lookahead relpos/turn [20:24] + action history; drop motor/w-h/arena/prev-action.
+        self._out_obs_dim = (16 + 4 * n_action_history) if lean_obs else self._obs_dim
 
         self.n_envs = n_envs
         self.dt = dt
@@ -415,7 +420,7 @@ class GateRaceEnv(gym.Env):
                           else 0)
 
         # Gymnasium spaces — normalized action space [-1, 1] per MonoRace paper
-        obs_high = np.full(self._obs_dim, np.inf, dtype=np.float32)
+        obs_high = np.full(self._out_obs_dim, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
         if self._privileged_obs:   # actor sees "policy"; critic also sees "privileged" (true per-env params)
             self.observation_space = spaces.Dict({
@@ -1262,6 +1267,11 @@ class GateRaceEnv(gym.Env):
                     self._action_history[i].flatten()
                 )
 
+        if self._lean_obs:
+            hist_off = 20 + 6 * self._n_lookahead_gates + 1
+            obs = np.concatenate(
+                [obs[:, 0:12], obs[:, 20:24],
+                 obs[:, hist_off:hist_off + 4 * self._n_action_history]], axis=1)
         return obs
 
     def _compute_obs(self) -> NDArray[np.float32]:
