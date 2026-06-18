@@ -24,8 +24,18 @@ G = 9.81
 MAXW = argf("--maxw", 6.0); THRMAX = argf("--thrmax", 0.6); MAX_T = argf("--maxt", 70.0)
 SLEW = argf("--slew", 40.0); HIST = int(argf("--hist", 8)); GATE_R = argf("--gater", 2.0)
 ZVD = "--zvd" in sys.argv   # EXP-20b ring killer on the policy rate cmds; MUST match training --zvd
-ZVD_AMP = np.array([0.371, 0.476, 0.153]); ZVD_DELAY = (7, 7, 4); _zvd_buf = np.zeros((15, 3))
-ABORT_TILT = 100.0; LEVEL_T = 2.0; GRACE = LEVEL_T + 1.5; MOTOR_NORM = 0.5114015
+_zd = int(argf("--zvddelay", 3))   # 3 = 11Hz notch (old hardcoded 7 was mistuned to ~5Hz). MUST match training.
+ZVD_AMP = np.array([0.371, 0.476, 0.153]); ZVD_DELAY = (_zd, _zd, _zd); _zvd_buf = np.zeros((4*_zd + 2, 3))
+LATFLIP = "--latflip" in sys.argv   # DEFAULT OFF (06-16 live A/B with the retrained policy): roll output = +u[1] matches the
+# TEACHER's output convention (OSGN=[1,1,-1]: roll +u1, pitch +u2, yaw -u3). The teacher's latflip lives INSIDE ff_one (negates
+# accel a[1]) and is NOT an output flip -> the policy, which outputs rates directly, must NOT flip roll. --latflip (roll = -u[1])
+# caused an instant roll-rate runaway to -6 rad/s (tilt 0->120 in 0.5s); --nolatflip (default) flies w/o the instant flip.
+OBSFLIP = "--obsflip" in sys.argv   # alternative single flip: negate the gate-relative cross-track OBS (o[1] pos, o[4] vel)
+LEANOBS = "--leanobs" in sys.argv   # 32-dim lean obs subset (match training --leanobs)
+EARLYSTART = "--noearly" not in sys.argv   # COR-127 obj1b (DEFAULT ON): fly the policy DURING the 3-count countdown (don't idle until race-live) so the
+# drone is already moving when the countdown stops. Reclaims ~3.3s we were wasting idle (35.1->30.2s, judge 6/6). Gated on the drone being at the
+# FRESH spawn (near gate0, settled) so we don't fly off the stale post-finish state (run F 0/6). gate0 isn't counted until live. --noearly to disable.
+ABORT_TILT = 100.0; LEVEL_T = argf("--levelt", 0.0); GRACE = LEVEL_T + 1.5; MOTOR_NORM = 0.5114015   # COR-127 obj1: was 2.0 -> 0.0. Race clock runs during the level-hold; drone spawns at-rest/level/hist=0 (= training reset) so the policy takes over immediately. Sweep 2.0/0.5/0.0 -> judge 35.12/33.88/33.37s, all clean 6/6. The 3.8s reset->live is the sim's countdown (off-clock).
 vqm = json.load(open("sysid/vq_model.json")); F0 = vqm["thrust"]["f0"]; DF = vqm["thrust"]["df_dthr"]
 r = json.load(open("sysid/sim_response.json")); RG = np.array([r["rate_gain_axes"]["roll"], r["rate_gain_axes"]["pitch"], r["rate_gain_axes"]["yaw"]])
 IDLE = mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
@@ -40,7 +50,7 @@ def policy(obs):
 
 def qfix(q): return np.array([q[1], q[2], q[3], q[0]])
 B = np.array([1.0, -1.0, -1.0]); bq = np.array([0.0, 1.0, 0.0, 0.0]); bqc = np.array([0.0, -1.0, 0.0, 0.0])
-MIRROR = "--nomirror" not in sys.argv   # ADAPTER FIX (default ON): to_enu inverted lateral-y vs the training env (the "world-y mirror")
+MIRROR = "--mirror" in sys.argv   # DEFAULT OFF (proven BROKEN 0/6 x5 on teacher 06-16; latflip is the fix). to_enu inverted lateral-y vs the training env (the "world-y mirror")
 # -> the policy's lateral sign was inverted live -> lateral runaway/crab. Flip drone pos/vel y + gate y so deploy frame matches train.
 MIRRORATT = "--mirroratt" in sys.argv   # COMPLETE the mirror: also reflect the ENU attitude quat [w,x,y,z]->[w,-x,y,-z] (flips world
 # roll + yaw to match the mirrored pos/vel; pitch invariant; body omega untouched = body frame). Plain MIRROR flips pos/vel only ->
@@ -65,21 +75,34 @@ print("connecting...", flush=True); assert m.wait_heartbeat(10), "NO HEARTBEAT"
 m.start(); VisionIO(s).start(); boot = int(time.time()*1000); c = Commander(m.conn, boot)
 def idle():
     m.conn.mav.set_attitude_target_send(int(time.time()*1000)-boot, m.conn.target_system, m.conn.target_component, IDLE, [1.0,0,0,0], 0,0,0,0)
+T_RESET = T_LIVE = T_SETTLED = V_LIVE = RACE_START = None
 def fresh_start():
+    global T_RESET, T_LIVE, T_SETTLED, V_LIVE, RACE_START
     t = time.time()
     while time.time()-t < 1.0: idle(); time.sleep(0.02)
-    prev = s.get_race(); pb = prev["boot_ms"] if prev else None; c.sim_reset(); t = time.time()
+    prev = s.get_race(); pb = prev["boot_ms"] if prev else None; c.sim_reset(); t = time.time(); T_RESET = time.time()
     while time.time()-t < 30:
         idle(); r2 = s.get_race()
         if r2 and (not r2["race_live"] or (pb and r2["boot_ms"] < pb)): break
         time.sleep(0.02)
     while time.time()-t < 30:
         idle(); d = s.get_drone()
-        if s.get_race_live() and d is not None and np.linalg.norm(d.vel_ned) < 3.0: return True
+        if EARLYSTART:   # fly during the countdown, but only once the drone has TELEPORTED to the fresh spawn (near gate0, settled)
+            _g = s.get_gates()                                                   # -- NOT the stale post-finish state (~136m from gate0), which flew us off course (run F 0/6)
+            if d is not None and _g and np.linalg.norm(d.vel_ned) < 3.0 and np.linalg.norm(np.array(_g[0].pos_ned) - d.pos_ned) < 50.0:
+                T_SETTLED = time.time(); return True
+        elif s.get_race_live() and d is not None:
+            if T_LIVE is None:
+                rr = s.get_race(); T_LIVE = time.time(); V_LIVE = float(np.linalg.norm(d.vel_ned)); RACE_START = (rr.get("race_start_ms") if rr else None)
+            if np.linalg.norm(d.vel_ned) < 3.0: T_SETTLED = time.time(); return True
         time.sleep(0.02)
     return False
 
 print("fresh_start...", flush=True); assert fresh_start(), "not live"
+if T_LIVE is not None:
+    print(f"[STARTUP] reset->live={T_LIVE-T_RESET:.2f}s  live->settled={T_SETTLED-T_LIVE:.2f}s (vel@live={V_LIVE:.1f})  race_start_ms={RACE_START}", flush=True)
+else:
+    print(f"[STARTUP] EARLYSTART -- flying during countdown (race not live yet at handoff); reset->ready={T_SETTLED-T_RESET:.2f}s", flush=True)
 gates_obj = None; t = time.time()
 while time.time()-t < 5:
     gates_obj = s.get_gates()
@@ -96,6 +119,8 @@ for i in range(NG):
     d = gates[i] - prev; gyaws[i] = np.arctan2(d[1], d[0]); prev = gates[i]
 ARENA = (float(np.abs(gates[:, :2]).max()) + 20.0) / 10.0     # 17.92, mirror training arena_bounds/10
 c.arm()
+if T_LIVE is not None:
+    print(f"[STARTUP] live->arm={time.time()-T_LIVE:.2f}s  +LEVEL_T={LEVEL_T:.2f}s  => dead-time on race clock ~={time.time()-T_LIVE+LEVEL_T:.2f}s", flush=True)
 print(f"spawn={spawn.round(1)} gate0={gates[0].round(1)} gate5={gates[-1].round(1)} NG={NG} arena_obs={ARENA:.2f} policy={POLICY}", flush=True)
 
 def build_obs(pe, ve, qe, ome, gi, prev_act, hist):
@@ -103,18 +128,21 @@ def build_obs(pe, ve, qe, ome, gi, prev_act, hist):
     o = np.zeros(20 + 6 + 1 + 4*HIST, dtype=np.float32)
     o[0:2] = rotxy((pe-gate)[:2], gy); o[2] = pe[2]-gate[2]
     o[3:5] = rotxy(ve[:2], gy); o[5] = ve[2]
+    if OBSFLIP: o[1] *= -1.0; o[4] *= -1.0   # negate cross-track (lateral) pos+vel — policy lateral-sign A/B option
     roll, pitch, dyaw = quat_to_euler(qe); o[6] = roll; o[7] = pitch; o[8] = wrap(dyaw - gy)
     o[9:12] = ome; o[12:16] = MOTOR_NORM; o[16:20] = prev_act
     dg = gates[gi1] - gate
     o[20:22] = rotxy(dg[:2], gy); o[22] = dg[2]; o[23] = wrap(gyaws[gi1]-gy); o[24] = 2.0; o[25] = 2.0
     o[26] = ARENA
     if HIST > 0: o[27:27+4*HIST] = hist.flatten()
+    if LEANOBS: o = np.concatenate([o[0:12], o[20:24], o[27:27+4*HIST]])
     return o
 
 from aigp.recorder import Recorder
 rec = Recorder(s, script="vq_deploy_policy_real", mode="rate", notes="RL policy on REAL TRACK_INFO course", extra_meta={"cmd_layout": ["wx","wy","wz","thrust"], "policy": POLICY})
 flog = ftm.from_args(sys.argv, RG, run_name="policy_real", store=s)
 t0 = time.time(); gi = 0; last = -1; maxgi = 0; prev_act = np.zeros(4); hist = np.zeros((HIST, 4)); prev_rates = np.zeros(3); t_prev = t0
+judge_gi = 0; n_coll = 0; prev_cseq = s.get_collision()[1]   # JUDGE readout: real active_gate_index + collisions
 while time.time()-t0 < MAX_T and gi < NG:
     ds = s.get_drone()
     if ds is None: time.sleep(0.01); continue
@@ -129,7 +157,8 @@ while time.time()-t0 < MAX_T and gi < NG:
     else:
         obs = build_obs(pe, ve, qe, ome, gi, prev_act, hist)
         u = np.clip(policy(obs), -1, 1)
-        thr = float((u[0]+1)/2*THRMAX); rates = np.array([u[1], u[2], -u[3]]) * MAXW   # pitch un-flipped (06-16 PITCH-FIX: model pitch sign corrected to live)
+        thr = float((u[0]+1)/2*THRMAX)
+        rates = np.array([(-u[1] if LATFLIP else u[1]), u[2], -u[3]]) * MAXW   # pitch un-flipped (PITCH-FIX); --latflip negates roll (lateral-sign)
         if ZVD:   # ring killer BEFORE slew (matches env vq_zvd->vq_slew order)
             _zvd_buf = np.roll(_zvd_buf, 1, axis=0); _zvd_buf[0] = rates
             rates = np.array([ZVD_AMP[0]*_zvd_buf[0, ax] + ZVD_AMP[1]*_zvd_buf[ZVD_DELAY[ax], ax]
@@ -142,9 +171,22 @@ while time.time()-t0 < MAX_T and gi < NG:
         hist[1:] = hist[:-1]; hist[0] = u; prev_act = u
     Rt = quat_to_R(qfix(ds.quat_wxyz)); tilt = float(np.degrees(np.arccos(np.clip(Rt[2, 2], -1, 1))))
     vmag = float(np.linalg.norm(ds.vel_ned)); dist = float(np.linalg.norm(gates[gi] - pe))
-    if dist < GATE_R:
+    if T_LIVE is None and s.get_race_live():   # timer just started -- log where we are (must be BEFORE gate0, else judge desync)
+        T_LIVE = time.time(); print(f"[EARLYSTART] TIMER START at flight t={t:.2f}s  speed={vmag:.1f}  dist_gate0={float(np.linalg.norm(gates[0]-pe)):.1f}  gi={gi}", flush=True)
+    if dist < GATE_R and (gi > 0 or s.get_race_live()):   # don't count gate0 until the timer is live (EARLYSTART flies during the countdown)
         gi += 1; maxgi = max(maxgi, gi); print(f"  >>> GATE {gi}/{NG} t={t:.1f} v={vmag:.1f} tilt={tilt:.0f}", flush=True)
     if flog is not None: flog.push(t, ds, {"thr": thr}, cruise=3.0, running=s.get_race_live(), armed=True)
+    try:
+        _race = s.get_race()
+        if _race is not None:
+            _agi = int(_race.get("active_gate_index", 0)); _lgt = _race.get("last_gate_time", -1)
+            if _agi > judge_gi and _lgt is not None and _lgt > 0:
+                judge_gi = _agi; print(f"  >>> JUDGE GATE {judge_gi} t={t:.1f}", flush=True)
+        _cobj, _cseq = s.get_collision()
+        if _cseq > prev_cseq:
+            n_coll += _cseq - prev_cseq; prev_cseq = _cseq
+    except Exception:
+        pass
     if tilt > ABORT_TILT and t > GRACE:
         print(f"  ABORT true_tilt={tilt:.0f} t={t:.1f} gate {gi}/{NG}", flush=True); break
     if int(t*2) != last:
@@ -154,3 +196,4 @@ idle(); rec.close()
 if flog is not None: flog.close()
 verdict = "POLICY FLIES VQ1" if maxgi >= NG*0.7 else ("partial" if maxgi >= 2 else "FAILED")
 print(f"DONE: reached {maxgi}/{NG} gates  z_final={pe[2]:.1f}  [{verdict}]", flush=True)
+print(f"JUDGE: reached {judge_gi}/{NG} gates  collisions={n_coll}", flush=True)
