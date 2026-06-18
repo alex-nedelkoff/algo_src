@@ -36,7 +36,12 @@ def propagate(cmd: np.ndarray, dt: float, p: RateLoopParams) -> np.ndarray:
 
 
 def propagate_nl(cmd: np.ndarray, dt: float, p: RateLoopParams) -> np.ndarray:
-    """Quasi-LPV: damping varies with the current rate magnitude (the nonlinear ring)."""
+    """Quasi-LPV: damping varies with the current rate magnitude (the nonlinear ring).
+
+    Note: the amplitude-scheduling variable is the internal state x[0,0] (which equals the
+    output rate only when gain k≈1; in general ≈ omega/k), NOT the output omega. Downstream
+    consumers (e.g., Phase-1 CPC) must replay through this exact model rather than
+    re-deriving the damping schedule on the true output rate."""
     cmd = np.asarray(cmd, float)
     x = np.zeros((2, 1))
     out = np.empty(len(cmd))

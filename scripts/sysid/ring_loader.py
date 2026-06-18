@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 
-# Confirmed against a real vq_data recording in Step 0. Update if the schema differs.
+# BEST-GUESS schema -- NOT yet confirmed against a real vq_data file (Step 0 found none). Pass an explicit keymap, or confirm these keys against a real recording before relying on the defaults.
 DEFAULT_KEYMAP = {"t": "t", "cmd": "wcmd", "omega": "omega", "quat": "quat"}
 
 
