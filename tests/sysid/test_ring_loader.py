@@ -25,6 +25,22 @@ def test_load_npz_maps_fields_and_computes_tilt(tmp_path):
     assert abs(rs.tilt_deg[-1] - 50.0) < 0.5          # tilt recovered from quat
 
 
+def test_load_real_schema_dir_and_4wide_cmd(tmp_path):
+    # real recorder layout: <run_dir>/data.npz with t_wall, cmd (T,4)=[wx,wy,wz,thrust], omega (T,3), quat (T,4)
+    T = 80
+    t_wall = np.linspace(0.0, 1.1, T)
+    cmd4 = np.random.default_rng(1).standard_normal((T, 4))   # 4-wide incl thrust
+    omega = cmd4[:, :3] * 0.8
+    quat = _quat_from_tilt(np.linspace(0, 40, T))
+    run_dir = tmp_path / "20260618T185812_vq_ringid"
+    run_dir.mkdir()
+    np.savez(run_dir / "data.npz", t_wall=t_wall, cmd=cmd4, omega=omega, quat=quat)
+    rs = load_npz(str(run_dir))                                # pass the DIR; default keymap
+    assert rs.cmd.shape == (T, 3) and rs.omega.shape == (T, 3)  # cmd sliced 4->3
+    assert np.allclose(rs.cmd, cmd4[:, :3])
+    assert abs(rs.tilt_deg[-1] - 40.0) < 0.5
+
+
 def test_bin_coverage_counts_cells():
     T = 50
     rs = RunSeries(dt=1/720,

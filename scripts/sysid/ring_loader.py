@@ -3,10 +3,13 @@ Pure numpy. The npz key mapping is passed explicitly (keymap) so the real record
 schema is supplied, not guessed; DEFAULT_KEYMAP is the confirmed current schema."""
 from __future__ import annotations
 from dataclasses import dataclass
+import os
 import numpy as np
 
-# BEST-GUESS schema -- NOT yet confirmed against a real vq_data file (Step 0 found none). Pass an explicit keymap, or confirm these keys against a real recording before relying on the defaults.
-DEFAULT_KEYMAP = {"t": "t", "cmd": "wcmd", "omega": "omega", "quat": "quat"}
+# CONFIRMED against a real recording (vq_ringid, 2026-06-18): the recorder writes <run_dir>/data.npz with
+# t_wall (s), cmd (T,4)=[wx,wy,wz,thrust], omega (T,3) measured rates, gyro (T,3) raw IMU, quat (T,4) wxyz.
+# load_npz takes the run DIR or the data.npz, and slices cmd to its first 3 cols (the rate command).
+DEFAULT_KEYMAP = {"t": "t_wall", "cmd": "cmd", "omega": "omega", "quat": "quat"}  # set "omega":"gyro" for the rawest measured rate
 
 
 @dataclass
@@ -26,10 +29,13 @@ def _tilt_deg(quat_wxyz: np.ndarray) -> np.ndarray:
 
 def load_npz(path: str, keymap: dict = None) -> RunSeries:
     km = keymap or DEFAULT_KEYMAP
+    if os.path.isdir(path):                       # recorder writes <run_dir>/data.npz
+        path = os.path.join(path, "data.npz")
     d = np.load(path, allow_pickle=True)
     t = np.asarray(d[km["t"]], float).ravel()
-    cmd = np.asarray(d[km["cmd"]], float).reshape(len(t), 3)
-    omega = np.asarray(d[km["omega"]], float).reshape(len(t), 3)
+    # cmd may be (T,4) = [wx,wy,wz,thrust]; omega (T,3). Take the first 3 cols (the body rates).
+    cmd = np.asarray(d[km["cmd"]], float).reshape(len(t), -1)[:, :3]
+    omega = np.asarray(d[km["omega"]], float).reshape(len(t), -1)[:, :3]
     quat = np.asarray(d[km["quat"]], float).reshape(len(t), 4)
     dt = float(np.median(np.diff(t)))
     return RunSeries(dt=dt, cmd=cmd, omega=omega, tilt_deg=_tilt_deg(quat))
