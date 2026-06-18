@@ -33,3 +33,21 @@ def propagate(cmd: np.ndarray, dt: float, p: RateLoopParams) -> np.ndarray:
         out[i] = (Cd @ x + Dd * u).item()
         x = Ad @ x + Bd * u
     return out
+
+
+def propagate_nl(cmd: np.ndarray, dt: float, p: RateLoopParams) -> np.ndarray:
+    """Quasi-LPV: damping varies with the current rate magnitude (the nonlinear ring)."""
+    cmd = np.asarray(cmd, float)
+    x = np.zeros((2, 1))
+    out = np.empty(len(cmd))
+    zeta_cur = None
+    Ad = Bd = Cd = Dd = None
+    for i, u in enumerate(cmd):
+        omega = float(x[0, 0])
+        zeta = float(np.clip(p.zeta0 + p.zeta1 * abs(omega), 0.02, 2.0))
+        if zeta_cur is None or abs(zeta - zeta_cur) > 0.005:
+            Ad, Bd, Cd, Dd, _ = cont2discrete(_ABCD(p.wn, zeta, p.k), dt, method="zoh")
+            zeta_cur = zeta
+        out[i] = (Cd @ x + Dd * u).item()
+        x = Ad @ x + Bd * u
+    return out
