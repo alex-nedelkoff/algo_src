@@ -84,3 +84,28 @@ def settle_accel(state, target, gains):
     target = np.asarray(target, float)
     err = (target - state.pos_ned)[:2]
     return np.clip(gains.KP_CT * err, -1.0, 1.0) - gains.KD_CT * state.vel_ned[:2]
+
+
+def attitude_command(state, a2, z_sp, yaw_ref, plant, gains):
+    """Inner law (pure goto.py:cmd): horizontal accel -> tilt-clamp -> desired attitude ->
+    normalized body-rate command (clipped) + thrust. Yaw rate steers toward yaw_ref.
+    Returns (rate_cmd_norm, thrust, tilt_deg, dbg)."""
+    hover, k_a, rg = plant
+    a = np.zeros(3)
+    a[:2] = np.asarray(a2, float)
+    tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
+    n = float(np.linalg.norm(a[:2]))
+    if n > tilt_max_acc:
+        a[:2] = a[:2] / n * tilt_max_acc
+    a[2] = gains.KP_Z * (z_sp - state.pos_ned[2]) + gains.KD_Z * (0.0 - state.vel_ned[2])
+
+    R = quat_to_R(state.quat_wxyz)
+    yaw_cur = float(np.arctan2(R[1, 0], R[0, 0]))
+    q_des = mat_to_quat(desired_attitude(a, yaw_cur))
+    w_des = gains.KP_ATT * attitude_error_quat(state.quat_wxyz, q_des)
+    w_des[2] = (gains.KP_YAW * ((yaw_ref - yaw_cur + np.pi) % (2 * np.pi) - np.pi)
+                - gains.KD_YAW * float(state.omega[2]))
+    thr = accel_to_thrust_norm(collective_accel(a, state.quat_wxyz), hover, k_a)
+    rate_cmd_norm = np.clip(w_des / rg, -gains.WMAX, gains.WMAX)
+    tilt = float(np.degrees(np.arccos(max(-1.0, min(1.0, R[2, 2])))))
+    return rate_cmd_norm, thr, tilt, {"a": a, "w_des": w_des, "q_des": q_des, "thr": thr}
