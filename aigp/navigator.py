@@ -167,25 +167,29 @@ class WaypointNavigator:
     def _yaw_ref(self, yaw_mode, target):
         """Desired NOSE (body-x) heading. Camera is -body_x, so camera-pointing modes add pi.
         Modes: 'hold' (fixed origin heading, strafe), 'face' (nose at target),
-        'lookat' (camera at self._look_point, else target), 'course' (camera along travel)."""
-        if yaw_mode == "hold":
-            return self._origin_yaw if self._origin_yaw is not None else 0.0
+        'lookat' (camera at self._look_point, else target), 'course' (camera along travel).
+        When the relevant direction vector is tiny (e.g. sitting on the target), the bearing is
+        undefined -> HOLD the current heading instead of thrashing on noise."""
         ds = self.store.get_drone()
         pos = ds.pos_ned if ds is not None else (self._origin_pos
                                                  if self._origin_pos is not None else np.zeros(3))
+        cur_yaw = (float(np.arctan2(*(quat_to_R(ds.quat_wxyz)[[1, 0], 0])))
+                   if ds is not None else (self._origin_yaw or 0.0))
+        if yaw_mode == "hold":
+            return self._origin_yaw if self._origin_yaw is not None else 0.0
         if yaw_mode == "face":                       # point the NOSE at the target
             rel = np.asarray(target, float) - pos
-            return float(np.arctan2(rel[1], rel[0]))
+            return cur_yaw if np.linalg.norm(rel[:2]) < 1.0 else float(np.arctan2(rel[1], rel[0]))
         if yaw_mode == "lookat":                     # point the CAMERA (-body_x) at a fixed point
             pt = self._look_point if self._look_point is not None else np.asarray(target, float)
             rel = np.asarray(pt, float) - pos
-            return float(np.arctan2(rel[1], rel[0]) + np.pi)
+            return cur_yaw if np.linalg.norm(rel[:2]) < 1.0 else float(np.arctan2(rel[1], rel[0]) + np.pi)
         if yaw_mode == "course":                     # point the CAMERA along horizontal travel
             v = ds.vel_ned[:2] if ds is not None else np.zeros(2)
             if float(np.linalg.norm(v)) > 1.5:       # high threshold: ignore settling/noise velocity
                 return float(np.arctan2(v[1], v[0]) + np.pi)
             rel = np.asarray(target, float) - pos    # too slow for a clean heading -> aim at target
-            return float(np.arctan2(rel[1], rel[0]) + np.pi)
+            return cur_yaw if np.linalg.norm(rel[:2]) < 1.0 else float(np.arctan2(rel[1], rel[0]) + np.pi)
         raise ValueError(f"yaw must be 'hold'|'face'|'lookat'|'course', got {yaw_mode!r}")
 
     def _current_pos(self):
@@ -203,6 +207,7 @@ class WaypointNavigator:
         if look_point is not None:
             self._look_point = self._resolve(look_point, frame)
         target = self._resolve(wp, frame)
+        self._align_yaw(target, yaw, self._origin_pos)   # turn-in-place to face the leg first
         return self._fly_leg(target, self._origin_pos, yaw)
 
     def follow(self, wps, *, frame="world", yaw="hold", settle=True, look_point=None):
@@ -217,6 +222,7 @@ class WaypointNavigator:
             self.flog.set_path(np.vstack([self._current_pos()] + targets))
         leg_start = self._origin_pos.copy()
         for i, target in enumerate(targets):
+            self._align_yaw(target, yaw, leg_start)   # turn-in-place to face the leg (nose-first)
             res = self._fly_leg(target, leg_start, yaw)
             print(f"   {res.upper()} wp{i}", flush=True)
             if res != "reached":
@@ -247,6 +253,38 @@ class WaypointNavigator:
                                    running=self.store.get_race_live(), armed=True)
                 if tilt > self.gains.ABORT_TILT_DEG:
                     print(f"  ABORT settle tilt={tilt:.0f}", flush=True)
+                    return
+            time.sleep(self.gains.LOOP_DT)
+
+    def _align_yaw(self, target, yaw_mode, pos_hold, tol_deg=15.0, t_max=4.0):
+        """Travel-facing modes ('face'/'course'/'lookat'-at-target): rotate IN PLACE at pos_hold
+        until the heading faces the leg direction, BEFORE translating — so the drone flies each
+        leg nose-first (no strafe = no weathervane runaway). No-op for 'hold' and fixed-point
+        'lookat' (those intentionally hold/strafe). Station-keeps at pos_hold while turning."""
+        if yaw_mode == "hold":
+            return
+        if yaw_mode == "lookat" and self._look_point is not None:
+            return
+        pos_hold = np.asarray(pos_hold, float)
+        t0 = time.time()
+        while time.time() - t0 < t_max:
+            ds = self.store.get_drone()
+            if ds is not None:
+                yaw_ref = self._yaw_ref(yaw_mode, target)
+                R = quat_to_R(ds.quat_wxyz)
+                yaw_cur = float(np.arctan2(R[1, 0], R[0, 0]))
+                err = (yaw_ref - yaw_cur + np.pi) % (2 * np.pi) - np.pi
+                a2 = settle_accel(ds, pos_hold, self.gains)
+                rate, thr, tilt, dbg = attitude_command(ds, a2, float(pos_hold[2]),
+                                                         yaw_ref, self.plant, self.gains)
+                self.commander.send_attitude_target(rate, thr)
+                if self.flog is not None:
+                    self.flog.push(time.time() - self._t0, ds, dbg, nearest=pos_hold, cruise=0.0,
+                                   running=self.store.get_race_live(), armed=True)
+                if tilt > self.gains.ABORT_TILT_DEG:
+                    print(f"  ABORT align tilt={tilt:.0f}", flush=True)
+                    return
+                if abs(err) < np.radians(tol_deg) and float(np.linalg.norm(ds.vel_ned[:2])) < 0.6:
                     return
             time.sleep(self.gains.LOOP_DT)
 
