@@ -16,6 +16,7 @@ import numpy as np
 from aigp.control_math import (accel_to_thrust_norm, attitude_error_quat,
                                collective_accel, desired_attitude, mat_to_quat)
 from aigp.geometry import quat_to_R
+from gate_traj import GateTrajectory
 
 G = 9.81
 
@@ -58,6 +59,9 @@ class NavGains:
     SETTLE_V: float = 0.4
     LOOP_DT: float = 0.004
     KD_ATT: float = 0.3
+    SPLINE_AL_MAX: float = 4.0
+    MARGIN: float = 0.6
+    C_DRAG: float = 0.057
 
 
 def load_plant(path: str = "sysid/sim_response.json"):
@@ -163,6 +167,22 @@ def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=F
     return rate, thr, tilt, {"a": a, "w_des": w, "q_des": q_des, "thr": thr}
 
 
+def _spline_accel(state, ref, gains):
+    """traj_track's cross/along law to the spline reference. Returns (a2 horiz, travel unit)."""
+    tang = np.asarray(ref["tang"], float)[:2]
+    travel = tang / max(float(np.linalg.norm(tang)), 1e-9)
+    lat_hat = np.array([-travel[1], travel[0]])
+    d = (state.pos_ned - np.asarray(ref["pos"], float))[:2]
+    v_al = float(state.vel_ned[:2] @ travel)
+    v_ct = float(state.vel_ned[:2] @ lat_hat)
+    p_ct = float(d @ lat_hat)
+    tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
+    a_al = float(np.clip(gains.KD_AL * (ref["v"] - v_al), -4.0, gains.SPLINE_AL_MAX))
+    a_ct_max = max(0.0, tilt_max_acc * gains.MARGIN - gains.C_DRAG * v_al * v_al)
+    a_ct = float(np.clip(-gains.KP_CT * p_ct - gains.KD_CT * v_ct, -a_ct_max, a_ct_max))
+    return a_al * travel + a_ct * lat_hat, travel
+
+
 class WaypointNavigator:
     """Blocking waypoint navigation over the proven attitude-rate control. Caller owns lifecycle
     (sim reset + arm) and passes a live store + commander. See module docstring."""
@@ -179,6 +199,7 @@ class WaypointNavigator:
         self._t0 = None
         self._s_cam = 1.0
         self._yaw0_t = 0.0
+        self._tf_ymirror = False
 
     # --- pure helpers (IO-free) ---
     def set_origin(self, pos_ned=None, yaw=None):
@@ -268,7 +289,8 @@ class WaypointNavigator:
         return self._origin_pos.copy() if self._origin_pos is not None else np.zeros(3)
 
     # --- blocking flight loop (live sim; not unit-tested) ---
-    def goto(self, wp, *, frame="world", yaw="hold", look_point=None):
+    def goto(self, wp, *, yaw="course", look_point=None, v_cruise=2.5,
+             engine="spline", frame="body"):
         if self._origin_pos is None:
             self.set_origin()
         if self._t0 is None:
@@ -276,10 +298,14 @@ class WaypointNavigator:
         if look_point is not None:
             self._look_point = self._resolve(look_point, frame)
         target = self._resolve(wp, frame)
+        if engine == "spline":
+            return self._follow_spline([target], yaw=yaw, v_cruise=v_cruise)
+        # legs engine
         self._align_yaw(target, yaw, self._origin_pos)   # turn-in-place to face the leg first
         return self._fly_leg(target, self._origin_pos, yaw)
 
-    def follow(self, wps, *, frame="world", yaw="hold", settle=True, look_point=None):
+    def follow(self, wps, *, yaw="course", look_point=None, v_cruise=2.5,
+               engine="spline", frame="body"):
         if self._origin_pos is None:
             self.set_origin()
         if self._t0 is None:
@@ -287,6 +313,12 @@ class WaypointNavigator:
         if look_point is not None:
             self._look_point = self._resolve(look_point, frame)
         targets = [self._resolve(w, frame) for w in wps]
+        if engine == "legs":
+            return self._follow_legs(targets, yaw=yaw, settle=True)
+        return self._follow_spline(targets, yaw=yaw, v_cruise=v_cruise)
+
+    def _follow_legs(self, targets, *, yaw, settle=True):
+        """Original legs engine: aligned yaw + point-to-point fly + settle at each wp."""
         if self.flog is not None:
             self.flog.set_path(np.vstack([self._current_pos()] + targets))
         leg_start = self._origin_pos.copy()
@@ -301,6 +333,54 @@ class WaypointNavigator:
                 self.settle(target, yaw, tangent=leg_tan)
             leg_start = self._current_pos()
         return "reached"
+
+    def _follow_spline(self, targets, *, yaw, v_cruise):
+        g = self.gains
+        gates = np.vstack([self._origin_pos] + [np.asarray(t, float) for t in targets])
+        traj = GateTrajectory(gates, v_cruise=v_cruise, tilt_budget_deg=25.0,
+                              c_drag=g.C_DRAG, margin=g.MARGIN)
+        if self.flog is not None:
+            self.flog.set_path(traj._P)
+        t_run = time.time()
+        last = -1
+        while time.time() - t_run < g.WP_TIMEOUT * max(2, len(targets)):
+            ds = self.store.get_drone()
+            if ds is not None:
+                s_drone = traj.nearest_s(ds.pos_ned)
+                ref = traj.sample(s_drone)
+                a2, travel = _spline_accel(ds, ref, g)
+                if yaw == "course":
+                    rate, thr, tilt, dbg = attitude_command(ds, a2, float(ref["pos"][2]),
+                                                            ref["yaw"], self.plant, g)
+                else:
+                    yref = self._yaw_ref_tf(yaw, ds)
+                    rate, thr, tilt, dbg = attitude_command_tf(ds, a2, float(ref["pos"][2]),
+                                                               yref, self.plant, g, self._s_cam,
+                                                               ymirror=self._tf_ymirror)
+                self.commander.send_attitude_target(rate, thr)
+                if self.flog is not None:
+                    self.flog.push(time.time() - self._t0, ds, dbg, nearest=ref["pos"],
+                                   tangent=travel, cruise=ref["v"],
+                                   running=self.store.get_race_live(), armed=True)
+                if tilt > g.ABORT_TILT_DEG:
+                    print(f"  ABORT tilt={tilt:.0f}", flush=True)
+                    return "abort"
+                if s_drone >= traj.s_max - g.ARRIVE:
+                    print("  REACHED end", flush=True)
+                    return "reached"
+                k = int((time.time() - t_run) / 1.0)
+                if k != last:
+                    last = k
+                    print(f"  s={s_drone:5.1f}/{traj.s_max:.0f} v={float(np.linalg.norm(ds.vel_ned[:2])):4.1f}"
+                          f"/{ref['v']:.1f} tilt={tilt:3.0f}", flush=True)
+            time.sleep(g.LOOP_DT)
+        return "timeout"
+
+    def _yaw_ref_tf(self, yaw, ds):
+        """NOSE heading in the true-cam frame for strafe modes. course handled in the raw path."""
+        if yaw == "fixed":
+            return self._yaw0_t
+        raise NotImplementedError(yaw)   # 'lookat' added in Task 6
 
     def settle(self, target=None, yaw="hold", tangent=None):
         if target is None:

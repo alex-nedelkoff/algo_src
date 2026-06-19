@@ -55,12 +55,15 @@ def fresh_start(s, c, m, boot):
 
 def parse_opts(argv):
     """Pull non-positional flags out of argv, returning (remaining_positionals, opts).
-      --yaw {hold|face|lookat|course}   camera/heading mode (default hold)
+      --yaw {hold|face|lookat|course}   camera/heading mode (default course)
       --lookat X Y Z                    point the camera at (in the same frame as the waypoints)
       --osgn ROLL PITCH YAW             per-axis body-rate sign override (default from NavGains)
       --maxspeed V                      along-track cruise speed cap (m/s)
+      --vcruise V                       spline cruise speed (m/s, default 2.5)
+      --legs                            use point-to-point legs engine instead of spline
     """
-    opts = {"yaw": "hold", "lookat": None, "osgn": None, "maxspeed": None}
+    opts = {"yaw": "course", "lookat": None, "osgn": None, "maxspeed": None,
+            "vcruise": 2.5, "legs": False}
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -72,6 +75,10 @@ def parse_opts(argv):
             opts["osgn"] = [float(argv[i + 1]), float(argv[i + 2]), float(argv[i + 3])]; i += 4
         elif a == "--maxspeed" and i + 1 < len(argv):
             opts["maxspeed"] = float(argv[i + 1]); i += 2
+        elif a == "--vcruise" and i + 1 < len(argv):
+            opts["vcruise"] = float(argv[i + 1]); i += 2
+        elif a == "--legs":
+            opts["legs"] = True; i += 1
         else:
             out.append(a); i += 1
     return out, opts
@@ -114,7 +121,8 @@ def main():
         frame = "world"
 
     print(f"GOTO {len(wps)} waypoints ({'body fwd/right/down' if body else 'world NED'}) "
-          f"yaw={opts['yaw']} lookat={opts['lookat']}: {wps}", flush=True)
+          f"yaw={opts['yaw']} lookat={opts['lookat']} engine={'legs' if opts['legs'] else 'spline'}"
+          f" vcruise={opts['vcruise']}: {wps}", flush=True)
 
     gains = NavGains()
     if opts["osgn"] is not None:
@@ -128,7 +136,8 @@ def main():
     nav = WaypointNavigator(s, c, plant, gains=gains, flog=flog)
     nav.set_origin(pos_ned=spawn, yaw=yaw0)
     c.arm()
-    res = nav.follow(targets, frame=frame, yaw=opts["yaw"], settle=True, look_point=look)
+    res = nav.follow(targets, yaw=opts["yaw"], look_point=look, v_cruise=opts["vcruise"],
+                     engine=("legs" if opts["legs"] else "spline"), frame=frame)
     if flog is not None:
         flog.close()
     print(f"mission {res}", flush=True)

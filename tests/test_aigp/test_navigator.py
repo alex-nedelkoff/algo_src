@@ -177,7 +177,7 @@ def test_set_origin_computes_scam_and_yaw0t():
     assert np.isfinite(nav._yaw0_t)
 
 
-from aigp.navigator import attitude_command_tf
+from aigp.navigator import attitude_command_tf, _spline_accel
 
 # sim-wire quat whose TRUE attitude (qfix) is level + nose along +N: true wxyz [1,0,0,0] -> wire [0,1,0,0]
 _WIRE_LEVEL = (0.0, 1.0, 0.0, 0.0)
@@ -206,3 +206,14 @@ def test_tf_yaw_sign_uses_truecam():
     rn, *_ = attitude_command_tf(st, np.zeros(2), -2.0, yaw_ref=-0.3, plant=_PLANT, gains=g, s_cam=1.0)
     # WFIX mirrors the yaw axis sign in the wire frame; assert the two are opposite + nonzero
     assert rp[2] * rn[2] < 0 and abs(rp[2]) > 1e-6
+
+
+def test_spline_accel_corrects_cross_track_and_holds_speed():
+    g = NavGains()
+    # reference: on the +N line at the origin, tangent +N, scheduled speed 2.0
+    ref = {"pos": np.array([0.0, 0.0, -2.0]), "tang": np.array([1.0, 0.0, 0.0]), "v": 2.0}
+    st = _mkstate([0.0, 1.0, -2.0], [0.0, 0.0, 0.0])      # 1 m to +E of the line, at rest
+    a2, travel = _spline_accel(st, ref, g)
+    np.testing.assert_allclose(travel, [1.0, 0.0], atol=1e-9)
+    assert a2[1] < 0      # cross-track accel pushes back toward the line (-E)
+    assert a2[0] > 0      # along-track accel builds toward scheduled speed
