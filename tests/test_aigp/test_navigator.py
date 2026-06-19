@@ -175,3 +175,34 @@ def test_set_origin_computes_scam_and_yaw0t():
     nav.set_origin()
     assert nav._s_cam in (1.0, -1.0)
     assert np.isfinite(nav._yaw0_t)
+
+
+from aigp.navigator import attitude_command_tf
+
+# sim-wire quat whose TRUE attitude (qfix) is level + nose along +N: true wxyz [1,0,0,0] -> wire [0,0,0,1]
+_WIRE_LEVEL = (0.0, 0.0, 0.0, 1.0)
+
+
+def test_tf_level_hover_zero_rate():
+    g = NavGains()
+    st = _mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)
+    rate, thr, tilt, dbg = attitude_command_tf(st, np.zeros(2), -2.0, yaw_ref=0.0,
+                                               plant=_PLANT, gains=g, s_cam=1.0)
+    assert abs(thr - 0.5) < 1e-6 and abs(tilt) < 1e-6
+    np.testing.assert_allclose(rate, [0, 0, 0], atol=1e-6)
+
+
+def test_tf_clamps_tilt():
+    g = NavGains()
+    st = _mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)
+    _, _, _, dbg = attitude_command_tf(st, np.array([100.0, 0.0]), -2.0, 0.0, _PLANT, g, 1.0)
+    assert abs(np.linalg.norm(dbg["a"][:2]) - np.tan(np.radians(g.TILT_MAX_DEG)) * 9.81) < 1e-6
+
+
+def test_tf_yaw_sign_uses_truecam():
+    g = NavGains()
+    st = _mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)   # true-cam yaw_cur = 0
+    rp, *_ = attitude_command_tf(st, np.zeros(2), -2.0, yaw_ref=+0.3, plant=_PLANT, gains=g, s_cam=1.0)
+    rn, *_ = attitude_command_tf(st, np.zeros(2), -2.0, yaw_ref=-0.3, plant=_PLANT, gains=g, s_cam=1.0)
+    # WFIX mirrors the yaw axis sign in the wire frame; assert the two are opposite + nonzero
+    assert rp[2] * rn[2] < 0 and abs(rp[2]) > 1e-6

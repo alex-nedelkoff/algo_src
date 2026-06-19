@@ -129,6 +129,40 @@ def attitude_command(state, a2, z_sp, yaw_ref, plant, gains):
     return rate_cmd_norm, thr, tilt, {"a": a, "w_des": w_des, "q_des": q_des, "thr": thr}
 
 
+def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=False):
+    """TRUE-frame attitude for STRAFING (camera not along travel). Port of vq_waypoint2's
+    true-frame block: qfix attitude, s_cam yaw basis, WFIX rate mirror, tilt-conditional
+    collective cap. a2 = desired horizontal accel in live-world (pos_ned); yaw_ref = desired
+    NOSE heading in the true-cam frame. Returns (rate_cmd_norm, thrust, tilt_deg, dbg)."""
+    hover, k_a, rg = plant
+    a = np.zeros(3)
+    a[:2] = np.asarray(a2, float)
+    a[2] = gains.KP_Z * (z_sp - state.pos_ned[2]) + gains.KD_Z * (0.0 - state.vel_ned[2])
+    tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
+    n = float(np.linalg.norm(a[:2]))
+    if n > tilt_max_acc:
+        a[:2] = a[:2] / n * tilt_max_acc
+    q_t = _qfix(state.quat_wxyz)
+    R_t = quat_to_R(q_t)
+    tilt = float(np.degrees(np.arccos(max(-1.0, min(1.0, R_t[2, 2])))))
+    yaw_cur = float(np.arctan2(s_cam * R_t[1, 0], s_cam * R_t[0, 0]))
+    yaw_body = yaw_ref if s_cam > 0 else yaw_ref + np.pi
+    if ymirror:
+        a[1] = -a[1]
+    q_des = mat_to_quat(desired_attitude(a, yaw_body))
+    om_t = np.asarray(state.omega, float) * WFIX
+    w = gains.KP_ATT * attitude_error_quat(q_t, q_des)
+    w[0] = float(np.clip(w[0] - gains.KD_ATT * om_t[0], -2.0, 2.0))
+    w[1] = float(np.clip(w[1] - gains.KD_ATT * om_t[1], -2.0, 2.0))
+    w[2] = float(np.clip(gains.KP_YAW * ((yaw_body - yaw_cur + np.pi) % (2 * np.pi) - np.pi)
+                         - gains.KD_YAW * om_t[2], -1.5, 1.5))
+    w = w * WFIX
+    c_max = 10.0 if tilt > 40.0 else 18.0
+    thr = accel_to_thrust_norm(min(collective_accel(a, q_t), c_max), hover, k_a)
+    rate = np.clip(w / rg, -gains.WMAX, gains.WMAX)
+    return rate, thr, tilt, {"a": a, "w_des": w, "q_des": q_des, "thr": thr}
+
+
 class WaypointNavigator:
     """Blocking waypoint navigation over the proven attitude-rate control. Caller owns lifecycle
     (sim reset + arm) and passes a live store + commander. See module docstring."""
