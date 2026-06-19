@@ -288,7 +288,10 @@ class WaypointNavigator:
                 R = quat_to_R(ds.quat_wxyz)
                 yaw_cur = float(np.arctan2(R[1, 0], R[0, 0]))
                 err = (yaw_ref - yaw_cur + np.pi) % (2 * np.pi) - np.pi
-                a2 = settle_accel(ds, pos_hold, self.gains)
+                # turn LEVEL (no position-fighting tilt) so the rotation can't excite the
+                # weathervane; only damp residual horizontal velocity. The leg's cross-track
+                # then corrects any small drift once we translate.
+                a2 = -0.6 * ds.vel_ned[:2]
                 rate, thr, tilt, dbg = attitude_command(ds, a2, float(pos_hold[2]),
                                                          yaw_ref, self.plant, self.gains)
                 self.commander.send_attitude_target(rate, thr)
