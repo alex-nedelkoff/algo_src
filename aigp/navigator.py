@@ -62,6 +62,7 @@ class NavGains:
     SPLINE_AL_MAX: float = 4.0
     MARGIN: float = 0.6
     C_DRAG: float = 0.057
+    V_RAMP_RATE: float = 1.2   # startup speed ramp (m/s^2): avoids a violent max-tilt launch
 
 
 def load_plant(path: str = "sysid/sim_response.json"):
@@ -348,6 +349,8 @@ class WaypointNavigator:
             if ds is not None:
                 s_drone = traj.nearest_s(ds.pos_ned)
                 ref = traj.sample(s_drone)
+                ref = dict(ref)
+                ref["v"] = min(ref["v"], g.V_RAMP_RATE * (time.time() - t_run))
                 a2, travel = _spline_accel(ds, ref, g)
                 if yaw == "course":
                     rate, thr, tilt, dbg = attitude_command(ds, a2, float(ref["pos"][2]),
