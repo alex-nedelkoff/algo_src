@@ -12,7 +12,7 @@ def _write_run(path, p, dt, T, seed, tilt_hi):
     omega = np.column_stack([propagate_nl(cmd[:, 0], dt, p),
                              propagate_nl(cmd[:, 1], dt, p), np.zeros(T)]) + rng.standard_normal((T, 3)) * 0.01
     a = np.radians(np.linspace(0, tilt_hi, T)) / 2
-    quat = np.column_stack([np.cos(a), np.sin(a), np.zeros(T), np.zeros(T)])
+    quat = np.column_stack([np.cos(a), np.zeros(T), np.sin(a), np.zeros(T)])  # y-component -> tilt = 1-2(y^2+z^2)
     t = np.arange(T) * dt
     np.savez(path, t=t, wcmd=cmd, omega=omega, quat=quat)
 

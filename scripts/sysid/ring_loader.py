@@ -21,9 +21,11 @@ class RunSeries:
 
 
 def _tilt_deg(quat_wxyz: np.ndarray) -> np.ndarray:
-    # tilt = angle of body-z from world-up = acos(R[2,2]); R[2,2] = 1 - 2(x^2+y^2)
-    w, x, y, z = quat_wxyz[:, 0], quat_wxyz[:, 1], quat_wxyz[:, 2], quat_wxyz[:, 3]
-    r22 = 1.0 - 2.0 * (x * x + y * y)
+    # tilt = acos(R[2,2]) using the DEPLOY's exact convention: tilt = quat_to_R(qfix(q))[2,2],
+    # where qfix([w,x,y,z]) = [x,y,z,w] and quat_to_R reads it scalar-first -> R[2,2] = 1 - 2(y^2+z^2).
+    # (the plain wxyz 1-2(x^2+y^2) read 18deg where the live abort hit 47-54deg -- wrong convention.)
+    y, z = quat_wxyz[:, 2], quat_wxyz[:, 3]
+    r22 = 1.0 - 2.0 * (y * y + z * z)
     return np.degrees(np.arccos(np.clip(r22, -1.0, 1.0)))
 
 

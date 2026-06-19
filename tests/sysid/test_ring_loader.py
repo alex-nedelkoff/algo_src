@@ -3,9 +3,10 @@ from scripts.sysid.ring_loader import load_npz, RunSeries, bin_coverage
 
 
 def _quat_from_tilt(tilt_deg):
-    # roll-only quat [w,x,y,z] giving the requested tilt about body-x
+    # quat [w,x,y,z] giving the requested tilt under the deploy convention (tilt = 1-2(y^2+z^2)):
+    # put the half-angle in the y component -> 1-2(sin^2 a) = cos(2a) = cos(tilt).
     a = np.radians(tilt_deg) / 2.0
-    return np.stack([np.cos(a), np.sin(a), np.zeros_like(a), np.zeros_like(a)], axis=1)
+    return np.stack([np.cos(a), np.zeros_like(a), np.sin(a), np.zeros_like(a)], axis=1)
 
 
 def test_load_npz_maps_fields_and_computes_tilt(tmp_path):
