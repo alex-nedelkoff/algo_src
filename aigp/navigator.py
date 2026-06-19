@@ -53,3 +53,34 @@ def load_plant(path: str = "sysid/sim_response.json"):
                    r["rate_gain_axes"]["pitch"],
                    r["rate_gain_axes"]["yaw"]], float)
     return hover, k_a, rg
+
+
+def cruise_accel(state, leg_start, target, gains):
+    """Horizontal accel for a leg: along-track ramp-to-stop + cross-track line-follow.
+    Returns (a2, tangent, speed_cmd). Mirrors goto.py:fly_leg's inner law."""
+    pos = state.pos_ned
+    vel = state.vel_ned
+    leg_start = np.asarray(leg_start, float)
+    target = np.asarray(target, float)
+    seg = (target - leg_start)[:2]
+    seglen = float(np.linalg.norm(seg))
+    rel = target - pos
+    if seglen > 1e-3:
+        tv = seg / seglen
+    else:
+        tv = rel[:2] / (np.linalg.norm(rel[:2]) + 1e-9)
+    lat = np.array([-tv[1], tv[0]])
+    spd = float(np.clip(0.6 * float(rel[:2] @ tv), 0.0, gains.MAX_SPEED))
+    a_al = float(np.clip(gains.KD_AL * (spd - float(vel[:2] @ tv)),
+                         -gains.DECEL_MAX, gains.AL_MAX))
+    a_ct = -gains.KP_CT * float((pos - leg_start)[:2] @ lat) - gains.KD_CT * float(vel[:2] @ lat)
+    a2 = a_al * tv + a_ct * lat
+    return a2, tv, spd
+
+
+def settle_accel(state, target, gains):
+    """Horizontal accel to kill momentum at target: pull-to-point + velocity damp.
+    Mirrors goto.py:settle."""
+    target = np.asarray(target, float)
+    err = (target - state.pos_ned)[:2]
+    return np.clip(gains.KP_CT * err, -1.0, 1.0) - gains.KD_CT * state.vel_ned[:2]
