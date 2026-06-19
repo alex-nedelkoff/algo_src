@@ -344,10 +344,13 @@ class WaypointNavigator:
             self.flog.set_path(traj._P)
         t_run = time.time()
         last = -1
+        s_prev = 0.0
         while time.time() - t_run < g.WP_TIMEOUT * max(2, len(targets)):
             ds = self.store.get_drone()
             if ds is not None:
-                s_drone = traj.nearest_s(ds.pos_ned)
+                s_near = traj.nearest_s(ds.pos_ned)
+                s_drone = min(max(s_near, s_prev), s_prev + 3.0)
+                s_prev = s_drone
                 ref = traj.sample(s_drone)
                 ref = dict(ref)
                 ref["v"] = min(ref["v"], g.V_RAMP_RATE * (time.time() - t_run))
