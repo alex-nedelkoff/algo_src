@@ -38,10 +38,11 @@ class NavGains:
     WP_TIMEOUT: float = 40.0
     MAX_SPEED: float = 1.2
     RAMP_K: float = 0.6   # along-track distance -> commanded speed gain
-    # Per-axis sign on the body-rate command (roll, pitch, yaw). The VQ sim's rate-loop
-    # roll axis is inverted vs our FRD convention (sysID: roll sign = -1), so a positive
-    # roll setpoint drives the drone the wrong way -> lateral runaway. -1 on roll fixes it.
-    RATE_SIGN: np.ndarray = field(default_factory=lambda: np.array([-1.0, 1.0, 1.0]))
+    # Per-axis sign on the body-rate command (roll, pitch, yaw). Default [1,1,1]: live tests
+    # showed [-1,..] DESTABILISES the forward leg, so the sim's roll axis matches our FRD
+    # convention. (The lateral-leg runaway is the weathervane on SIDEWAYS flight, not a roll
+    # sign — fly nose-first via yaw='lookat'/'course' to avoid it.) Kept as a knob for probing.
+    RATE_SIGN: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, 1.0]))
     ARRIVE: float = 1.5
     DECEL_MAX: float = 2.0
     SETTLE_T: float = 2.5
@@ -181,9 +182,9 @@ class WaypointNavigator:
             return float(np.arctan2(rel[1], rel[0]) + np.pi)
         if yaw_mode == "course":                     # point the CAMERA along horizontal travel
             v = ds.vel_ned[:2] if ds is not None else np.zeros(2)
-            if float(np.linalg.norm(v)) > 0.3:
+            if float(np.linalg.norm(v)) > 1.5:       # high threshold: ignore settling/noise velocity
                 return float(np.arctan2(v[1], v[0]) + np.pi)
-            rel = np.asarray(target, float) - pos    # too slow to have a heading -> aim at target
+            rel = np.asarray(target, float) - pos    # too slow for a clean heading -> aim at target
             return float(np.arctan2(rel[1], rel[0]) + np.pi)
         raise ValueError(f"yaw must be 'hold'|'face'|'lookat'|'course', got {yaw_mode!r}")
 
