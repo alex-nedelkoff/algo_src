@@ -156,3 +156,22 @@ def test_cruise_accel_zero_length_segment_steers_by_rel():
                                target=np.array([5, 0, -2.0]), gains=g)
     np.testing.assert_allclose(tv, [1.0, 0.0], atol=1e-6)   # tangent falls back to rel direction (+N)
     assert spd >= 0
+
+
+from aigp.navigator import _qfix, WFIX
+
+
+def test_qfix_shuffles_wxyz_to_xyzw():
+    np.testing.assert_allclose(_qfix([0.7, 0.1, 0.2, 0.3]), [0.1, 0.2, 0.3, 0.7])
+
+
+def test_wfix_is_pitch_mirror():
+    np.testing.assert_allclose(WFIX, [1.0, -1.0, 1.0])
+
+
+def test_set_origin_computes_scam_and_yaw0t():
+    # spawn quat in sim-wire convention: identity true attitude is wire [0,0,0,1]
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0], quat=(0, 0, 0, 1)))
+    nav.set_origin()
+    assert nav._s_cam in (1.0, -1.0)
+    assert np.isfinite(nav._yaw0_t)

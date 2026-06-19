@@ -19,6 +19,14 @@ from aigp.geometry import quat_to_R
 
 G = 9.81
 
+WFIX = np.array([1.0, -1.0, 1.0])   # sim rate-frame mirror (pitch axis), proven (fly_gate3/vq_waypoint2)
+
+
+def _qfix(q):
+    """Live sim-wire quat (wxyz) -> TRUE attitude quat (wxyz): q_true = q_wire[[1,2,3,0]]."""
+    q = np.asarray(q, float)
+    return q[[1, 2, 3, 0]]
+
 
 @dataclass
 class NavGains:
@@ -49,6 +57,7 @@ class NavGains:
     SETTLE_T: float = 2.5
     SETTLE_V: float = 0.4
     LOOP_DT: float = 0.004
+    KD_ATT: float = 0.3
 
 
 def load_plant(path: str = "sysid/sim_response.json"):
@@ -134,6 +143,8 @@ class WaypointNavigator:
         self._origin_yaw = None
         self._look_point = None   # world-NED point the camera tracks in yaw='lookat'
         self._t0 = None
+        self._s_cam = 1.0
+        self._yaw0_t = 0.0
 
     # --- pure helpers (IO-free) ---
     def set_origin(self, pos_ned=None, yaw=None):
@@ -149,6 +160,19 @@ class WaypointNavigator:
                 yaw = float(np.arctan2(R[1, 0], R[0, 0]))
         self._origin_pos = np.asarray(pos_ned, float)
         self._origin_yaw = float(yaw)
+
+        # true-frame calibration (verbatim from vq_waypoint2): camera-forward sign + true-cam spawn yaw
+        ds = self.store.get_drone()
+        if ds is not None:
+            yaw0 = self._origin_yaw
+            q_t0 = _qfix(ds.quat_wxyz)
+            R_t0 = quat_to_R(q_t0)
+            cam_live = -np.array([np.cos(yaw0), np.sin(yaw0)])
+            self._s_cam = 1.0 if float(R_t0[:2, 0] @ cam_live) > 0 else -1.0
+            self._yaw0_t = float(np.arctan2(self._s_cam * R_t0[1, 0], self._s_cam * R_t0[0, 0]))
+        else:
+            self._s_cam = 1.0
+            self._yaw0_t = float(self._origin_yaw or 0.0)
 
     def _resolve(self, wp, frame):
         wp = np.asarray(wp, float)
