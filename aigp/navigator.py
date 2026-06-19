@@ -33,6 +33,7 @@ class NavGains:
     KP_Z: float = 1.8
     KD_Z: float = 3.0
     WMAX: float = 4.0
+    YAW_WMAX: float = 1.0   # gentle yaw-rate cap: fast yaw steps excite the rate loop -> tilt spike
     TILT_MAX_DEG: float = 15.0
     ABORT_TILT_DEG: float = 80.0
     WP_TIMEOUT: float = 40.0
@@ -114,6 +115,7 @@ def attitude_command(state, a2, z_sp, yaw_ref, plant, gains):
                 - gains.KD_YAW * float(state.omega[2]))
     thr = accel_to_thrust_norm(collective_accel(a, state.quat_wxyz), hover, k_a)
     rate_cmd_norm = np.clip(w_des * gains.RATE_SIGN / rg, -gains.WMAX, gains.WMAX)
+    rate_cmd_norm[2] = np.clip(rate_cmd_norm[2], -gains.YAW_WMAX, gains.YAW_WMAX)   # gentle yaw
     tilt = float(np.degrees(np.arccos(max(-1.0, min(1.0, R[2, 2])))))
     return rate_cmd_norm, thr, tilt, {"a": a, "w_des": w_des, "q_des": q_des, "thr": thr}
 
