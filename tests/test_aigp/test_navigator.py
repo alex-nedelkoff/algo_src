@@ -93,3 +93,57 @@ def test_attitude_command_yaw_sign():
     rate_pos, *_ = attitude_command(st, np.zeros(2), -2.0, yaw_ref=+0.3, plant=_PLANT, gains=g)
     rate_neg, *_ = attitude_command(st, np.zeros(2), -2.0, yaw_ref=-0.3, plant=_PLANT, gains=g)
     assert rate_pos[2] > 0 and rate_neg[2] < 0
+
+
+from aigp.navigator import WaypointNavigator
+
+
+class _FakeStore:
+    def __init__(self, ds):
+        self._ds = ds
+    def get_drone(self):
+        return self._ds
+    def get_race_live(self):
+        return True
+
+
+def _nav(ds):
+    return WaypointNavigator(_FakeStore(ds), commander=None, plant=_PLANT)
+
+
+def test_set_origin_captures_current_state():
+    nav = _nav(_mkstate([1, 2, -3], [0, 0, 0]))   # level quat -> yaw 0
+    nav.set_origin()
+    np.testing.assert_allclose(nav._origin_pos, [1, 2, -3])
+    assert abs(nav._origin_yaw) < 1e-9
+
+
+def test_resolve_world_is_absolute():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0]))
+    nav.set_origin(pos_ned=np.array([0, 0, -2.0]), yaw=0.0)
+    np.testing.assert_allclose(nav._resolve(np.array([3, 4, -2.0]), "world"), [3, 4, -2])
+
+
+def test_resolve_body_offsets_from_origin():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0]))
+    nav.set_origin(pos_ned=np.array([0, 0, -2.0]), yaw=0.0)   # heading 0 -> fwd=-N, right=+E
+    np.testing.assert_allclose(nav._resolve(np.array([6, 0, 0.0]), "body"), [-6, 0, -2])
+    np.testing.assert_allclose(nav._resolve(np.array([0, 4, 0.0]), "body"), [0, 4, -2])
+
+
+def test_resolve_rejects_bad_frame():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0]))
+    nav.set_origin(pos_ned=np.array([0, 0, -2.0]), yaw=0.0)
+    try:
+        nav._resolve(np.array([1, 0, 0.0]), "polar")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_yaw_ref_face_points_at_target():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0]))
+    nav.set_origin(pos_ned=np.array([0, 0, -2.0]), yaw=0.0)
+    yr = nav._yaw_ref("face", np.array([0, 5, -2.0]))   # target due +E
+    assert abs(yr - np.pi / 2) < 1e-9
+    assert nav._yaw_ref("hold", np.array([0, 5, -2.0])) == 0.0
