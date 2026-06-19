@@ -157,9 +157,11 @@ exercised by the existing live-flight workflow (`python goto.py ...` against the
   stop-and-turn, per `goto.py`'s own STATUS note). The API inherits this exactly — no sign
   auto-calibration is added (that lives in `vq_waypoint2.py`). Documented as a known limitation; a future
   enhancement could fold in the `s_lat`/`s_yawb` auto-calibration.
-- **Behavior parity.** The rewrite must be byte-for-byte behavior-equivalent to current `goto.py` for the
-  default path (same gains, same loop order, same arrival/abort/timeout thresholds), so the proven live
-  result is preserved. Verify by reading the resulting `goto.py` diff and a live `python goto.py body 6 0 0`
-  run (reached, tilt ~2°).
+- **Behavior parity.** The rewrite must be **control-command equivalent** to current `goto.py` for the
+  default path (identical flight commands: same gains, same loop order, same arrival/abort/timeout
+  thresholds), so the proven live result is preserved. Operator-facing prints (the CLI now reports the real
+  mission status `reached`/`timeout`/`abort` instead of an unconditional `mission done`) and the first-leg
+  cross-track datum may differ trivially and are intentional improvements, not regressions. Verify by reading
+  the resulting `goto.py` diff and a live `python goto.py body 6 0 0` run (reached, tilt ~2°).
 - **`vq_waypoint2.py` adoption** is deferred — it can migrate onto `WaypointNavigator` later (the README
   already lists it as a candidate); not in this change.

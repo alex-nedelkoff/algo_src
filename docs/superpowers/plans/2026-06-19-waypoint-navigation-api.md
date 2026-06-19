@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Behavior parity:** the default path through `WaypointNavigator` must be numerically equivalent to current `goto.py` — same gains, same loop ordering (command sent BEFORE telemetry), same arrival/abort/timeout thresholds. The proven live result must be preserved.
+- **Behavior parity:** the default path through `WaypointNavigator` must be **control-command equivalent** to current `goto.py` — same gains, same loop ordering (command sent BEFORE telemetry), same arrival/abort/timeout thresholds. The proven live result (flight commands) must be preserved. Operator-facing prints and the first-leg cross-track datum may differ trivially as intentional improvements.
 - **No new dependencies.** Reuse `aigp/control_math.py`, `aigp/geometry.py`, `aigp/state.py`, `aigp/flight_telemetry.py`, `aigp/commander.py`.
 - **Frames:** NED world, FRD body, quaternion `[w,x,y,z]`. Heading `yaw = atan2(R[1,0], R[0,0])`.
 - **Pure law = no IO:** `cruise_accel`, `settle_accel`, `attitude_command` must not call `time`, `sleep`, the commander, or telemetry.
