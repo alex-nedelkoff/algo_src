@@ -39,6 +39,7 @@ def argf(flag, d): return float(sys.argv[sys.argv.index(flag) + 1]) if flag in s
 MISSION = int(argf("--mission", 1))
 VMAX = argf("--v", 2.2); LEG = argf("--leg", 12.0); TURN = argf("--turn", 0.25)
 NWP = int(argf("--nwp", 5)); DURATION = argf("--dur", 120.0)
+SQUARE = argf("--square", 0.0)   # >0: fly a fixed-heading square of this side length (m)
 AMAX = argf("--amax", 0.6)   # fwd accel cap: 0.6 -> terminal ~3 m/s vs live drag; raise to go faster
 DZ = argf("--dz", 0.0)       # alternate wp z by +-DZ (vertical-channel stress)
 YAWSWING = argf("--yawswing", 0.0)  # WV-FRAME-01: sinusoidal yaw_ref swing (rad) about the course
@@ -93,6 +94,7 @@ def wrap(a):
 
 
 def main():
+    global NWP
     assert fresh_start(), "not live"
     ds0 = s.get_drone(); spawn = ds0.pos_ned.copy(); gi0 = s.get_gate_idx()
     yaw0 = float(np.arctan2(quat_to_R(ds0.quat_wxyz)[1, 0], quat_to_R(ds0.quat_wxyz)[0, 0]))
@@ -107,7 +109,15 @@ def main():
     # --- course in the LIVE world frame (pos_ned chart) ---
     lat_course = np.array([-cam_live[1], cam_live[0]])           # course-perp, live world
     wps = []
-    if MISSION == 1:
+    if SQUARE > 0:
+        # fixed-heading square (camera/forward = cam_live, right = lat_course): fwd, fwd+right,
+        # right, back to spawn. Two strafe legs (right/left) exercise the lateral chain.
+        S = SQUARE
+        corners = [cam_live * S, cam_live * S + lat_course * S, lat_course * S, np.zeros(2)]
+        for cxy in corners:
+            p = spawn[:2] + cxy
+            wps.append(np.array([p[0], p[1], spawn[2] - 1.5]))
+    elif MISSION == 1:
         offs = [0.0, +3.0, 0.0, -3.0, 0.0, +3.0, 0.0, -3.0]
         for i in range(NWP):
             p = spawn[:2] + cam_live * LEG * (i + 1) + lat_course * offs[i % len(offs)]
@@ -121,7 +131,10 @@ def main():
             zoff = DZ * (1.0 if i % 2 == 0 else -1.0)
             wps.append(np.array([p[0], p[1], spawn[2] - 1.5 - zoff]))
     wps = np.array(wps)
-    print(f"mission {MISSION}: {NWP} wps, leg {LEG}, turn {TURN if MISSION == 2 else 0}, vmax {VMAX}", flush=True)
+    if SQUARE > 0:
+        NWP = len(wps)
+    print(f"mission {MISSION}: {NWP} wps, leg {LEG}, turn {TURN if MISSION == 2 else 0}, vmax {VMAX}"
+          f"{' SQUARE %.0fm' % SQUARE if SQUARE > 0 else ''}", flush=True)
     print(f"true-frame ctl: s_cam={s_cam:+.0f} yaw0_true_cam={np.degrees(yaw0_t):+.0f}", flush=True)
 
     c.arm()
