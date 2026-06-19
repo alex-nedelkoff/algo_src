@@ -7,9 +7,15 @@ from scripts.sysid.ring_model import RateLoopParams, propagate_nl
 from scripts.sysid.ring_loader import RunSeries
 
 
-def _residual(theta, runs, axis, dt):
+_LB = [0.2, 3.0, 0.02, -0.2]
+_UB = [3.0, 120.0, 2.0, 0.2]
+_X0 = [[1.0, 25.0, 0.3, 0.0], [1.0, 28.0, 0.2, 0.0],
+       [1.0, 25.0, 0.15, -0.02], [1.0, 30.0, 0.3, -0.05], [1.0, 40.0, 0.2, 0.1]]
+
+
+def _residual(theta, runs, axis, dt, sign, delay):
     k, wn, z0, z1 = theta
-    p = RateLoopParams(k=k, wn=wn, zeta0=z0, zeta1=z1)
+    p = RateLoopParams(k=k, wn=wn, zeta0=z0, zeta1=z1, delay=int(delay), sign=float(sign))
     res = []
     for rs in runs:
         pred = propagate_nl(rs.cmd[:, axis], dt, p)
@@ -17,46 +23,43 @@ def _residual(theta, runs, axis, dt):
     return np.concatenate(res)
 
 
-def fit_axis(runs, axis, dt, x0=None) -> RateLoopParams:
-    """Fit rate-loop params via least-squares replay error minimization.
+def _solve(runs, axis, dt, sign, delay, starts, max_nfev=600):
+    best = None
+    for x0 in starts:
+        try:
+            s = least_squares(_residual, x0, bounds=(_LB, _UB), args=(runs, axis, dt, sign, delay),
+                              method="trf", max_nfev=max_nfev)
+            if best is None or s.cost < best.cost:
+                best = s
+        except ValueError:
+            pass
+    return best
 
-    If x0 is None, tries multiple initial guesses to escape local minima.
-    """
-    lb = [0.2, 3.0, 0.02, -0.2]
-    ub = [3.0, 120.0, 2.0, 0.2]
 
-    if x0 is None:
-        # Try multiple initial guesses; keep the one with lowest final cost
-        x0_candidates = [
-            [1.0, 25.0, 0.3, 0.0],
-            [1.0, 25.0, 0.2, 0.0],
-            [1.0, 28.0, 0.2, 0.0],
-            [1.0, 25.0, 0.15, -0.02],
-            [1.0, 30.0, 0.3, -0.05],
-        ]
-        best_sol = None
-        best_cost = float('inf')
-        for x0_try in x0_candidates:
-            try:
-                sol_try = least_squares(_residual, x0_try, bounds=(lb, ub),
-                                        args=(runs, axis, dt), method="trf", max_nfev=600)
-                if sol_try.cost < best_cost:
-                    best_cost = sol_try.cost
-                    best_sol = sol_try
-            except ValueError:
-                pass
-        if best_sol is not None:
-            sol = best_sol
-        else:
-            # All candidates raised ValueError; fall back to a single default solve.
-            sol = least_squares(_residual, [1.0, 25.0, 0.3, 0.0], bounds=(lb, ub),
-                                args=(runs, axis, dt), method="trf", max_nfev=600)
-    else:
-        sol = least_squares(_residual, x0, bounds=(lb, ub), args=(runs, axis, dt),
-                            method="trf", max_nfev=600)
+def fit_axis(runs, axis, dt, x0=None, signs=(1.0, -1.0), max_delay=3) -> RateLoopParams:
+    """Fit rate-loop params by least-squares command-replay error, discovering the per-axis
+    SIGN (logged cmd vs gyro can be frame-flipped) and the integer transport DELAY (samples).
 
+    Strategy: rank every (sign, delay) with one default start, then run the full multi-start
+    (to escape zeta1 local minima) at the winning (sign, delay). If x0 is given, a single solve
+    at sign=+1, delay=0 is run (caller-controlled, no search)."""
+    if x0 is not None:
+        sol = _solve(runs, axis, dt, 1.0, 0, [x0])
+        k, wn, z0, z1 = sol.x
+        return RateLoopParams(k=float(k), wn=float(wn), zeta0=float(z0), zeta1=float(z1))
+    # coarse: rank (sign, delay) with a cheap solve (enough to rank, not to converge)
+    best_key = None
+    for sign in signs:
+        for delay in range(int(max_delay) + 1):
+            s = _solve(runs, axis, dt, sign, delay, [_X0[0]], max_nfev=120)
+            if s is not None and (best_key is None or s.cost < best_key[0]):
+                best_key = (s.cost, sign, delay)
+    _, sign, delay = best_key
+    # fine: full multi-start at the winning (sign, delay)
+    sol = _solve(runs, axis, dt, sign, delay, _X0) or _solve(runs, axis, dt, 1.0, 0, [_X0[0]])
     k, wn, z0, z1 = sol.x
-    return RateLoopParams(k=float(k), wn=float(wn), zeta0=float(z0), zeta1=float(z1))
+    return RateLoopParams(k=float(k), wn=float(wn), zeta0=float(z0), zeta1=float(z1),
+                          delay=int(delay), sign=float(sign))
 
 
 def holdout_r2(p, runs, axis, dt, tilt_edges) -> np.ndarray:

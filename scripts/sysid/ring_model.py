@@ -13,6 +13,15 @@ class RateLoopParams:
     wn: float         # natural frequency (rad/s)
     zeta0: float      # base damping ratio
     zeta1: float = 0.0  # amplitude slope (Task 2); 0 = linear
+    delay: int = 0    # transport delay in SAMPLES (comms+proc); output lags input (live: ~1 sample / 15ms)
+    sign: float = 1.0  # per-axis sign of the logged cmd->omega relation (live: roll = -1; cmd is post-OSGN, gyro is raw ds.omega)
+
+
+def _delay_sign(y: np.ndarray, p: "RateLoopParams") -> np.ndarray:
+    """Apply the transport delay (shift output right by p.delay samples, zero-fill) and per-axis sign."""
+    if p.delay > 0:
+        y = np.concatenate([np.zeros(int(p.delay)), y[:len(y) - int(p.delay)]])
+    return p.sign * y
 
 
 def _ABCD(wn: float, zeta: float, k: float):
@@ -32,7 +41,7 @@ def propagate(cmd: np.ndarray, dt: float, p: RateLoopParams) -> np.ndarray:
     for i, u in enumerate(cmd):
         out[i] = (Cd @ x + Dd * u).item()
         x = Ad @ x + Bd * u
-    return out
+    return _delay_sign(out, p)
 
 
 def propagate_nl(cmd: np.ndarray, dt: float, p: RateLoopParams) -> np.ndarray:
@@ -55,4 +64,4 @@ def propagate_nl(cmd: np.ndarray, dt: float, p: RateLoopParams) -> np.ndarray:
             zeta_cur = zeta
         out[i] = (Cd @ x + Dd * u).item()
         x = Ad @ x + Bd * u
-    return out
+    return _delay_sign(out, p)

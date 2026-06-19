@@ -1,6 +1,19 @@
 import numpy as np
 from scripts.sysid.ring_model import RateLoopParams, propagate, propagate_nl
 
+
+def test_delay_shifts_and_sign_negates():
+    dt = 1.0 / 720.0
+    n = int(0.5 / dt)
+    cmd = np.ones(n)
+    y0 = propagate(cmd, dt, RateLoopParams(k=1.0, wn=30.0, zeta0=0.5))
+    yd = propagate(cmd, dt, RateLoopParams(k=1.0, wn=30.0, zeta0=0.5, delay=3))
+    ys = propagate(cmd, dt, RateLoopParams(k=1.0, wn=30.0, zeta0=0.5, sign=-1.0))
+    assert np.allclose(yd[3:], y0[:-3])          # output lagged by 3 samples
+    assert np.allclose(yd[:3], 0.0)              # zero-filled before the delay
+    assert np.allclose(ys, -y0)                  # sign negates the output
+
+
 def test_underdamped_step_overshoot():
     # Unit-gain 2nd-order, wn=30 rad/s, zeta=0.14 -> analytic overshoot exp(-z*pi/sqrt(1-z^2))
     p = RateLoopParams(k=1.0, wn=30.0, zeta0=0.14)

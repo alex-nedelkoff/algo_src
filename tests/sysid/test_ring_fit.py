@@ -19,6 +19,22 @@ def test_fit_recovers_known_params():
     assert abs(est.wn - true.wn) / true.wn < 0.10
     assert abs(est.zeta0 - true.zeta0) < 0.05
     assert abs(est.zeta1 - true.zeta1) < 0.03
+    assert est.sign == 1.0 and est.delay == 0          # clean data -> no flip, no delay
+
+def test_fit_discovers_sign_and_delay():
+    # data generated WITH a frame sign-flip + transport delay (the live finding). A broadband
+    # chirp at a realistic rate (so a 2-sample delay is identifiable, unlike red noise at 720Hz).
+    dt, T = 1/72, 900
+    true = RateLoopParams(k=1.2, wn=26.0, zeta0=0.30, zeta1=-0.02, delay=2, sign=-1.0)
+    t = np.arange(T) * dt
+    cmd1 = np.sin(2 * np.pi * (1.0 * t + 0.5 * (10.0 - 1.0) / (T * dt) * t ** 2))  # 1->10 Hz chirp
+    om1 = propagate_nl(cmd1, dt, true) + np.random.default_rng(3).standard_normal(T) * 0.02
+    z = np.zeros(T)
+    rs = RunSeries(dt=dt, cmd=np.column_stack([cmd1, z, z]), omega=np.column_stack([om1, z, z]), tilt_deg=z)
+    est = fit_axis([rs], axis=0, dt=dt)
+    assert est.sign == -1.0          # discovered the flip
+    assert est.delay == 2            # discovered the delay
+    assert abs(est.wn - true.wn) / true.wn < 0.15
 
 def test_holdout_r2_high_for_matching_model_and_envelope():
     dt, T = 1/720, 1500
