@@ -193,8 +193,8 @@ git commit -m "feat(navigator): qfix/WFIX helpers + s_cam/yaw0_t true-frame cali
 # append to tests/test_aigp/test_navigator.py
 from aigp.navigator import attitude_command_tf
 
-# sim-wire quat whose TRUE attitude (qfix) is level + nose along +N: true wxyz [1,0,0,0] -> wire [0,0,0,1]
-_WIRE_LEVEL = (0.0, 0.0, 0.0, 1.0)
+# sim-wire quat whose TRUE attitude (qfix) is level/identity: _qfix((0,1,0,0)) = [1,0,0,0]
+_WIRE_LEVEL = (0.0, 1.0, 0.0, 0.0)
 
 
 def test_tf_level_hover_zero_rate():
