@@ -344,14 +344,16 @@ class WaypointNavigator:
             self.flog.set_path(traj._P)
         t_run = time.time()
         last = -1
-        s_prev = 0.0
+        s_ref = 0.0
+        pos_prev = None
         while time.time() - t_run < g.WP_TIMEOUT * max(2, len(targets)):
             ds = self.store.get_drone()
             if ds is not None:
-                s_near = traj.nearest_s(ds.pos_ned)
-                s_drone = min(max(s_near, s_prev), s_prev + 3.0)
-                s_prev = s_drone
-                ref = traj.sample(s_drone)
+                pos = ds.pos_ned
+                if pos_prev is not None:
+                    s_ref = min(s_ref + float(np.linalg.norm((pos - pos_prev)[:2])), traj.s_max)
+                pos_prev = pos.copy()
+                ref = traj.sample(min(s_ref + 1.5, traj.s_max))
                 ref = dict(ref)
                 ref["v"] = min(ref["v"], g.V_RAMP_RATE * (time.time() - t_run))
                 a2, travel = _spline_accel(ds, ref, g)
@@ -371,13 +373,13 @@ class WaypointNavigator:
                 if tilt > g.ABORT_TILT_DEG:
                     print(f"  ABORT tilt={tilt:.0f}", flush=True)
                     return "abort"
-                if s_drone >= traj.s_max - g.ARRIVE:
+                if s_ref >= traj.s_max - g.ARRIVE:
                     print("  REACHED end", flush=True)
                     return "reached"
                 k = int((time.time() - t_run) / 1.0)
                 if k != last:
                     last = k
-                    print(f"  s={s_drone:5.1f}/{traj.s_max:.0f} v={float(np.linalg.norm(ds.vel_ned[:2])):4.1f}"
+                    print(f"  s={s_ref:5.1f}/{traj.s_max:.0f} v={float(np.linalg.norm(ds.vel_ned[:2])):4.1f}"
                           f"/{ref['v']:.1f} tilt={tilt:3.0f}", flush=True)
             time.sleep(g.LOOP_DT)
         return "timeout"
