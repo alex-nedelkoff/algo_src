@@ -1,8 +1,10 @@
 import json
 import numpy as np
-from aigp.navigator import NavGains, load_plant, attitude_command
+from aigp.navigator import (
+    NavGains, load_plant, attitude_command,
+    cruise_accel, settle_accel, WaypointNavigator,
+)
 from aigp.state import DroneState
-from aigp.navigator import cruise_accel, settle_accel
 
 G = 9.81
 
@@ -95,9 +97,6 @@ def test_attitude_command_yaw_sign():
     assert rate_pos[2] > 0 and rate_neg[2] < 0
 
 
-from aigp.navigator import WaypointNavigator
-
-
 class _FakeStore:
     def __init__(self, ds):
         self._ds = ds
@@ -147,3 +146,13 @@ def test_yaw_ref_face_points_at_target():
     yr = nav._yaw_ref("face", np.array([0, 5, -2.0]))   # target due +E
     assert abs(yr - np.pi / 2) < 1e-9
     assert nav._yaw_ref("hold", np.array([0, 5, -2.0])) == 0.0
+
+
+def test_cruise_accel_zero_length_segment_steers_by_rel():
+    g = NavGains()
+    st = _mkstate([0, 0, -2], [0, 0, 0])
+    # leg_start == target (degenerate); rel points to the actual target 5 m north
+    a2, tv, spd = cruise_accel(st, leg_start=np.array([5, 0, -2.0]),
+                               target=np.array([5, 0, -2.0]), gains=g)
+    np.testing.assert_allclose(tv, [1.0, 0.0], atol=1e-6)   # tangent falls back to rel direction (+N)
+    assert spd >= 0

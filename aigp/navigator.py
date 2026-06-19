@@ -37,6 +37,7 @@ class NavGains:
     ABORT_TILT_DEG: float = 80.0
     WP_TIMEOUT: float = 40.0
     MAX_SPEED: float = 1.2
+    RAMP_K: float = 0.6   # along-track distance -> commanded speed gain
     ARRIVE: float = 1.5
     DECEL_MAX: float = 2.0
     SETTLE_T: float = 2.5
@@ -46,7 +47,8 @@ class NavGains:
 
 def load_plant(path: str = "sysid/sim_response.json"):
     """Probed plant params from sysid: (hover_thrust, k_a, rate_gain_axes[roll,pitch,yaw])."""
-    r = json.load(open(path))
+    with open(path) as f:
+        r = json.load(f)
     hover = float(r["hover_thrust"])
     k_a = float(r["k_a"])
     rg = np.array([r["rate_gain_axes"]["roll"],
@@ -70,7 +72,7 @@ def cruise_accel(state, leg_start, target, gains):
     else:
         tv = rel[:2] / (np.linalg.norm(rel[:2]) + 1e-9)
     lat = np.array([-tv[1], tv[0]])
-    spd = float(np.clip(0.6 * float(rel[:2] @ tv), 0.0, gains.MAX_SPEED))
+    spd = float(np.clip(gains.RAMP_K * float(rel[:2] @ tv), 0.0, gains.MAX_SPEED))
     a_al = float(np.clip(gains.KD_AL * (spd - float(vel[:2] @ tv)),
                          -gains.DECEL_MAX, gains.AL_MAX))
     a_ct = -gains.KP_CT * float((pos - leg_start)[:2] @ lat) - gains.KD_CT * float(vel[:2] @ lat)
@@ -180,7 +182,7 @@ class WaypointNavigator:
         if self._t0 is None:
             self._t0 = time.time()
         target = self._resolve(wp, frame)
-        return self._fly_leg(target, self._current_pos(), self._yaw_ref(yaw, target))
+        return self._fly_leg(target, self._origin_pos, self._yaw_ref(yaw, target))
 
     def follow(self, wps, *, frame="world", yaw="hold", settle=True):
         if self._origin_pos is None:
@@ -190,7 +192,7 @@ class WaypointNavigator:
         targets = [self._resolve(w, frame) for w in wps]
         if self.flog is not None:
             self.flog.set_path(np.vstack([self._current_pos()] + targets))
-        leg_start = self._current_pos()
+        leg_start = self._origin_pos.copy()
         for i, target in enumerate(targets):
             res = self._fly_leg(target, leg_start, self._yaw_ref(yaw, target))
             print(f"   {res.upper()} wp{i}", flush=True)
@@ -223,6 +225,7 @@ class WaypointNavigator:
                     self.flog.push(time.time() - self._t0, ds, dbg, nearest=target, cruise=0.0,
                                    running=self.store.get_race_live(), armed=True)
                 if tilt > self.gains.ABORT_TILT_DEG:
+                    print(f"  ABORT settle tilt={tilt:.0f}", flush=True)
                     return
             time.sleep(self.gains.LOOP_DT)
 
