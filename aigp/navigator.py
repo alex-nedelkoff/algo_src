@@ -38,6 +38,10 @@ class NavGains:
     WP_TIMEOUT: float = 40.0
     MAX_SPEED: float = 1.2
     RAMP_K: float = 0.6   # along-track distance -> commanded speed gain
+    # Per-axis sign on the body-rate command (roll, pitch, yaw). The VQ sim's rate-loop
+    # roll axis is inverted vs our FRD convention (sysID: roll sign = -1), so a positive
+    # roll setpoint drives the drone the wrong way -> lateral runaway. -1 on roll fixes it.
+    RATE_SIGN: np.ndarray = field(default_factory=lambda: np.array([-1.0, 1.0, 1.0]))
     ARRIVE: float = 1.5
     DECEL_MAX: float = 2.0
     SETTLE_T: float = 2.5
@@ -108,7 +112,7 @@ def attitude_command(state, a2, z_sp, yaw_ref, plant, gains):
     w_des[2] = (gains.KP_YAW * ((yaw_ref - yaw_cur + np.pi) % (2 * np.pi) - np.pi)
                 - gains.KD_YAW * float(state.omega[2]))
     thr = accel_to_thrust_norm(collective_accel(a, state.quat_wxyz), hover, k_a)
-    rate_cmd_norm = np.clip(w_des / rg, -gains.WMAX, gains.WMAX)
+    rate_cmd_norm = np.clip(w_des * gains.RATE_SIGN / rg, -gains.WMAX, gains.WMAX)
     tilt = float(np.degrees(np.arccos(max(-1.0, min(1.0, R[2, 2])))))
     return rate_cmd_norm, thr, tilt, {"a": a, "w_des": w_des, "q_des": q_des, "thr": thr}
 
@@ -125,6 +129,7 @@ class WaypointNavigator:
         self.flog = flog
         self._origin_pos = None
         self._origin_yaw = None
+        self._look_point = None   # world-NED point the camera tracks in yaw='lookat'
         self._t0 = None
 
     # --- pure helpers (IO-free) ---
@@ -159,15 +164,28 @@ class WaypointNavigator:
         raise ValueError(f"frame must be 'world' or 'body', got {frame!r}")
 
     def _yaw_ref(self, yaw_mode, target):
+        """Desired NOSE (body-x) heading. Camera is -body_x, so camera-pointing modes add pi.
+        Modes: 'hold' (fixed origin heading, strafe), 'face' (nose at target),
+        'lookat' (camera at self._look_point, else target), 'course' (camera along travel)."""
         if yaw_mode == "hold":
             return self._origin_yaw if self._origin_yaw is not None else 0.0
-        if yaw_mode == "face":
-            ds = self.store.get_drone()
-            pos = ds.pos_ned if ds is not None else (self._origin_pos
-                                                     if self._origin_pos is not None else np.zeros(3))
+        ds = self.store.get_drone()
+        pos = ds.pos_ned if ds is not None else (self._origin_pos
+                                                 if self._origin_pos is not None else np.zeros(3))
+        if yaw_mode == "face":                       # point the NOSE at the target
             rel = np.asarray(target, float) - pos
             return float(np.arctan2(rel[1], rel[0]))
-        raise ValueError(f"yaw must be 'hold' or 'face', got {yaw_mode!r}")
+        if yaw_mode == "lookat":                     # point the CAMERA (-body_x) at a fixed point
+            pt = self._look_point if self._look_point is not None else np.asarray(target, float)
+            rel = np.asarray(pt, float) - pos
+            return float(np.arctan2(rel[1], rel[0]) + np.pi)
+        if yaw_mode == "course":                     # point the CAMERA along horizontal travel
+            v = ds.vel_ned[:2] if ds is not None else np.zeros(2)
+            if float(np.linalg.norm(v)) > 0.3:
+                return float(np.arctan2(v[1], v[0]) + np.pi)
+            rel = np.asarray(target, float) - pos    # too slow to have a heading -> aim at target
+            return float(np.arctan2(rel[1], rel[0]) + np.pi)
+        raise ValueError(f"yaw must be 'hold'|'face'|'lookat'|'course', got {yaw_mode!r}")
 
     def _current_pos(self):
         ds = self.store.get_drone()
@@ -176,39 +194,41 @@ class WaypointNavigator:
         return self._origin_pos.copy() if self._origin_pos is not None else np.zeros(3)
 
     # --- blocking flight loop (live sim; not unit-tested) ---
-    def goto(self, wp, *, frame="world", yaw="hold"):
+    def goto(self, wp, *, frame="world", yaw="hold", look_point=None):
         if self._origin_pos is None:
             self.set_origin()
         if self._t0 is None:
             self._t0 = time.time()
+        if look_point is not None:
+            self._look_point = self._resolve(look_point, frame)
         target = self._resolve(wp, frame)
-        return self._fly_leg(target, self._origin_pos, self._yaw_ref(yaw, target))
+        return self._fly_leg(target, self._origin_pos, yaw)
 
-    def follow(self, wps, *, frame="world", yaw="hold", settle=True):
+    def follow(self, wps, *, frame="world", yaw="hold", settle=True, look_point=None):
         if self._origin_pos is None:
             self.set_origin()
         if self._t0 is None:
             self._t0 = time.time()
+        if look_point is not None:
+            self._look_point = self._resolve(look_point, frame)
         targets = [self._resolve(w, frame) for w in wps]
         if self.flog is not None:
             self.flog.set_path(np.vstack([self._current_pos()] + targets))
         leg_start = self._origin_pos.copy()
         for i, target in enumerate(targets):
-            res = self._fly_leg(target, leg_start, self._yaw_ref(yaw, target))
+            res = self._fly_leg(target, leg_start, yaw)
             print(f"   {res.upper()} wp{i}", flush=True)
             if res != "reached":
                 return res
             if settle:
-                self.settle(target, self._yaw_ref(yaw, target))
+                self.settle(target, yaw)
             leg_start = self._current_pos()
         return "reached"
 
-    def settle(self, target=None, yaw_ref=None):
+    def settle(self, target=None, yaw="hold"):
         if target is None:
             target = self._current_pos()
         target = np.asarray(target, float)
-        if yaw_ref is None:
-            yaw_ref = self._origin_yaw if self._origin_yaw is not None else 0.0
         if self._t0 is None:
             self._t0 = time.time()
         t0 = time.time()
@@ -219,7 +239,7 @@ class WaypointNavigator:
                     return
                 a2 = settle_accel(ds, target, self.gains)
                 rate, thr, tilt, dbg = attitude_command(ds, a2, float(target[2]),
-                                                         yaw_ref, self.plant, self.gains)
+                                                         self._yaw_ref(yaw, target), self.plant, self.gains)
                 self.commander.send_attitude_target(rate, thr)
                 if self.flog is not None:
                     self.flog.push(time.time() - self._t0, ds, dbg, nearest=target, cruise=0.0,
@@ -229,7 +249,7 @@ class WaypointNavigator:
                     return
             time.sleep(self.gains.LOOP_DT)
 
-    def _fly_leg(self, target, leg_start, yaw_ref):
+    def _fly_leg(self, target, leg_start, yaw_mode):
         g = self.gains
         t_leg = time.time()
         last = -1
@@ -241,7 +261,8 @@ class WaypointNavigator:
                     return "reached"
                 a2, tv, spd = cruise_accel(ds, leg_start, target, g)
                 rate, thr, tilt, dbg = attitude_command(ds, a2, float(target[2]),
-                                                         yaw_ref, self.plant, g)
+                                                         self._yaw_ref(yaw_mode, target),
+                                                         self.plant, g)
                 self.commander.send_attitude_target(rate, thr)
                 if self.flog is not None:
                     self.flog.push(time.time() - self._t0, ds, dbg, nearest=target, tangent=tv,
