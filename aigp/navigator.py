@@ -23,6 +23,26 @@ G = 9.81
 WFIX = np.array([1.0, -1.0, 1.0])   # sim rate-frame mirror (pitch axis), proven (fly_gate3/vq_waypoint2)
 
 
+class ZVDShaper:
+    """Zero-Vibration-Derivative input shaper on the body-rate command — cancels the underdamped
+    rate-loop ring (EXP-20a/b weights for zeta~0.14). Per-axis 3-impulse:
+    out[ax] = A0*r[t] + A1*r[t-d] + A2*r[t-2d], d = ZVD_DELAY[ax] in loop frames.
+    Amplitudes are the proven deploy values (closed_loop_policy.py); the delay is loop-rate
+    dependent (deploy used (7,7,4) at 72 Hz -> ~(24,24,14) at the navigator's ~250 Hz; tune live)."""
+    AMP = np.array([0.371, 0.476, 0.153])
+
+    def __init__(self, delay=(14, 14, 14)):
+        self.delay = tuple(int(x) for x in delay)
+        self.buf = np.zeros((2 * max(self.delay) + 1, 3))
+
+    def shape(self, rates):
+        self.buf = np.roll(self.buf, 1, axis=0)
+        self.buf[0] = np.asarray(rates, float)
+        a, d = self.AMP, self.delay
+        return np.array([a[0] * self.buf[0, ax] + a[1] * self.buf[d[ax], ax]
+                         + a[2] * self.buf[2 * d[ax], ax] for ax in range(3)])
+
+
 def _qfix(q):
     """Live sim-wire quat (wxyz) -> TRUE attitude quat (wxyz): q_true = q_wire[[1,2,3,0]]."""
     q = np.asarray(q, float)
@@ -63,6 +83,8 @@ class NavGains:
     MARGIN: float = 0.6
     C_DRAG: float = 0.057
     V_RAMP_RATE: float = 1.2   # startup speed ramp (m/s^2): avoids a violent max-tilt launch
+    ZVD: bool = False
+    ZVD_DELAY: tuple = (14, 14, 14)
 
 
 def load_plant(path: str = "sysid/sim_response.json"):
@@ -201,6 +223,7 @@ class WaypointNavigator:
         self._s_cam = 1.0
         self._yaw0_t = 0.0
         self._tf_ymirror = False
+        self._zvd = None
 
     # --- pure helpers (IO-free) ---
     def set_origin(self, pos_ned=None, yaw=None):
@@ -337,6 +360,7 @@ class WaypointNavigator:
 
     def _follow_spline(self, targets, *, yaw, v_cruise):
         g = self.gains
+        self._zvd = ZVDShaper(g.ZVD_DELAY) if g.ZVD else None
         gates = np.vstack([self._origin_pos] + [np.asarray(t, float) for t in targets])
         traj = GateTrajectory(gates, v_cruise=v_cruise, tilt_budget_deg=25.0,
                               c_drag=g.C_DRAG, margin=g.MARGIN)
@@ -365,6 +389,8 @@ class WaypointNavigator:
                     rate, thr, tilt, dbg = attitude_command_tf(ds, a2, float(ref["pos"][2]),
                                                                yref, self.plant, g, self._s_cam,
                                                                ymirror=self._tf_ymirror)
+                if self._zvd is not None:
+                    rate = self._zvd.shape(rate)
                 self.commander.send_attitude_target(rate, thr)
                 if self.flog is not None:
                     self.flog.push(time.time() - self._t0, ds, dbg, nearest=ref["pos"],

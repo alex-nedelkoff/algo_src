@@ -61,9 +61,11 @@ def parse_opts(argv):
       --maxspeed V                      along-track cruise speed cap (m/s)
       --vcruise V                       spline cruise speed (m/s, default 2.5)
       --legs                            use point-to-point legs engine instead of spline
+      --zvd                             enable ZVD input shaper on rate commands (ring killer)
+      --zvddelay N                      uniform ZVD delay in loop frames (default 14)
     """
     opts = {"yaw": "course", "lookat": None, "osgn": None, "maxspeed": None,
-            "vcruise": 2.5, "legs": False}
+            "vcruise": 2.5, "legs": False, "zvd": False, "zvddelay": (14, 14, 14)}
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -79,6 +81,10 @@ def parse_opts(argv):
             opts["vcruise"] = float(argv[i + 1]); i += 2
         elif a == "--legs":
             opts["legs"] = True; i += 1
+        elif a == "--zvd":
+            opts["zvd"] = True; i += 1
+        elif a == "--zvddelay" and i + 1 < len(argv):
+            n = int(argv[i + 1]); opts["zvddelay"] = (n, n, n); i += 2
         else:
             out.append(a); i += 1
     return out, opts
@@ -129,6 +135,9 @@ def main():
         gains.RATE_SIGN = np.array(opts["osgn"], float)
     if opts["maxspeed"] is not None:
         gains.MAX_SPEED = opts["maxspeed"]
+    if opts["zvd"]:
+        gains.ZVD = True
+        gains.ZVD_DELAY = opts["zvddelay"]
 
     # real rate_gain (plant[2]) so FlightLog reconstructs rad/s for display (parity with old goto.py);
     # store=s streams the COLLISION flag too (dashboard hard rule).

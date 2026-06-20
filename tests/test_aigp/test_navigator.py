@@ -177,7 +177,7 @@ def test_set_origin_computes_scam_and_yaw0t():
     assert np.isfinite(nav._yaw0_t)
 
 
-from aigp.navigator import attitude_command_tf, _spline_accel
+from aigp.navigator import ZVDShaper, attitude_command_tf, _spline_accel
 
 # sim-wire quat whose TRUE attitude (qfix) is level + nose along +N: true wxyz [1,0,0,0] -> wire [0,1,0,0]
 _WIRE_LEVEL = (0.0, 1.0, 0.0, 0.0)
@@ -206,6 +206,22 @@ def test_tf_yaw_sign_uses_truecam():
     rn, *_ = attitude_command_tf(st, np.zeros(2), -2.0, yaw_ref=-0.3, plant=_PLANT, gains=g, s_cam=1.0)
     # WFIX mirrors the yaw axis sign in the wire frame; assert the two are opposite + nonzero
     assert rp[2] * rn[2] < 0 and abs(rp[2]) > 1e-6
+
+
+def test_zvd_impulse_response_three_taps():
+    z = ZVDShaper(delay=(3, 3, 3))
+    out0 = z.shape([1.0, 0.0, 0.0])          # impulse on roll
+    assert abs(out0[0] - 0.371) < 1e-9        # tap A0 now
+    for _ in range(3):
+        out = z.shape([0.0, 0.0, 0.0])        # advance to frame 3 (buf[3] holds impulse)
+    assert abs(out[0] - 0.476) < 1e-9         # tap A1 at delay 3
+    for _ in range(3):
+        out = z.shape([0.0, 0.0, 0.0])        # advance to frame 6 (buf[6] holds impulse)
+    assert abs(out[0] - 0.153) < 1e-9         # tap A2 at 2*delay
+
+
+def test_zvd_amplitudes_sum_to_one():
+    np.testing.assert_allclose(ZVDShaper.AMP.sum(), 1.0, atol=1e-9)
 
 
 def test_spline_accel_corrects_cross_track_and_holds_speed():
