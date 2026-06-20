@@ -77,7 +77,7 @@ def parse_opts(argv):
     opts = {"yaw": "course", "lookat": None, "osgn": None, "maxspeed": None,
             "vcruise": 2.5, "legs": False, "zvd": False, "zvddelay": (14, 14, 14),
             "slat": None, "ymirror": None, "capture": None,
-            "vmax": None, "amax": None, "tilt": None}
+            "vmax": None, "amax": None, "tilt": None, "kiz": None}
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -105,6 +105,8 @@ def parse_opts(argv):
             opts["amax"] = float(argv[i + 1]); i += 2
         elif a == "--tilt" and i + 1 < len(argv):
             opts["tilt"] = float(argv[i + 1]); i += 2
+        elif a == "--kiz" and i + 1 < len(argv):
+            opts["kiz"] = float(argv[i + 1]); i += 2
         elif a == "--slat" and i + 1 < len(argv):
             opts["slat"] = float(argv[i + 1]); i += 2
         elif a == "--ymirror" and i + 1 < len(argv):
@@ -173,6 +175,8 @@ def main():
         gains.DECEL_MAX = max(gains.DECEL_MAX, opts["amax"])   # symmetric brake -> less final-wp overshoot
     if opts["tilt"] is not None:
         gains.TILT_MAX_DEG = opts["tilt"]
+    if opts["kiz"] is not None:
+        gains.KI_Z = opts["kiz"]
 
     # real rate_gain (plant[2]) so FlightLog reconstructs rad/s for display (parity with old goto.py);
     # store=s streams the COLLISION flag too (dashboard hard rule).

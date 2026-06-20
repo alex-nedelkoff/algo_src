@@ -68,6 +68,9 @@ class NavGains:
     REV_SP: float = 0.8     # max reverse along-track speed (m/s)
     KP_Z: float = 1.8
     KD_Z: float = 3.0
+    KI_Z: float = 0.8       # gated z-integral gain: cancels the ~1.2 m analytic-z sag for 3D waypoints
+    Z_INT_GATE: float = 1.5  # only integrate within this altitude error (no climb-transient windup)
+    Z_INT_CLIP: float = 3.0  # z-integral accel clamp (m/s^2)
     WMAX: float = 4.0
     YAW_WMAX: float = 1.0   # gentle yaw-rate cap: fast yaw steps excite the rate loop -> tilt spike
     TILT_MAX_DEG: float = 15.0
@@ -164,15 +167,16 @@ def attitude_command(state, a2, z_sp, yaw_ref, plant, gains):
     return rate_cmd_norm, thr, tilt, {"a": a, "w_des": w_des, "q_des": q_des, "thr": thr}
 
 
-def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=False):
+def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=False, z_int=0.0):
     """TRUE-frame attitude for STRAFING (camera not along travel). Port of vq_waypoint2's
     true-frame block: qfix attitude, s_cam yaw basis, WFIX rate mirror, tilt-conditional
     collective cap. a2 = desired horizontal accel in live-world (pos_ned); yaw_ref = desired
-    NOSE heading in the true-cam frame. Returns (rate_cmd_norm, thrust, tilt_deg, dbg)."""
+    NOSE heading in the true-cam frame. z_int = gated z-integral accel (cancels the sag). Returns
+    (rate_cmd_norm, thrust, tilt_deg, dbg)."""
     hover, k_a, rg = plant
     a = np.zeros(3)
     a[:2] = np.asarray(a2, float)
-    a[2] = gains.KP_Z * (z_sp - state.pos_ned[2]) + gains.KD_Z * (0.0 - state.vel_ned[2])
+    a[2] = (gains.KP_Z * (z_sp - state.pos_ned[2]) + gains.KD_Z * (0.0 - state.vel_ned[2]) + z_int)
     tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
     n = float(np.linalg.norm(a[:2]))
     if n > tilt_max_acc:
@@ -226,6 +230,15 @@ def _dr_vel(vw_prev, pos_xy, pos_prev_xy, dt, alpha=0.85):
         return np.asarray(vw_prev, float)
     vw_raw = (np.asarray(pos_xy, float) - np.asarray(pos_prev_xy, float)) / dt
     return alpha * np.asarray(vw_prev, float) + (1.0 - alpha) * vw_raw
+
+
+def _z_int_step(z_int, ze, dt, ki, gate, clip):
+    """One gated z-integrator step. Accumulate ki*ze*dt only when |ze| < gate (no windup during the
+    big initial climb transient), clamped to +-clip. Cancels the VQ analytic z-loop's ~1.2 m sag
+    (collective deficit, worse at higher tilt) so altitude-changing waypoints actually reach z."""
+    if abs(ze) < gate:
+        z_int = float(np.clip(z_int + ki * ze * dt, -clip, clip))
+    return z_int
 
 
 def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains):
@@ -306,6 +319,8 @@ class WaypointNavigator:
         self._vw = np.zeros(2)
         self._pos_prev_vw = None
         self._t_prev_vw = None
+        self._z_int = 0.0          # gated z-integral accel (m/s^2) for 3D waypoints
+        self._t_prev_zi = None
 
     def _world_vel(self, pos):
         """Stateful position-derived world velocity (see _dr_vel). Call once per loop step with the
@@ -530,6 +545,7 @@ class WaypointNavigator:
         n = len(targets)
         i = 0
         leg_start = self._origin_pos.copy()   # straight-line segment is leg_start -> targets[i]
+        self._z_int = 0.0; self._t_prev_zi = None   # fresh z-integral for this course
         self._probe_inflight(np.asarray(targets[0], float), leg_start, yaw)   # lock s_lat on the way to wp0
         t0 = time.time()
         last_log = -1
@@ -667,13 +683,21 @@ class WaypointNavigator:
     def _strafe_attitude(self, ds, a_al, a_lat, z_sp, yaw_ref_tf):
         """True-frame attitude for a strafe step: emit the course-frame intents (a_al, a_lat) along
         the drone's current true-heading basis (_strafe_recompose with the locked s_lat), then run
-        the proven vq_waypoint2 attitude block (attitude_command_tf, ymirror)."""
+        the proven vq_waypoint2 attitude block (attitude_command_tf, ymirror). Also advances the
+        gated z-integral (3D-waypoint altitude hold)."""
+        g = self.gains
+        now = time.time()
+        ze = float(z_sp) - float(ds.pos_ned[2])
+        if self._t_prev_zi is not None:
+            dt = min(now - self._t_prev_zi, 0.05)
+            self._z_int = _z_int_step(self._z_int, ze, dt, g.KI_Z, g.Z_INT_GATE, g.Z_INT_CLIP)
+        self._t_prev_zi = now
         R_t = quat_to_R(_qfix(ds.quat_wxyz))
         yaw_cur_t = float(np.arctan2(self._s_cam * R_t[1, 0], self._s_cam * R_t[0, 0]))
         fwd = np.array([np.cos(yaw_cur_t), np.sin(yaw_cur_t)])
         a_h = _strafe_recompose(a_al, a_lat, fwd, self._s_lat)
-        return attitude_command_tf(ds, a_h, z_sp, yaw_ref_tf, self.plant, self.gains,
-                                   self._s_cam, ymirror=self._tf_ymirror)
+        return attitude_command_tf(ds, a_h, z_sp, yaw_ref_tf, self.plant, g,
+                                   self._s_cam, ymirror=self._tf_ymirror, z_int=self._z_int)
 
     def settle(self, target=None, yaw="hold", tangent=None):
         if target is None:

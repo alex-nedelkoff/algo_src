@@ -297,7 +297,23 @@ def test_dr_vel_filters_position_derivative():
     np.testing.assert_allclose(vw, [0.0, 1.5], atol=1e-9)
 
 
-from aigp.navigator import _line_guidance
+from aigp.navigator import _line_guidance, _z_int_step
+
+
+def test_z_int_accumulates_within_gate():
+    # |ze| < gate -> integrate KI*ze*dt
+    zi = _z_int_step(0.0, ze=1.0, dt=0.5, ki=0.8, gate=1.5, clip=3.0)
+    np.testing.assert_allclose(zi, 0.4, atol=1e-9)
+
+
+def test_z_int_no_windup_outside_gate():
+    # big altitude error -> hold (no windup during the initial climb transient)
+    assert _z_int_step(0.5, ze=2.0, dt=0.5, ki=0.8, gate=1.5, clip=3.0) == 0.5
+
+
+def test_z_int_clamps():
+    assert _z_int_step(2.9, ze=1.0, dt=1.0, ki=0.8, gate=1.5, clip=3.0) == 3.0
+    assert _z_int_step(-2.9, ze=-1.0, dt=1.0, ki=0.8, gate=1.5, clip=3.0) == -3.0
 
 
 def test_line_guidance_on_line_drives_along_no_cross():
