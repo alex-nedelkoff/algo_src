@@ -77,7 +77,7 @@ def parse_opts(argv):
     opts = {"yaw": "course", "lookat": None, "osgn": None, "maxspeed": None,
             "vcruise": 2.5, "legs": False, "zvd": False, "zvddelay": (14, 14, 14),
             "slat": None, "ymirror": None, "capture": None,
-            "vmax": None, "amax": None, "tilt": None, "kiz": None}
+            "vmax": None, "amax": None, "tilt": None, "kiz": None, "stop": False}
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -107,6 +107,8 @@ def parse_opts(argv):
             opts["tilt"] = float(argv[i + 1]); i += 2
         elif a == "--kiz" and i + 1 < len(argv):
             opts["kiz"] = float(argv[i + 1]); i += 2
+        elif a == "--stop":
+            opts["stop"] = True; i += 1
         elif a == "--slat" and i + 1 < len(argv):
             opts["slat"] = float(argv[i + 1]); i += 2
         elif a == "--ymirror" and i + 1 < len(argv):
@@ -185,8 +187,10 @@ def main():
     nav.set_origin(pos_ned=spawn, yaw=yaw0)
     if opts["ymirror"] is not None:
         nav._tf_ymirror = opts["ymirror"]
+    if opts["stop"]:
+        nav._stop_each = True                # stop-on-a-dime at every waypoint
     if opts["slat"] is not None:
-        nav._s_lat = float(opts["slat"])     # forced sign -> _probe_s_lat is skipped
+        nav._s_lat = float(opts["slat"])     # forced sign -> probe skipped
     print(f"calib: s_cam={nav._s_cam:+.0f} yaw0_t={np.degrees(nav._yaw0_t):+.0f} "
           f"cam_live=({nav._cam_live[0]:+.2f},{nav._cam_live[1]:+.2f}) "
           f"ymirror={nav._tf_ymirror} s_lat={nav._s_lat:+.0f}", flush=True)

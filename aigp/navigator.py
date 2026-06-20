@@ -245,13 +245,15 @@ def _z_int_step(z_int, ze, dt, ki, gate, clip):
     return z_int
 
 
-def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains):
+def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains, brake_to_stop=False):
     """Straight-LINE segment following (not point-seeking) for crisp legs. Tracks the segment
     leg_start->target: along-track speed control + a STIFF cross-track term that holds the drone ON
     the line (the property point-seeking lacks on diagonal legs -> bowed paths). Computes the world
     accel in the leg's along/cross basis, then projects onto the FIXED course axes (cam_live,
     lat_course) for the true-frame recompose (so s_lat stays consistent). `vw` = position-derived
-    world velocity (frame-consistent with the position error). Returns (a_al, a_lat)."""
+    world velocity (frame-consistent with the position error). brake_to_stop=True uses a constant-
+    deceleration STOP profile (v_sp = sqrt(2*DECEL_MAX*e_along)) -> carry full speed, then brake hard
+    to a crisp halt at the target (stop-on-a-dime; no asymptotic creep). Returns (a_al, a_lat)."""
     pos = np.asarray(pos, float)[:2]; vw = np.asarray(vw, float)[:2]
     leg_start = np.asarray(leg_start, float)[:2]; target = np.asarray(target, float)[:2]
     seg = target - leg_start
@@ -266,7 +268,12 @@ def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains):
     e_cross = float((pos - leg_start) @ n_hat)
     v_along = float(vw @ t_hat); v_cross = float(vw @ n_hat)
     tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
-    v_along_sp = float(np.clip(gains.KV_AL * e_along, -gains.REV_SP, gains.MAX_SPEED))
+    if brake_to_stop:
+        v_cap = float(np.sqrt(2.0 * gains.DECEL_MAX * abs(e_along)))   # stoppable speed at this range
+        v_along_sp = float(np.clip(np.sign(e_along) * min(gains.MAX_SPEED, v_cap),
+                                   -gains.REV_SP, gains.MAX_SPEED))
+    else:
+        v_along_sp = float(np.clip(gains.KV_AL * e_along, -gains.REV_SP, gains.MAX_SPEED))
     a_along = float(np.clip(gains.KD_AL * (v_along_sp - v_along), -gains.DECEL_MAX, gains.FWD_AMAX))
     a_cross = float(np.clip(-gains.KP_CT * e_cross - gains.KD_CT * v_cross, -tilt_max_acc, tilt_max_acc))
     a_world = a_along * t_hat + a_cross * n_hat
@@ -325,6 +332,7 @@ class WaypointNavigator:
         self._t_prev_vw = None
         self._z_int = 0.0          # gated z-integral accel (m/s^2) for 3D waypoints
         self._t_prev_zi = None
+        self._stop_each = False    # True: stop-on-a-dime at EVERY waypoint (else only the final)
 
     def _world_vel(self, pos):
         """Stateful position-derived world velocity (see _dr_vel). Call once per loop step with the
@@ -558,15 +566,19 @@ class WaypointNavigator:
             if ds is not None:
                 target = np.asarray(targets[i], float)
                 is_last = (i == n - 1)
+                stop_here = is_last or self._stop_each   # crisp halt at the final wp (or every wp in --stop)
                 rel = target - ds.pos_ned
-                if self._advance_wp(float(np.linalg.norm(rel)), is_last, g):
+                if self._advance_wp(float(np.linalg.norm(rel)), stop_here, g):
                     print(f"   REACHED wp{i}", flush=True)
+                    if stop_here and not is_last:
+                        self.settle(target, yaw)         # full halt before the next leg
                     leg_start = target.copy()   # next leg starts at the waypoint just reached
                     i += 1
                     continue
                 vw = self._world_vel(ds.pos_ned)
                 a_al, a_lat = _line_guidance(ds.pos_ned, vw, leg_start, target,
-                                             self._cam_live, self._lat_course, g)
+                                             self._cam_live, self._lat_course, g,
+                                             brake_to_stop=stop_here)
                 rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(target[2]),
                                                              self._yaw_ref_tf(yaw, ds))
                 if self._zvd is not None:
