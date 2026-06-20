@@ -70,10 +70,14 @@ def parse_opts(argv):
       --zvddelay N                      uniform ZVD delay in loop frames (default 14)
       --slat S                          force strafe lateral sign (+1/-1), skip the live probe
       --ymirror {0|1}                   force the true-frame world-y mirror (default 1)
+      --vmax V                          strafe speed cap (m/s): sets MAX_SPEED + VLAT_MAX (default 1.2/1.5)
+      --amax A                          strafe forward accel cap (m/s^2, default 0.6)
+      --tilt D                          tilt-authority clamp (deg, default 15) -> cross/lateral accel ceiling
     """
     opts = {"yaw": "course", "lookat": None, "osgn": None, "maxspeed": None,
             "vcruise": 2.5, "legs": False, "zvd": False, "zvddelay": (14, 14, 14),
-            "slat": None, "ymirror": None, "capture": None}
+            "slat": None, "ymirror": None, "capture": None,
+            "vmax": None, "amax": None, "tilt": None}
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -95,6 +99,12 @@ def parse_opts(argv):
             n = int(argv[i + 1]); opts["zvddelay"] = (n, n, n); i += 2
         elif a == "--capture" and i + 1 < len(argv):
             opts["capture"] = float(argv[i + 1]); i += 2
+        elif a == "--vmax" and i + 1 < len(argv):
+            opts["vmax"] = float(argv[i + 1]); i += 2
+        elif a == "--amax" and i + 1 < len(argv):
+            opts["amax"] = float(argv[i + 1]); i += 2
+        elif a == "--tilt" and i + 1 < len(argv):
+            opts["tilt"] = float(argv[i + 1]); i += 2
         elif a == "--slat" and i + 1 < len(argv):
             opts["slat"] = float(argv[i + 1]); i += 2
         elif a == "--ymirror" and i + 1 < len(argv):
@@ -156,6 +166,12 @@ def main():
         gains.ZVD_DELAY = opts["zvddelay"]
     if opts["capture"] is not None:
         gains.CAPTURE = opts["capture"]
+    if opts["vmax"] is not None:
+        gains.MAX_SPEED = opts["vmax"]; gains.VLAT_MAX = opts["vmax"]
+    if opts["amax"] is not None:
+        gains.FWD_AMAX = opts["amax"]
+    if opts["tilt"] is not None:
+        gains.TILT_MAX_DEG = opts["tilt"]
 
     # real rate_gain (plant[2]) so FlightLog reconstructs rad/s for display (parity with old goto.py);
     # store=s streams the COLLISION flag too (dashboard hard rule).
