@@ -233,3 +233,55 @@ def test_spline_accel_corrects_cross_track_and_holds_speed():
     np.testing.assert_allclose(travel, [1.0, 0.0], atol=1e-9)
     assert a2[1] < 0      # cross-track accel pushes back toward the line (-E)
     assert a2[0] > 0      # along-track accel builds toward scheduled speed
+
+
+# --- true-frame strafe (camera-decoupled legs) ---
+from aigp.navigator import _strafe_recompose
+
+
+def test_strafe_recompose_identity_when_heading_aligned():
+    # nose along course-forward, s_lat=+1 -> the world accel passes through unchanged
+    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+    fwd = np.array([1.0, 0.0])
+    a_h = _strafe_recompose(np.array([0.3, 0.5]), cam_live, lat_course, fwd, s_lat=1.0)
+    np.testing.assert_allclose(a_h, [0.3, 0.5], atol=1e-9)
+
+
+def test_strafe_recompose_s_lat_reflects_lateral():
+    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+    fwd = np.array([1.0, 0.0])
+    a_h = _strafe_recompose(np.array([0.3, 0.5]), cam_live, lat_course, fwd, s_lat=-1.0)
+    np.testing.assert_allclose(a_h, [0.3, -0.5], atol=1e-9)   # only the lateral sign flips
+
+
+def test_strafe_recompose_rotates_intent_into_heading():
+    # nose rotated +90deg from course-forward: a pure course-forward intent emits along the nose
+    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+    fwd = np.array([0.0, 1.0])
+    a_h = _strafe_recompose(np.array([1.0, 0.0]), cam_live, lat_course, fwd, s_lat=1.0)
+    np.testing.assert_allclose(a_h, [0.0, 1.0], atol=1e-9)
+
+
+def test_set_origin_computes_course_axes():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0], quat=(0, 0, 0, 1)))
+    nav.set_origin(pos_ned=np.array([0, 0, -2.0]), yaw=0.0)   # raw spawn yaw 0
+    np.testing.assert_allclose(nav._cam_live, [-1.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(nav._lat_course, [0.0, -1.0], atol=1e-9)
+
+
+def test_yaw_ref_tf_hold_and_fixed_are_yaw0t():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL))
+    nav.set_origin()
+    ds = nav.store.get_drone()
+    assert nav._yaw_ref_tf("hold", ds) == nav._yaw0_t
+    assert nav._yaw_ref_tf("fixed", ds) == nav._yaw0_t
+
+
+def test_strafe_attitude_level_hover_zero_rate():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL))
+    nav.set_origin()
+    nav._s_lat = 1.0
+    ds = nav.store.get_drone()
+    rate, thr, tilt, dbg = nav._strafe_attitude(ds, np.zeros(2), -2.0, 0.0)
+    assert abs(thr - 0.5) < 1e-6 and abs(tilt) < 1e-6
+    np.testing.assert_allclose(rate, [0, 0, 0], atol=1e-6)

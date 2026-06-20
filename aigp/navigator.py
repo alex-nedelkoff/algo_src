@@ -190,6 +190,19 @@ def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=F
     return rate, thr, tilt, {"a": a, "w_des": w, "q_des": q_des, "thr": thr}
 
 
+def _strafe_recompose(a2, cam_live, lat_course, fwd, s_lat):
+    """Bridge a live-world horizontal accel (pos_ned) into the TRUE-frame heading chart that
+    desired_attitude expects, for camera-decoupled STRAFE flight. Verbatim vq_waypoint2 L231-233:
+    decompose a2 onto the FIXED spawn course axes (cam_live forward, lat_course perp), then re-emit
+    those scalar intents along the drone's CURRENT true-frame heading basis (fwd, lat=[-fwd_y,fwd_x]),
+    with the calibrated lateral sign s_lat. For nose-aligned fixed-heading flight a_h == a2."""
+    a_al = float(np.asarray(a2, float) @ np.asarray(cam_live, float))
+    a_lat = float(np.asarray(a2, float) @ np.asarray(lat_course, float)) * (s_lat if s_lat else 1.0)
+    fwd = np.asarray(fwd, float)
+    lat = np.array([-fwd[1], fwd[0]])
+    return a_al * fwd + a_lat * lat
+
+
 def _spline_accel(state, ref, gains):
     """traj_track's cross/along law to the spline reference. Returns (a2 horiz, travel unit)."""
     tang = np.asarray(ref["tang"], float)[:2]
@@ -222,7 +235,10 @@ class WaypointNavigator:
         self._t0 = None
         self._s_cam = 1.0
         self._yaw0_t = 0.0
-        self._tf_ymirror = False
+        self._cam_live = np.array([1.0, 0.0])    # FIXED spawn course-forward (world XY), set in set_origin
+        self._lat_course = np.array([0.0, 1.0])  # FIXED spawn course-perp (world XY)
+        self._s_lat = 0.0                         # strafe lateral sign (0 = unprobed); locked by _probe_s_lat
+        self._tf_ymirror = True                   # world-y mirror in the true frame (proven by vq_waypoint2 --square)
         self._zvd = None
 
     # --- pure helpers (IO-free) ---
@@ -252,6 +268,11 @@ class WaypointNavigator:
         else:
             self._s_cam = 1.0
             self._yaw0_t = float(self._origin_yaw or 0.0)
+
+        # FIXED spawn course frame for strafe (camera-decoupled) modes (verbatim vq_waypoint2 L103/L110):
+        # cam_live = the camera's world-XY direction at spawn; lat_course = its perpendicular.
+        self._cam_live = -np.array([np.cos(self._origin_yaw), np.sin(self._origin_yaw)])
+        self._lat_course = np.array([-self._cam_live[1], self._cam_live[0]])
 
     def _resolve(self, wp, frame):
         wp = np.asarray(wp, float)
@@ -440,10 +461,28 @@ class WaypointNavigator:
         return "timeout"
 
     def _yaw_ref_tf(self, yaw, ds):
-        """NOSE heading in the true-cam frame for strafe modes. course handled in the raw path."""
-        if yaw == "fixed":
+        """NOSE heading in the true-cam frame for strafe (camera-decoupled) modes. course/face are
+        handled in the raw nose-first path. 'hold'/'fixed' hold the spawn true-cam heading."""
+        if yaw in ("hold", "fixed"):
             return self._yaw0_t
-        raise NotImplementedError(yaw)   # 'lookat' added in Task 6
+        raise NotImplementedError(yaw)   # 'lookat' (camera about a point) is a follow-up
+
+    @staticmethod
+    def _is_strafe(yaw_mode):
+        """Camera-DECOUPLED modes that fly sideways (heading independent of travel) -> true frame.
+        'hold'/'fixed' = fixed heading. Nose-first modes (course/face) use the raw path."""
+        return yaw_mode in ("hold", "fixed")
+
+    def _strafe_attitude(self, ds, a2, z_sp, yaw_ref_tf):
+        """True-frame attitude for a strafe step: bridge the world accel a2 into the true-heading
+        chart (_strafe_recompose with the locked s_lat), then run the proven vq_waypoint2 attitude
+        block (attitude_command_tf, ymirror). Returns (rate_cmd_norm, thrust, tilt_deg, dbg)."""
+        R_t = quat_to_R(_qfix(ds.quat_wxyz))
+        yaw_cur_t = float(np.arctan2(self._s_cam * R_t[1, 0], self._s_cam * R_t[0, 0]))
+        fwd = np.array([np.cos(yaw_cur_t), np.sin(yaw_cur_t)])
+        a_h = _strafe_recompose(a2, self._cam_live, self._lat_course, fwd, self._s_lat)
+        return attitude_command_tf(ds, a_h, z_sp, yaw_ref_tf, self.plant, self.gains,
+                                   self._s_cam, ymirror=self._tf_ymirror)
 
     def settle(self, target=None, yaw="hold", tangent=None):
         if target is None:
