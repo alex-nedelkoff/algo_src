@@ -228,6 +228,34 @@ def _dr_vel(vw_prev, pos_xy, pos_prev_xy, dt, alpha=0.85):
     return alpha * np.asarray(vw_prev, float) + (1.0 - alpha) * vw_raw
 
 
+def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains):
+    """Straight-LINE segment following (not point-seeking) for crisp legs. Tracks the segment
+    leg_start->target: along-track speed control + a STIFF cross-track term that holds the drone ON
+    the line (the property point-seeking lacks on diagonal legs -> bowed paths). Computes the world
+    accel in the leg's along/cross basis, then projects onto the FIXED course axes (cam_live,
+    lat_course) for the true-frame recompose (so s_lat stays consistent). `vw` = position-derived
+    world velocity (frame-consistent with the position error). Returns (a_al, a_lat)."""
+    pos = np.asarray(pos, float)[:2]; vw = np.asarray(vw, float)[:2]
+    leg_start = np.asarray(leg_start, float)[:2]; target = np.asarray(target, float)[:2]
+    seg = target - leg_start
+    seglen = float(np.linalg.norm(seg))
+    if seglen > 1e-6:
+        t_hat = seg / seglen
+    else:
+        rel = target - pos
+        t_hat = rel / (float(np.linalg.norm(rel)) + 1e-9)
+    n_hat = np.array([-t_hat[1], t_hat[0]])
+    e_along = float((target - pos) @ t_hat)
+    e_cross = float((pos - leg_start) @ n_hat)
+    v_along = float(vw @ t_hat); v_cross = float(vw @ n_hat)
+    tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
+    v_along_sp = float(np.clip(gains.KV_AL * e_along, -gains.REV_SP, gains.MAX_SPEED))
+    a_along = float(np.clip(gains.KD_AL * (v_along_sp - v_along), -gains.DECEL_MAX, gains.FWD_AMAX))
+    a_cross = float(np.clip(-gains.KP_CT * e_cross - gains.KD_CT * v_cross, -tilt_max_acc, tilt_max_acc))
+    a_world = a_along * t_hat + a_cross * n_hat
+    return float(a_world @ np.asarray(cam_live, float)), float(a_world @ np.asarray(lat_course, float))
+
+
 def _strafe_recompose(a_al, a_lat, fwd, s_lat):
     """Emit course-frame intents (a_al forward, a_lat course-perp) along the drone's CURRENT
     true-heading basis (fwd, lat=[-fwd_y,fwd_x]) with the calibrated lateral sign s_lat. Verbatim
@@ -415,7 +443,8 @@ class WaypointNavigator:
         self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
         if self._is_strafe(yaw):
             self._probe_s_lat(float(np.asarray(target, float)[2]))
-        self._align_yaw(target, yaw, self._origin_pos)   # turn-in-place (no-op for strafe)
+            return self._fly_strafe_course([target], yaw)   # line-following, same as follow()
+        self._align_yaw(target, yaw, self._origin_pos)   # turn-in-place (nose-first)
         return self._fly_leg(target, self._origin_pos, yaw)
 
     def follow(self, wps, *, yaw="course", look_point=None, v_cruise=2.5,
@@ -495,6 +524,7 @@ class WaypointNavigator:
         g = self.gains
         n = len(targets)
         i = 0
+        leg_start = self._origin_pos.copy()   # straight-line segment is leg_start -> targets[i]
         t0 = time.time()
         last_log = -1
         while i < n and time.time() - t0 < g.WP_TIMEOUT * n:
@@ -505,11 +535,12 @@ class WaypointNavigator:
                 rel = target - ds.pos_ned
                 if self._advance_wp(float(np.linalg.norm(rel)), is_last, g):
                     print(f"   REACHED wp{i}", flush=True)
+                    leg_start = target.copy()   # next leg starts at the waypoint just reached
                     i += 1
                     continue
                 vw = self._world_vel(ds.pos_ned)
-                a_al, a_lat = _course_guidance(ds.pos_ned, np.array([vw[0], vw[1], 0.0]), target,
-                                               self._cam_live, self._lat_course, g)
+                a_al, a_lat = _line_guidance(ds.pos_ned, vw, leg_start, target,
+                                             self._cam_live, self._lat_course, g)
                 rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(target[2]),
                                                              self._yaw_ref_tf(yaw, ds))
                 if self._zvd is not None:

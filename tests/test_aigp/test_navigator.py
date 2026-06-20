@@ -297,6 +297,42 @@ def test_dr_vel_filters_position_derivative():
     np.testing.assert_allclose(vw, [0.0, 1.5], atol=1e-9)
 
 
+from aigp.navigator import _line_guidance
+
+
+def test_line_guidance_on_line_drives_along_no_cross():
+    g = NavGains()
+    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+    # leg along +cam_live; drone ON the line at 3 m, moving along it -> pure along, zero cross
+    a_al, a_lat = _line_guidance(pos=np.array([3.0, 0.0, -2.0]), vw=np.array([1.0, 0.0]),
+                                 leg_start=np.array([0.0, 0.0, -2.0]), target=np.array([10.0, 0.0, -2.0]),
+                                 cam_live=cam_live, lat_course=lat_course, gains=g)
+    assert a_al > 0 and abs(a_lat) < 1e-6
+
+
+def test_line_guidance_off_line_corrects_back():
+    g = NavGains()
+    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+    # leg along +x; drone 1 m off to +y, at rest -> cross term pushes back toward the line (-y)
+    a_al, a_lat = _line_guidance(np.array([3.0, 1.0, -2.0]), np.array([0.0, 0.0]),
+                                 np.array([0.0, 0.0, -2.0]), np.array([10.0, 0.0, -2.0]),
+                                 cam_live, lat_course, g)
+    assert a_lat < 0
+
+
+def test_line_guidance_diagonal_stays_on_segment():
+    g = NavGains()
+    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+    d = 1.0 / np.sqrt(2.0)
+    # diagonal leg (0,0)->(10,10); drone ON it at (3,3) moving along -> both course components drive +,
+    # cross ~0 (a STRAIGHT diagonal, the property point-seeking lacked)
+    a_al, a_lat = _line_guidance(np.array([3.0, 3.0, -2.0]), np.array([d, d]),
+                                 np.array([0.0, 0.0, -2.0]), np.array([10.0, 10.0, -2.0]),
+                                 cam_live, lat_course, g)
+    assert a_al > 0 and a_lat > 0
+    np.testing.assert_allclose(a_al, a_lat, atol=1e-6)   # symmetric diagonal -> equal course components
+
+
 def test_course_guidance_brakes_when_overspeed():
     # moving fast forward, target close ahead -> along accel goes negative (brake), not accelerate
     g = NavGains()
