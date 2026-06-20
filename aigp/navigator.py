@@ -340,6 +340,7 @@ class WaypointNavigator:
         self._z_int = 0.0          # gated z-integral accel (m/s^2) for 3D waypoints
         self._t_prev_zi = None
         self._stop_each = False    # True: stop-on-a-dime at EVERY waypoint (else only the final)
+        self._cur_travel = np.array([1.0, 0.0])   # current leg travel dir (world XY) for course yaw
 
     def _world_vel(self, pos):
         """Stateful position-derived world velocity (see _dr_vel). Call once per loop step with the
@@ -469,13 +470,13 @@ class WaypointNavigator:
         if look_point is not None:
             self._look_point = self._resolve(look_point, frame)
         target = self._resolve(wp, frame)
-        if self._is_strafe(yaw):       # camera-decoupled strafe must use the gentle legs engine
+        if self._is_tf_mode(yaw):      # strafe (hold/fixed) + camera-forward (course) -> true-frame engine
             engine = "legs"            # (the spline path rings the rate loop)
         if engine == "spline":
             return self._follow_spline([target], yaw=yaw, v_cruise=v_cruise)
         # legs engine
         self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
-        if self._is_strafe(yaw):
+        if self._is_tf_mode(yaw):
             return self._fly_strafe_course([target], yaw)   # line-following (probes s_lat in-flight)
         self._align_yaw(target, yaw, self._origin_pos)   # turn-in-place (nose-first)
         return self._fly_leg(target, self._origin_pos, yaw)
@@ -489,7 +490,7 @@ class WaypointNavigator:
         if look_point is not None:
             self._look_point = self._resolve(look_point, frame)
         targets = [self._resolve(w, frame) for w in wps]
-        if self._is_strafe(yaw):       # camera-decoupled strafe -> gentle legs engine (spline rings)
+        if self._is_tf_mode(yaw):      # strafe (hold/fixed) + camera-forward (course) -> legs engine
             engine = "legs"
         if engine == "legs":
             return self._follow_legs(targets, yaw=yaw, settle=True)
@@ -539,7 +540,7 @@ class WaypointNavigator:
         if self.flog is not None:
             self.flog.set_path(np.vstack([self._current_pos()] + targets))
         self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
-        if self._is_strafe(yaw):
+        if self._is_tf_mode(yaw):
             return self._fly_strafe_course(targets, yaw)   # continuous flow (probes s_lat in-flight)
         leg_start = self._origin_pos.copy()
         for i, target in enumerate(targets):
@@ -565,6 +566,7 @@ class WaypointNavigator:
         i = 0
         leg_start = self._origin_pos.copy()   # straight-line segment is leg_start -> targets[i]
         self._z_int = 0.0; self._t_prev_zi = None   # fresh z-integral for this course
+        self._cur_travel = self._unit_xy(np.asarray(targets[0], float) - leg_start)   # for course yaw
         self._probe_inflight(np.asarray(targets[0], float), leg_start, yaw)   # lock s_lat on the way to wp0
         t0 = time.time()
         last_log = -1
@@ -574,6 +576,7 @@ class WaypointNavigator:
                 target = np.asarray(targets[i], float)
                 is_last = (i == n - 1)
                 stop_here = is_last or self._stop_each   # crisp halt at the final wp (or every wp in --stop)
+                self._cur_travel = self._unit_xy(target - leg_start)   # camera tracks this (course mode)
                 rel = target - ds.pos_ned
                 if self._advance_wp(float(np.linalg.norm(rel)), stop_here, g):
                     print(f"   REACHED wp{i}", flush=True)
@@ -694,11 +697,31 @@ class WaypointNavigator:
         return "timeout"
 
     def _yaw_ref_tf(self, yaw, ds):
-        """NOSE heading in the true-cam frame for strafe (camera-decoupled) modes. course/face are
-        handled in the raw nose-first path. 'hold'/'fixed' hold the spawn true-cam heading."""
+        """NOSE heading in the true-cam frame. 'hold'/'fixed' hold the spawn true-cam heading.
+        'course' points the CAMERA along the current travel direction (camera-forward): rotate the
+        true-cam yaw by the world angle from cam_live to the travel dir, sign = s_lat (the world-y
+        mirror) -- so the camera tracks where the drone is going. (s_lat=0 during the probe -> holds
+        yaw0_t.)"""
         if yaw in ("hold", "fixed"):
             return self._yaw0_t
+        if yaw == "course":
+            d = np.asarray(self._cur_travel, float)
+            ang = float(np.arctan2(self._cam_live[0] * d[1] - self._cam_live[1] * d[0],
+                                   float(self._cam_live @ d)))
+            return self._yaw0_t + (self._s_lat or 0.0) * ang
         raise NotImplementedError(yaw)   # 'lookat' (camera about a point) is a follow-up
+
+    @staticmethod
+    def _unit_xy(v):
+        v = np.asarray(v, float)[:2]
+        n = float(np.linalg.norm(v))
+        return v / n if n > 1e-9 else np.array([1.0, 0.0])
+
+    @staticmethod
+    def _is_tf_mode(yaw):
+        """Modes that fly the true-frame continuous engine (_fly_strafe_course): camera-decoupled
+        strafe (hold/fixed) + camera-forward (course)."""
+        return yaw in ("hold", "fixed", "course")
 
     @staticmethod
     def _is_strafe(yaw_mode):

@@ -415,6 +415,22 @@ def test_yaw_ref_tf_hold_and_fixed_are_yaw0t():
     assert nav._yaw_ref_tf("fixed", ds) == nav._yaw0_t
 
 
+def test_yaw_ref_tf_course_tracks_travel_direction():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL))
+    nav.set_origin()
+    nav._s_lat = 1.0
+    ds = nav.store.get_drone()
+    # travel along cam_live -> camera already aligned -> yaw_ref = yaw0_t
+    nav._cur_travel = nav._cam_live.copy()
+    assert abs(nav._yaw_ref_tf("course", ds) - nav._yaw0_t) < 1e-9
+    # travel = cam_live rotated +90deg -> yaw_ref = yaw0_t + s_lat*(pi/2)
+    nav._cur_travel = np.array([-nav._cam_live[1], nav._cam_live[0]])
+    assert abs(nav._yaw_ref_tf("course", ds) - (nav._yaw0_t + np.pi / 2)) < 1e-6
+    # s_lat = -1 mirrors the rotation sense
+    nav._s_lat = -1.0
+    assert abs(nav._yaw_ref_tf("course", ds) - (nav._yaw0_t - np.pi / 2)) < 1e-6
+
+
 def test_strafe_attitude_level_hover_zero_rate():
     nav = _nav(_mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL))
     nav.set_origin()

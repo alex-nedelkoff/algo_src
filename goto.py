@@ -156,8 +156,8 @@ def main():
                 if opts["lookat"] is not None else None)         # offset-from-spawn -> absolute
         frame = "world"
 
-    strafe = opts["yaw"] in ("hold", "fixed")   # camera-decoupled -> always the legs engine
-    eng = "legs" if (opts["legs"] or strafe) else "spline"
+    tf_mode = opts["yaw"] in ("hold", "fixed", "course")   # true-frame continuous legs engine
+    eng = "legs" if (opts["legs"] or tf_mode) else "spline"
     print(f"GOTO {len(wps)} waypoints ({'body fwd/right/down' if body else 'world NED'}) "
           f"yaw={opts['yaw']} lookat={opts['lookat']} engine={eng}"
           f" vcruise={opts['vcruise']}: {wps}", flush=True)
