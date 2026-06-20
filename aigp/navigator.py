@@ -741,9 +741,11 @@ class WaypointNavigator:
             dt = min(now - self._t_prev_zi, 0.05)
             self._z_int = _z_int_step(self._z_int, ze, dt, g.KI_Z, g.Z_INT_GATE, g.Z_INT_CLIP)
         self._t_prev_zi = now
-        R_t = quat_to_R(_qfix(ds.quat_wxyz))
-        yaw_cur_t = float(np.arctan2(self._s_cam * R_t[1, 0], self._s_cam * R_t[0, 0]))
-        fwd = np.array([np.cos(yaw_cur_t), np.sin(yaw_cur_t)])
+        # Recompose onto the FIXED spawn true-forward (heading-independent world->true chart bridge).
+        # NOT the live heading: in 'course' the nose rotates to track travel, and emitting the accel
+        # along the live heading rotates the drive with it -> positive feedback -> runaway. desired_
+        # attitude (inside attitude_command_tf) handles the nose heading separately via yaw_ref.
+        fwd = np.array([np.cos(self._yaw0_t), np.sin(self._yaw0_t)])
         a_h = _strafe_recompose(a_al, a_lat, fwd, self._s_lat)
         return attitude_command_tf(ds, a_h, z_sp, yaw_ref_tf, self.plant, g,
                                    self._s_cam, ymirror=self._tf_ymirror, z_int=self._z_int,
