@@ -84,7 +84,7 @@ class NavGains:
     C_DRAG: float = 0.057
     V_RAMP_RATE: float = 1.2   # startup speed ramp (m/s^2): avoids a violent max-tilt launch
     ZVD: bool = False
-    ZVD_DELAY: tuple = (14, 14, 14)
+    ZVD_DELAY: tuple = (24, 24, 14)
 
 
 def load_plant(path: str = "sysid/sim_response.json"):
@@ -366,13 +366,41 @@ class WaypointNavigator:
                               c_drag=g.C_DRAG, margin=g.MARGIN)
         if self.flog is not None:
             self.flog.set_path(traj._P)
+
+        # pre-stabilize: damp the spawn tilt + warm the ZVD buffer before tracking, else the
+        # launch step rings the underdamped rate loop (tilt 18 -> 40 -> abort).
+        t_pre = time.time()
+        while time.time() - t_pre < 3.0:
+            ds = self.store.get_drone()
+            if ds is not None:
+                R = quat_to_R(ds.quat_wxyz)
+                yaw_hold = float(np.arctan2(R[1, 0], R[0, 0]))
+                a2 = -0.6 * ds.vel_ned[:2]                       # damp horizontal velocity, stay level
+                rate, thr, tilt, dbg = attitude_command(ds, a2, float(ds.pos_ned[2]),
+                                                         yaw_hold, self.plant, g)
+                if self._zvd is not None:
+                    rate = self._zvd.shape(rate)
+                self.commander.send_attitude_target(rate, thr)
+                if self.flog is not None:
+                    self.flog.push(time.time() - self._t0, ds, dbg, cruise=0.0,
+                                   running=self.store.get_race_live(), armed=True)
+                if tilt > g.ABORT_TILT_DEG:
+                    print(f"  ABORT prestab tilt={tilt:.0f}", flush=True)
+                    return "abort"
+                if tilt < 5.0 and float(np.linalg.norm(ds.vel_ned[:2])) < 0.5:
+                    print(f"  prestab done tilt={tilt:.0f}", flush=True)
+                    break
+            time.sleep(g.LOOP_DT)
+
         t_run = time.time()
         last = -1
         s_ref = 0.0
         pos_prev = None
+        nloop = 0
         while time.time() - t_run < g.WP_TIMEOUT * max(2, len(targets)):
             ds = self.store.get_drone()
             if ds is not None:
+                nloop += 1
                 pos = ds.pos_ned
                 if pos_prev is not None:
                     s_ref = min(s_ref + float(np.linalg.norm((pos - pos_prev)[:2])), traj.s_max)
@@ -406,7 +434,8 @@ class WaypointNavigator:
                 if k != last:
                     last = k
                     print(f"  s={s_ref:5.1f}/{traj.s_max:.0f} v={float(np.linalg.norm(ds.vel_ned[:2])):4.1f}"
-                          f"/{ref['v']:.1f} tilt={tilt:3.0f}", flush=True)
+                          f"/{ref['v']:.1f} tilt={tilt:3.0f}"
+                          f" hz={nloop / max(time.time() - t_run, 1e-6):.0f}", flush=True)
             time.sleep(g.LOOP_DT)
         return "timeout"
 
