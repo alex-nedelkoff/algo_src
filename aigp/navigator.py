@@ -81,6 +81,7 @@ class NavGains:
     # sign — fly nose-first via yaw='lookat'/'course' to avoid it.) Kept as a knob for probing.
     RATE_SIGN: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, 1.0]))
     ARRIVE: float = 1.5
+    CAPTURE: float = 2.5    # strafe flow: advance to the next wp at this radius (no stop -> smooth corners)
     DECEL_MAX: float = 2.0
     SETTLE_T: float = 2.5
     SETTLE_V: float = 0.4
@@ -280,16 +281,26 @@ class WaypointNavigator:
 
     def _world_vel(self, pos):
         """Stateful position-derived world velocity (see _dr_vel). Call once per loop step with the
-        live pos_ned; returns the filtered (vx, vy)."""
+        live pos_ned; returns the filtered (vx, vy). Only advances on a FRESH odometry sample (pos
+        actually changed) -- the control loop runs ~250 Hz but odometry updates slower, so
+        differentiating every loop injects a zero-velocity sawtooth (tilt jitter)."""
         now = time.time()
         pos = np.asarray(pos, float)
         if self._pos_prev_vw is None:
             self._pos_prev_vw = pos.copy(); self._t_prev_vw = now; self._vw = np.zeros(2)
             return self._vw
+        if np.allclose(pos[:2], self._pos_prev_vw[:2]):    # no new odometry sample -> hold estimate
+            return self._vw
         dt = min(now - self._t_prev_vw, 0.05); self._t_prev_vw = now
         self._vw = _dr_vel(self._vw, pos[:2], self._pos_prev_vw[:2], dt)
         self._pos_prev_vw = pos.copy()
         return self._vw
+
+    @staticmethod
+    def _advance_wp(rel_norm, is_last, gains):
+        """Strafe flow: advance to the next waypoint at the loose CAPTURE radius (still moving ->
+        rounded corners); the FINAL waypoint completes only at the tight ARRIVE radius."""
+        return float(rel_norm) < (gains.ARRIVE if is_last else gains.CAPTURE)
 
     def _reset_world_vel(self):
         self._vw = np.zeros(2); self._pos_prev_vw = None; self._t_prev_vw = None
@@ -461,6 +472,7 @@ class WaypointNavigator:
         self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
         if self._is_strafe(yaw):
             self._probe_s_lat(float(np.asarray(targets[0], float)[2]))   # lock lateral sign first
+            return self._fly_strafe_course(targets, yaw)   # continuous flow (no per-corner stop)
         leg_start = self._origin_pos.copy()
         for i, target in enumerate(targets):
             leg_tan = self._tan(leg_start, target)    # fixed leg direction (camera holds it)
@@ -473,6 +485,53 @@ class WaypointNavigator:
                 self.settle(target, yaw, tangent=leg_tan)
             leg_start = self._current_pos()
         return "reached"
+
+    def _fly_strafe_course(self, targets, yaw):
+        """Continuous camera-decoupled flight through all waypoints: ONE loop, no per-corner stop.
+        Heading is fixed (no turn-in-place), so the drone flows through corners -- advance to the
+        next wp at the loose CAPTURE radius while still moving (rounded corners, steady speed = no
+        stop-and-go lurch); only the final wp uses the tight ARRIVE + a settle. Guidance/attitude
+        reuse the proven fixed-course-frame strafe (_course_guidance + _strafe_attitude)."""
+        g = self.gains
+        n = len(targets)
+        i = 0
+        t0 = time.time()
+        last_log = -1
+        while i < n and time.time() - t0 < g.WP_TIMEOUT * n:
+            ds = self.store.get_drone()
+            if ds is not None:
+                target = np.asarray(targets[i], float)
+                is_last = (i == n - 1)
+                rel = target - ds.pos_ned
+                if self._advance_wp(float(np.linalg.norm(rel)), is_last, g):
+                    print(f"   REACHED wp{i}", flush=True)
+                    i += 1
+                    continue
+                vw = self._world_vel(ds.pos_ned)
+                a_al, a_lat = _course_guidance(ds.pos_ned, np.array([vw[0], vw[1], 0.0]), target,
+                                               self._cam_live, self._lat_course, g)
+                rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(target[2]),
+                                                             self._yaw_ref_tf(yaw, ds))
+                if self._zvd is not None:
+                    rate = self._zvd.shape(rate)
+                self.commander.send_attitude_target(rate, thr)
+                if self.flog is not None:
+                    self.flog.push(time.time() - self._t0, ds, dbg, nearest=target,
+                                   tangent=self._cam_live, cruise=float(np.linalg.norm(vw)),
+                                   running=self.store.get_race_live(), armed=True)
+                if tilt > g.ABORT_TILT_DEG:
+                    print(f"  ABORT tilt={tilt:.0f}", flush=True)
+                    return "abort"
+                k = int((time.time() - t0) / 1.0)
+                if k != last_log:
+                    last_log = k
+                    print(f"  wp{i} dist={float(np.linalg.norm(rel)):4.1f} "
+                          f"v={float(np.linalg.norm(vw)):4.1f} tilt={tilt:3.0f}", flush=True)
+            time.sleep(g.LOOP_DT)
+        if i >= n:
+            self.settle(np.asarray(targets[-1], float), yaw)   # park at the final wp
+            return "reached"
+        return "timeout"
 
     def _follow_spline(self, targets, *, yaw, v_cruise):
         g = self.gains
