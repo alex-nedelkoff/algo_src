@@ -201,6 +201,16 @@ def test_tf_z_ff_adds_lift():
     np.testing.assert_allclose(d1["a"][2] - d0["a"][2], -2.0, atol=1e-9)
 
 
+def test_tf_collective_anticipates_commanded_tilt():
+    g = NavGains(); g.Z_FF = 0.0
+    st = _mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)   # ACTUAL attitude is level
+    _, thr0, _, _ = attitude_command_tf(st, np.zeros(2), -2.0, 0.0, _PLANT, g, 1.0)
+    _, thr1, _, _ = attitude_command_tf(st, np.array([5.0, 0.0]), -2.0, 0.0, _PLANT, g, 1.0)
+    # anticipatory: a horizontal (tilting) accel command raises the collective even though the
+    # actual tilt is still level -> no altitude sag while leaning. (actual-tilt comp would not.)
+    assert thr1 > thr0
+
+
 def test_tf_clamps_tilt():
     g = NavGains()
     st = _mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)

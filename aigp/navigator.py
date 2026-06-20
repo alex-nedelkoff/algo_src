@@ -204,7 +204,12 @@ def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=F
                          - gains.KD_YAW * om_t[2], -1.5, 1.5))
     w = w * WFIX
     c_max = 10.0 if tilt > 40.0 else 18.0
-    thr = accel_to_thrust_norm(min(collective_accel(a, q_t), c_max), hover, k_a)
+    # Collective from the DESIRED thrust magnitude |a - g| (anticipatory: it accounts for the
+    # COMMANDED tilt, not the lagging ACTUAL tilt) -> adds lift before the lean costs altitude, so
+    # aggressive accel doesn't sag into the ground. At level it equals the old (g - a_z); diverges
+    # only when tilted/transient.
+    c_des = float(np.linalg.norm(a - np.array([0.0, 0.0, G])))
+    thr = accel_to_thrust_norm(min(c_des, c_max), hover, k_a)
     rate = np.clip(w / rg, -gains.WMAX, gains.WMAX)
     return rate, thr, tilt, {"a": a, "w_des": w, "q_des": q_des, "thr": thr}
 
