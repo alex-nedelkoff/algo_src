@@ -72,8 +72,9 @@ class NavGains:
     KI_Z: float = 0.8       # gated z-integral gain: cancels the ~1.2 m analytic-z sag for 3D waypoints
     Z_INT_GATE: float = 1.5  # only integrate within this altitude error (no climb-transient windup)
     Z_INT_CLIP: float = 3.0  # z-integral accel clamp (m/s^2)
-    Z_FF: float = -2.0      # constant collective feed-forward (m/s^2, up) = the VQ steady deficit;
-    #                         instant so the integral doesn't lag -> no transient high-tilt sag
+    Z_FF: float = -2.4      # constant collective feed-forward (m/s^2, up) = the VQ steady deficit
+    #                         (matches the integral's steady value); instant so it doesn't lag ->
+    #                         high-tilt transient sag cut ~1.6 m -> ~0.7 m. Integral trims the residual.
     WMAX: float = 4.0
     YAW_WMAX: float = 1.0   # gentle yaw-rate cap: fast yaw steps excite the rate loop -> tilt spike
     TILT_MAX_DEG: float = 15.0
