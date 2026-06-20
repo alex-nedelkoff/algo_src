@@ -66,6 +66,7 @@ class NavGains:
     VLAT_MAX: float = 1.5   # lateral speed cap (m/s)
     FWD_AMAX: float = 0.6   # forward accel cap (m/s^2) -> terminal ~3 m/s vs drag
     REV_SP: float = 0.8     # max reverse along-track speed (m/s)
+    BRAKE_MARGIN: float = 0.85   # stop-profile: brake as if slightly under DECEL (covers vel-est lag -> no overshoot)
     KP_Z: float = 1.8
     KD_Z: float = 3.0
     KI_Z: float = 0.8       # gated z-integral gain: cancels the ~1.2 m analytic-z sag for 3D waypoints
@@ -269,7 +270,7 @@ def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains, brak
     v_along = float(vw @ t_hat); v_cross = float(vw @ n_hat)
     tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
     if brake_to_stop:
-        v_cap = float(np.sqrt(2.0 * gains.DECEL_MAX * abs(e_along)))   # stoppable speed at this range
+        v_cap = float(np.sqrt(2.0 * gains.DECEL_MAX * gains.BRAKE_MARGIN * abs(e_along)))   # stoppable speed
         v_along_sp = float(np.clip(np.sign(e_along) * min(gains.MAX_SPEED, v_cap),
                                    -gains.REV_SP, gains.MAX_SPEED))
     else:
