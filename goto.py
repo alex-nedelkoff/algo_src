@@ -68,9 +68,12 @@ def parse_opts(argv):
       --legs                            use point-to-point legs engine instead of spline
       --zvd                             enable ZVD input shaper on rate commands (ring killer)
       --zvddelay N                      uniform ZVD delay in loop frames (default 14)
+      --slat S                          force strafe lateral sign (+1/-1), skip the live probe
+      --ymirror {0|1}                   force the true-frame world-y mirror (default 1)
     """
     opts = {"yaw": "course", "lookat": None, "osgn": None, "maxspeed": None,
-            "vcruise": 2.5, "legs": False, "zvd": False, "zvddelay": (14, 14, 14)}
+            "vcruise": 2.5, "legs": False, "zvd": False, "zvddelay": (14, 14, 14),
+            "slat": None, "ymirror": None}
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -90,6 +93,10 @@ def parse_opts(argv):
             opts["zvd"] = True; i += 1
         elif a == "--zvddelay" and i + 1 < len(argv):
             n = int(argv[i + 1]); opts["zvddelay"] = (n, n, n); i += 2
+        elif a == "--slat" and i + 1 < len(argv):
+            opts["slat"] = float(argv[i + 1]); i += 2
+        elif a == "--ymirror" and i + 1 < len(argv):
+            opts["ymirror"] = bool(int(argv[i + 1])); i += 2
         else:
             out.append(a); i += 1
     return out, opts
@@ -149,6 +156,13 @@ def main():
     flog = ftm.from_args(sys.argv, plant[2], "goto", store=s)
     nav = WaypointNavigator(s, c, plant, gains=gains, flog=flog)
     nav.set_origin(pos_ned=spawn, yaw=yaw0)
+    if opts["ymirror"] is not None:
+        nav._tf_ymirror = opts["ymirror"]
+    if opts["slat"] is not None:
+        nav._s_lat = float(opts["slat"])     # forced sign -> _probe_s_lat is skipped
+    print(f"calib: s_cam={nav._s_cam:+.0f} yaw0_t={np.degrees(nav._yaw0_t):+.0f} "
+          f"cam_live=({nav._cam_live[0]:+.2f},{nav._cam_live[1]:+.2f}) "
+          f"ymirror={nav._tf_ymirror} s_lat={nav._s_lat:+.0f}", flush=True)
     c.arm()
     res = nav.follow(targets, yaw=opts["yaw"], look_point=look, v_cruise=opts["vcruise"],
                      engine=("legs" if opts["legs"] else "spline"), frame=frame)
