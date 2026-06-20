@@ -72,6 +72,8 @@ class NavGains:
     KI_Z: float = 0.8       # gated z-integral gain: cancels the ~1.2 m analytic-z sag for 3D waypoints
     Z_INT_GATE: float = 1.5  # only integrate within this altitude error (no climb-transient windup)
     Z_INT_CLIP: float = 3.0  # z-integral accel clamp (m/s^2)
+    Z_FF: float = -2.0      # constant collective feed-forward (m/s^2, up) = the VQ steady deficit;
+    #                         instant so the integral doesn't lag -> no transient high-tilt sag
     WMAX: float = 4.0
     YAW_WMAX: float = 1.0   # gentle yaw-rate cap: fast yaw steps excite the rate loop -> tilt spike
     TILT_MAX_DEG: float = 15.0
@@ -168,16 +170,19 @@ def attitude_command(state, a2, z_sp, yaw_ref, plant, gains):
     return rate_cmd_norm, thr, tilt, {"a": a, "w_des": w_des, "q_des": q_des, "thr": thr}
 
 
-def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=False, z_int=0.0):
+def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=False, z_int=0.0,
+                        z_ff=0.0):
     """TRUE-frame attitude for STRAFING (camera not along travel). Port of vq_waypoint2's
     true-frame block: qfix attitude, s_cam yaw basis, WFIX rate mirror, tilt-conditional
     collective cap. a2 = desired horizontal accel in live-world (pos_ned); yaw_ref = desired
-    NOSE heading in the true-cam frame. z_int = gated z-integral accel (cancels the sag). Returns
+    NOSE heading in the true-cam frame. z_int = gated z-integral accel; z_ff = constant collective
+    feed-forward (the VQ steady deficit, negative = up) so the integral need not chase it. Returns
     (rate_cmd_norm, thrust, tilt_deg, dbg)."""
     hover, k_a, rg = plant
     a = np.zeros(3)
     a[:2] = np.asarray(a2, float)
-    a[2] = (gains.KP_Z * (z_sp - state.pos_ned[2]) + gains.KD_Z * (0.0 - state.vel_ned[2]) + z_int)
+    a[2] = (gains.KP_Z * (z_sp - state.pos_ned[2]) + gains.KD_Z * (0.0 - state.vel_ned[2])
+            + z_int + z_ff)
     tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
     n = float(np.linalg.norm(a[:2]))
     if n > tilt_max_acc:
@@ -717,7 +722,8 @@ class WaypointNavigator:
         fwd = np.array([np.cos(yaw_cur_t), np.sin(yaw_cur_t)])
         a_h = _strafe_recompose(a_al, a_lat, fwd, self._s_lat)
         return attitude_command_tf(ds, a_h, z_sp, yaw_ref_tf, self.plant, g,
-                                   self._s_cam, ymirror=self._tf_ymirror, z_int=self._z_int)
+                                   self._s_cam, ymirror=self._tf_ymirror, z_int=self._z_int,
+                                   z_ff=g.Z_FF)
 
     def settle(self, target=None, yaw="hold", tangent=None):
         if target is None:

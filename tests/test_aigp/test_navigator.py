@@ -192,6 +192,15 @@ def test_tf_level_hover_zero_rate():
     np.testing.assert_allclose(rate, [0, 0, 0], atol=1e-6)
 
 
+def test_tf_z_ff_adds_lift():
+    g = NavGains()
+    st = _mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)   # ze = 0 (on altitude)
+    _, _, _, d0 = attitude_command_tf(st, np.zeros(2), -2.0, 0.0, _PLANT, g, 1.0, z_ff=0.0)
+    _, _, _, d1 = attitude_command_tf(st, np.zeros(2), -2.0, 0.0, _PLANT, g, 1.0, z_ff=-2.0)
+    assert d1["a"][2] < d0["a"][2]              # negative z_ff -> more upward accel command
+    np.testing.assert_allclose(d1["a"][2] - d0["a"][2], -2.0, atol=1e-9)
+
+
 def test_tf_clamps_tilt():
     g = NavGains()
     st = _mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)
@@ -410,6 +419,7 @@ def test_strafe_attitude_level_hover_zero_rate():
     nav = _nav(_mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL))
     nav.set_origin()
     nav._s_lat = 1.0
+    nav.gains.Z_FF = 0.0          # isolate the recompose/attitude from the collective feed-forward
     ds = nav.store.get_drone()
     rate, thr, tilt, dbg = nav._strafe_attitude(ds, a_al=0.0, a_lat=0.0, z_sp=-2.0, yaw_ref_tf=0.0)
     assert abs(thr - 0.5) < 1e-6 and abs(tilt) < 1e-6

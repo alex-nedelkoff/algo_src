@@ -77,7 +77,7 @@ def parse_opts(argv):
     opts = {"yaw": "course", "lookat": None, "osgn": None, "maxspeed": None,
             "vcruise": 2.5, "legs": False, "zvd": False, "zvddelay": (14, 14, 14),
             "slat": None, "ymirror": None, "capture": None,
-            "vmax": None, "amax": None, "tilt": None, "kiz": None, "stop": False}
+            "vmax": None, "amax": None, "tilt": None, "kiz": None, "stop": False, "zff": None}
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -109,6 +109,8 @@ def parse_opts(argv):
             opts["kiz"] = float(argv[i + 1]); i += 2
         elif a == "--stop":
             opts["stop"] = True; i += 1
+        elif a == "--zff" and i + 1 < len(argv):
+            opts["zff"] = float(argv[i + 1]); i += 2
         elif a == "--slat" and i + 1 < len(argv):
             opts["slat"] = float(argv[i + 1]); i += 2
         elif a == "--ymirror" and i + 1 < len(argv):
@@ -179,6 +181,8 @@ def main():
         gains.TILT_MAX_DEG = opts["tilt"]
     if opts["kiz"] is not None:
         gains.KI_Z = opts["kiz"]
+    if opts["zff"] is not None:
+        gains.Z_FF = opts["zff"]
 
     # real rate_gain (plant[2]) so FlightLog reconstructs rad/s for display (parity with old goto.py);
     # store=s streams the COLLISION flag too (dashboard hard rule).
