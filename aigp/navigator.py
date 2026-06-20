@@ -59,6 +59,13 @@ class NavGains:
     KD_CT: float = 1.2
     AL_MAX: float = 0.5
     KD_AL: float = 1.2
+    # camera-decoupled strafe (fixed course-frame guidance; vq_waypoint2 mission-1 values)
+    KV_AL: float = 0.7      # along-track position->speed gain
+    KV_LAT: float = 0.9     # lateral position->speed gain
+    KD_LAT: float = 1.4     # lateral speed->accel gain
+    VLAT_MAX: float = 1.5   # lateral speed cap (m/s)
+    FWD_AMAX: float = 0.6   # forward accel cap (m/s^2) -> terminal ~3 m/s vs drag
+    REV_SP: float = 0.8     # max reverse along-track speed (m/s)
     KP_Z: float = 1.8
     KD_Z: float = 3.0
     WMAX: float = 4.0
@@ -190,17 +197,32 @@ def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=F
     return rate, thr, tilt, {"a": a, "w_des": w, "q_des": q_des, "thr": thr}
 
 
-def _strafe_recompose(a2, cam_live, lat_course, fwd, s_lat):
-    """Bridge a live-world horizontal accel (pos_ned) into the TRUE-frame heading chart that
-    desired_attitude expects, for camera-decoupled STRAFE flight. Verbatim vq_waypoint2 L231-233:
-    decompose a2 onto the FIXED spawn course axes (cam_live forward, lat_course perp), then re-emit
-    those scalar intents along the drone's CURRENT true-frame heading basis (fwd, lat=[-fwd_y,fwd_x]),
-    with the calibrated lateral sign s_lat. For nose-aligned fixed-heading flight a_h == a2."""
-    a_al = float(np.asarray(a2, float) @ np.asarray(cam_live, float))
-    a_lat = float(np.asarray(a2, float) @ np.asarray(lat_course, float)) * (s_lat if s_lat else 1.0)
+def _course_guidance(pos, vel, target, cam_live, lat_course, gains):
+    """Forward + lateral accel INTENTS in the FIXED spawn course frame (cam_live forward,
+    lat_course perp), for camera-decoupled strafe legs. Port of vq_waypoint2 mission-1
+    (L176-202/230): every leg decomposes against the SAME course frame, so a single s_lat is
+    valid for all legs (a per-leg tangent decomposition flips the cross-track sign between legs
+    -> the bug that made forward legs want +1 and strafe legs want -1). Returns (a_al, a_lat);
+    a_lat is UNSIGNED (the calibrated s_lat is applied at recompose)."""
+    err = (np.asarray(target, float) - np.asarray(pos, float))[:2]
+    v = np.asarray(vel, float)[:2]
+    e_al = float(err @ cam_live); e_lat = float(err @ lat_course)
+    v_al = float(v @ cam_live); v_lat = float(v @ lat_course)
+    tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
+    v_al_sp = float(np.clip(gains.KV_AL * e_al, -gains.REV_SP, gains.MAX_SPEED))
+    a_al = float(np.clip(gains.KD_AL * (v_al_sp - v_al), -gains.DECEL_MAX, gains.FWD_AMAX))
+    v_lat_sp = float(np.clip(gains.KV_LAT * e_lat, -gains.VLAT_MAX, gains.VLAT_MAX))
+    a_lat = float(np.clip(gains.KD_LAT * (v_lat_sp - v_lat), -tilt_max_acc, tilt_max_acc))
+    return a_al, a_lat
+
+
+def _strafe_recompose(a_al, a_lat, fwd, s_lat):
+    """Emit course-frame intents (a_al forward, a_lat course-perp) along the drone's CURRENT
+    true-heading basis (fwd, lat=[-fwd_y,fwd_x]) with the calibrated lateral sign s_lat. Verbatim
+    vq_waypoint2 L231-233: a[:2] = a_al*fwd + (s_lat*a_lat)*lat."""
     fwd = np.asarray(fwd, float)
     lat = np.array([-fwd[1], fwd[0]])
-    return a_al * fwd + a_lat * lat
+    return a_al * fwd + (s_lat if s_lat else 1.0) * a_lat * lat
 
 
 def _spline_accel(state, ref, gains):
@@ -384,8 +406,7 @@ class WaypointNavigator:
         while time.time() - t0 < 1.5:
             ds = self.store.get_drone()
             if ds is not None:
-                rate, thr, tilt, dbg = self._strafe_attitude(ds, 1.2 * self._lat_course, z_sp,
-                                                             self._yaw0_t)
+                rate, thr, tilt, dbg = self._strafe_attitude(ds, 0.0, 1.2, z_sp, self._yaw0_t)
                 if self._zvd is not None:
                     rate = self._zvd.shape(rate)
                 self.commander.send_attitude_target(rate, thr)
@@ -515,14 +536,14 @@ class WaypointNavigator:
         'hold'/'fixed' = fixed heading. Nose-first modes (course/face) use the raw path."""
         return yaw_mode in ("hold", "fixed")
 
-    def _strafe_attitude(self, ds, a2, z_sp, yaw_ref_tf):
-        """True-frame attitude for a strafe step: bridge the world accel a2 into the true-heading
-        chart (_strafe_recompose with the locked s_lat), then run the proven vq_waypoint2 attitude
-        block (attitude_command_tf, ymirror). Returns (rate_cmd_norm, thrust, tilt_deg, dbg)."""
+    def _strafe_attitude(self, ds, a_al, a_lat, z_sp, yaw_ref_tf):
+        """True-frame attitude for a strafe step: emit the course-frame intents (a_al, a_lat) along
+        the drone's current true-heading basis (_strafe_recompose with the locked s_lat), then run
+        the proven vq_waypoint2 attitude block (attitude_command_tf, ymirror)."""
         R_t = quat_to_R(_qfix(ds.quat_wxyz))
         yaw_cur_t = float(np.arctan2(self._s_cam * R_t[1, 0], self._s_cam * R_t[0, 0]))
         fwd = np.array([np.cos(yaw_cur_t), np.sin(yaw_cur_t)])
-        a_h = _strafe_recompose(a2, self._cam_live, self._lat_course, fwd, self._s_lat)
+        a_h = _strafe_recompose(a_al, a_lat, fwd, self._s_lat)
         return attitude_command_tf(ds, a_h, z_sp, yaw_ref_tf, self.plant, self.gains,
                                    self._s_cam, ymirror=self._tf_ymirror)
 
@@ -538,11 +559,13 @@ class WaypointNavigator:
             if ds is not None:
                 if float(np.linalg.norm(ds.vel_ned[:2])) < self.gains.SETTLE_V:
                     return
-                a2 = settle_accel(ds, target, self.gains)
                 if self._is_strafe(yaw):
-                    rate, thr, tilt, dbg = self._strafe_attitude(ds, a2, float(target[2]),
+                    a_al, a_lat = _course_guidance(ds.pos_ned, ds.vel_ned, target,
+                                                   self._cam_live, self._lat_course, self.gains)
+                    rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(target[2]),
                                                                  self._yaw_ref_tf(yaw, ds))
                 else:
+                    a2 = settle_accel(ds, target, self.gains)
                     rate, thr, tilt, dbg = attitude_command(ds, a2, float(target[2]),
                                                             self._yaw_ref(yaw, target, tangent),
                                                             self.plant, self.gains)
@@ -604,11 +627,14 @@ class WaypointNavigator:
                 rel = target - ds.pos_ned
                 if float(np.linalg.norm(rel)) < g.ARRIVE:
                     return "reached"
-                a2, tv, spd = cruise_accel(ds, leg_start, target, g)
-                if self._is_strafe(yaw_mode):     # camera-decoupled: strafe in the true frame
-                    rate, thr, tilt, dbg = self._strafe_attitude(ds, a2, float(target[2]),
+                if self._is_strafe(yaw_mode):     # camera-decoupled: fixed-course-frame strafe
+                    a_al, a_lat = _course_guidance(ds.pos_ned, ds.vel_ned, target,
+                                                   self._cam_live, self._lat_course, g)
+                    rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(target[2]),
                                                                  self._yaw_ref_tf(yaw_mode, ds))
+                    tv = self._cam_live; spd = float(np.linalg.norm(ds.vel_ned[:2]))
                 else:
+                    a2, tv, spd = cruise_accel(ds, leg_start, target, g)
                     rate, thr, tilt, dbg = attitude_command(ds, a2, float(target[2]),
                                                             self._yaw_ref(yaw_mode, target, tangent),
                                                             self.plant, g)

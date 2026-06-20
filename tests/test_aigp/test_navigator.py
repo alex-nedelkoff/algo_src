@@ -236,30 +236,57 @@ def test_spline_accel_corrects_cross_track_and_holds_speed():
 
 
 # --- true-frame strafe (camera-decoupled legs) ---
-from aigp.navigator import _strafe_recompose
+from aigp.navigator import _strafe_recompose, _course_guidance
 
 
-def test_strafe_recompose_identity_when_heading_aligned():
-    # nose along course-forward, s_lat=+1 -> the world accel passes through unchanged
-    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+def test_strafe_recompose_emits_scalars_along_heading():
+    # a_al along the nose, a_lat along the nose-perp; s_lat=+1
     fwd = np.array([1.0, 0.0])
-    a_h = _strafe_recompose(np.array([0.3, 0.5]), cam_live, lat_course, fwd, s_lat=1.0)
-    np.testing.assert_allclose(a_h, [0.3, 0.5], atol=1e-9)
+    a_h = _strafe_recompose(a_al=0.3, a_lat=0.5, fwd=fwd, s_lat=1.0)
+    np.testing.assert_allclose(a_h, [0.3, 0.5], atol=1e-9)   # lat = [-fwd_y, fwd_x] = [0,1]
 
 
 def test_strafe_recompose_s_lat_reflects_lateral():
-    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
     fwd = np.array([1.0, 0.0])
-    a_h = _strafe_recompose(np.array([0.3, 0.5]), cam_live, lat_course, fwd, s_lat=-1.0)
+    a_h = _strafe_recompose(a_al=0.3, a_lat=0.5, fwd=fwd, s_lat=-1.0)
     np.testing.assert_allclose(a_h, [0.3, -0.5], atol=1e-9)   # only the lateral sign flips
 
 
-def test_strafe_recompose_rotates_intent_into_heading():
-    # nose rotated +90deg from course-forward: a pure course-forward intent emits along the nose
-    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+def test_strafe_recompose_rotates_into_heading():
+    # nose rotated +90deg: forward intent emits along the new nose (+E)
     fwd = np.array([0.0, 1.0])
-    a_h = _strafe_recompose(np.array([1.0, 0.0]), cam_live, lat_course, fwd, s_lat=1.0)
+    a_h = _strafe_recompose(a_al=1.0, a_lat=0.0, fwd=fwd, s_lat=1.0)
     np.testing.assert_allclose(a_h, [0.0, 1.0], atol=1e-9)
+
+
+def test_course_guidance_forward_target_is_pure_along():
+    # target straight ahead along +cam_live: drive forward, no lateral (FIXED course frame)
+    g = NavGains()
+    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+    a_al, a_lat = _course_guidance(pos=np.zeros(3), vel=np.zeros(3),
+                                   target=np.array([12.0, 0.0, -2.0]),
+                                   cam_live=cam_live, lat_course=lat_course, gains=g)
+    assert a_al > 0 and abs(a_lat) < 1e-9
+
+
+def test_course_guidance_lateral_target_is_pure_lateral():
+    # target purely to +lat_course: drive lateral, ~no forward -- SAME frame as the forward case
+    g = NavGains()
+    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+    a_al, a_lat = _course_guidance(pos=np.zeros(3), vel=np.zeros(3),
+                                   target=np.array([0.0, 12.0, -2.0]),
+                                   cam_live=cam_live, lat_course=lat_course, gains=g)
+    assert a_lat > 0 and abs(a_al) < 1e-9
+
+
+def test_course_guidance_brakes_when_overspeed():
+    # moving fast forward, target close ahead -> along accel goes negative (brake), not accelerate
+    g = NavGains()
+    cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
+    a_al, _ = _course_guidance(pos=np.zeros(3), vel=np.array([5.0, 0.0, 0.0]),
+                               target=np.array([2.0, 0.0, -2.0]),
+                               cam_live=cam_live, lat_course=lat_course, gains=g)
+    assert a_al < 0
 
 
 def test_set_origin_computes_course_axes():
@@ -282,6 +309,6 @@ def test_strafe_attitude_level_hover_zero_rate():
     nav.set_origin()
     nav._s_lat = 1.0
     ds = nav.store.get_drone()
-    rate, thr, tilt, dbg = nav._strafe_attitude(ds, np.zeros(2), -2.0, 0.0)
+    rate, thr, tilt, dbg = nav._strafe_attitude(ds, a_al=0.0, a_lat=0.0, z_sp=-2.0, yaw_ref_tf=0.0)
     assert abs(thr - 0.5) < 1e-6 and abs(tilt) < 1e-6
     np.testing.assert_allclose(rate, [0, 0, 0], atol=1e-6)
