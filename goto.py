@@ -8,10 +8,15 @@ Usage (live dashboard ON by default -> --no-viz to disable, --rrd <path> to reco
   python goto.py                       # safe default: a small box out front (body frame)
   python goto.py body 6 0 0  6 4 0     # body-relative triples: (fwd, right, down) from spawn heading
   python goto.py world 8 0 0  0 8 0    # world-NED triples: (N, E, D) offsets from spawn
+  python goto.py body 12 0 0  12 12 0  0 12 0  0 0 0 --yaw hold   # CAMERA-DECOUPLED square (fixed heading)
 
-STATUS (live-tested on the VQ sim): single-waypoint go-to flies cleanly. Multi-waypoint paths with
-sharp 90-deg turns / precise arrivals are MARGINAL — the weathervane instability fights stop-and-turn.
-This platform wants to flow forward; precise waypoint following is better served by the RL policy.
+CAMERA / HEADING MODES (--yaw): course (camera along travel, nose-first), face (nose at target),
+hold (FIXED spawn heading — camera-decoupled strafe), lookat (camera about a point, WIP). Nose-first
+modes fly the smooth spline; strafe modes (hold) auto-use the gentle legs engine + true-frame control
+(s_lat auto-probed, world-y mirror) — the proven vq_waypoint2 --square chain, no rate-loop ring.
+
+STATUS (live-tested on the VQ sim): nose-first single/multi-waypoint flies cleanly. Camera-decoupled
+fixed-heading strafe (--yaw hold) ported from the proven vq_waypoint2 --square (4/4, ~18 deg tilt).
 """
 import sys
 import time

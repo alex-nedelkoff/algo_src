@@ -343,10 +343,15 @@ class WaypointNavigator:
         if look_point is not None:
             self._look_point = self._resolve(look_point, frame)
         target = self._resolve(wp, frame)
+        if self._is_strafe(yaw):       # camera-decoupled strafe must use the gentle legs engine
+            engine = "legs"            # (the spline path rings the rate loop)
         if engine == "spline":
             return self._follow_spline([target], yaw=yaw, v_cruise=v_cruise)
         # legs engine
-        self._align_yaw(target, yaw, self._origin_pos)   # turn-in-place to face the leg first
+        self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
+        if self._is_strafe(yaw):
+            self._probe_s_lat(float(np.asarray(target, float)[2]))
+        self._align_yaw(target, yaw, self._origin_pos)   # turn-in-place (no-op for strafe)
         return self._fly_leg(target, self._origin_pos, yaw)
 
     def follow(self, wps, *, yaw="course", look_point=None, v_cruise=2.5,
@@ -358,14 +363,51 @@ class WaypointNavigator:
         if look_point is not None:
             self._look_point = self._resolve(look_point, frame)
         targets = [self._resolve(w, frame) for w in wps]
+        if self._is_strafe(yaw):       # camera-decoupled strafe -> gentle legs engine (spline rings)
+            engine = "legs"
         if engine == "legs":
             return self._follow_legs(targets, yaw=yaw, settle=True)
         return self._follow_spline(targets, yaw=yaw, v_cruise=v_cruise)
 
+    def _probe_s_lat(self, z_sp):
+        """Lock the strafe lateral sign before flying camera-decoupled legs: command a fixed lateral
+        push (~1.5 s) along the FIXED course-perp and read the achieved world-lateral velocity sign.
+        Port of vq_waypoint2's s_lat probe. No-op once locked (self._s_lat != 0)."""
+        if self._s_lat != 0.0:
+            return
+        ds0 = self.store.get_drone()
+        if ds0 is None:
+            self._s_lat = 1.0
+            return
+        v0 = float(ds0.vel_ned[:2] @ self._lat_course)
+        t0 = time.time()
+        while time.time() - t0 < 1.5:
+            ds = self.store.get_drone()
+            if ds is not None:
+                rate, thr, tilt, dbg = self._strafe_attitude(ds, 1.2 * self._lat_course, z_sp,
+                                                             self._yaw0_t)
+                if self._zvd is not None:
+                    rate = self._zvd.shape(rate)
+                self.commander.send_attitude_target(rate, thr)
+                if self.flog is not None:
+                    self.flog.push(time.time() - self._t0, ds, dbg, cruise=0.0,
+                                   running=self.store.get_race_live(), armed=True)
+                if tilt > self.gains.ABORT_TILT_DEG:
+                    break
+            time.sleep(self.gains.LOOP_DT)
+        ds = self.store.get_drone()
+        v1 = float(ds.vel_ned[:2] @ self._lat_course) if ds is not None else v0
+        self._s_lat = 1.0 if (v1 - v0) > 0 else -1.0
+        print(f"  s_lat locked: {self._s_lat:+.0f} (dv {v1 - v0:+.2f})", flush=True)
+
     def _follow_legs(self, targets, *, yaw, settle=True):
-        """Original legs engine: aligned yaw + point-to-point fly + settle at each wp."""
+        """Original legs engine: aligned yaw + point-to-point fly + settle at each wp. For strafe
+        (camera-decoupled) modes, legs run in the TRUE frame (no turn-in-place; s_lat probed once)."""
         if self.flog is not None:
             self.flog.set_path(np.vstack([self._current_pos()] + targets))
+        self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
+        if self._is_strafe(yaw):
+            self._probe_s_lat(float(np.asarray(targets[0], float)[2]))   # lock lateral sign first
         leg_start = self._origin_pos.copy()
         for i, target in enumerate(targets):
             leg_tan = self._tan(leg_start, target)    # fixed leg direction (camera holds it)
@@ -497,9 +539,15 @@ class WaypointNavigator:
                 if float(np.linalg.norm(ds.vel_ned[:2])) < self.gains.SETTLE_V:
                     return
                 a2 = settle_accel(ds, target, self.gains)
-                rate, thr, tilt, dbg = attitude_command(ds, a2, float(target[2]),
-                                                         self._yaw_ref(yaw, target, tangent),
-                                                         self.plant, self.gains)
+                if self._is_strafe(yaw):
+                    rate, thr, tilt, dbg = self._strafe_attitude(ds, a2, float(target[2]),
+                                                                 self._yaw_ref_tf(yaw, ds))
+                else:
+                    rate, thr, tilt, dbg = attitude_command(ds, a2, float(target[2]),
+                                                            self._yaw_ref(yaw, target, tangent),
+                                                            self.plant, self.gains)
+                if self._zvd is not None:
+                    rate = self._zvd.shape(rate)
                 self.commander.send_attitude_target(rate, thr)
                 if self.flog is not None:
                     self.flog.push(time.time() - self._t0, ds, dbg, nearest=target, cruise=0.0,
@@ -514,7 +562,7 @@ class WaypointNavigator:
         until the heading faces the leg direction, BEFORE translating — so the drone flies each
         leg nose-first (no strafe = no weathervane runaway). No-op for 'hold' and fixed-point
         'lookat' (those intentionally hold/strafe). Station-keeps at pos_hold while turning."""
-        if yaw_mode == "hold":
+        if self._is_strafe(yaw_mode):     # strafe modes hold heading -> never turn-in-place
             return
         if yaw_mode == "lookat" and self._look_point is not None:
             return
@@ -557,9 +605,15 @@ class WaypointNavigator:
                 if float(np.linalg.norm(rel)) < g.ARRIVE:
                     return "reached"
                 a2, tv, spd = cruise_accel(ds, leg_start, target, g)
-                rate, thr, tilt, dbg = attitude_command(ds, a2, float(target[2]),
-                                                         self._yaw_ref(yaw_mode, target, tangent),
-                                                         self.plant, g)
+                if self._is_strafe(yaw_mode):     # camera-decoupled: strafe in the true frame
+                    rate, thr, tilt, dbg = self._strafe_attitude(ds, a2, float(target[2]),
+                                                                 self._yaw_ref_tf(yaw_mode, ds))
+                else:
+                    rate, thr, tilt, dbg = attitude_command(ds, a2, float(target[2]),
+                                                            self._yaw_ref(yaw_mode, target, tangent),
+                                                            self.plant, g)
+                if self._zvd is not None:
+                    rate = self._zvd.shape(rate)
                 self.commander.send_attitude_target(rate, thr)
                 if self.flog is not None:
                     self.flog.push(time.time() - self._t0, ds, dbg, nearest=target, tangent=tv,
