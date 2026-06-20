@@ -233,11 +233,15 @@ def _dr_vel(vw_prev, pos_xy, pos_prev_xy, dt, alpha=0.85):
 
 
 def _z_int_step(z_int, ze, dt, ki, gate, clip):
-    """One gated z-integrator step. Accumulate ki*ze*dt only when |ze| < gate (no windup during the
-    big initial climb transient), clamped to +-clip. Cancels the VQ analytic z-loop's ~1.2 m sag
-    (collective deficit, worse at higher tilt) so altitude-changing waypoints actually reach z."""
-    if abs(ze) < gate:
-        z_int = float(np.clip(z_int + ki * ze * dt, -clip, clip))
+    """One gated z-integrator step (clamped to +-clip). Cancels the VQ analytic z-loop's ~1.2 m sag
+    (collective deficit, worse at higher tilt) so altitude-changing waypoints reach z. Anti-windup:
+    charge (grow |z_int|) ONLY within |ze| < gate (no windup during the big climb/descent transient),
+    but always allow UNWINDING (a step that shrinks |z_int|) even when far -- else a value charged
+    on a climb can't bleed off on the next descent and fights it (drone stuck off-altitude)."""
+    delta = ki * ze * dt
+    unwinding = (z_int * delta < 0.0)   # delta opposes the current bias -> moving toward zero
+    if abs(ze) < gate or unwinding:
+        z_int = float(np.clip(z_int + delta, -clip, clip))
     return z_int
 
 

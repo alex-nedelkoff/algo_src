@@ -316,6 +316,13 @@ def test_z_int_clamps():
     assert _z_int_step(-2.9, ze=-1.0, dt=1.0, ki=0.8, gate=1.5, clip=3.0) == -3.0
 
 
+def test_z_int_unwinds_when_far_and_opposing():
+    # charged negative on a climb, now a big positive error (descent) -> must bleed toward 0 despite
+    # being outside the gate (else the stale bias fights the descent -> stuck off-altitude)
+    zi = _z_int_step(-2.0, ze=3.0, dt=0.5, ki=0.8, gate=1.5, clip=3.0)
+    assert -2.0 < zi <= 0.0   # moved toward zero, not frozen
+
+
 def test_line_guidance_on_line_drives_along_no_cross():
     g = NavGains()
     cam_live = np.array([1.0, 0.0]); lat_course = np.array([0.0, 1.0])
