@@ -279,6 +279,13 @@ def test_course_guidance_lateral_target_is_pure_lateral():
     assert a_lat > 0 and abs(a_al) < 1e-9
 
 
+def test_dr_vel_filters_position_derivative():
+    from aigp.navigator import _dr_vel
+    # raw lateral velocity = (1-0)/0.1 = 10; one EMA step at alpha 0.85 -> 0.15*10 = 1.5
+    vw = _dr_vel(np.zeros(2), np.array([0.0, 1.0]), np.array([0.0, 0.0]), dt=0.1, alpha=0.85)
+    np.testing.assert_allclose(vw, [0.0, 1.5], atol=1e-9)
+
+
 def test_course_guidance_brakes_when_overspeed():
     # moving fast forward, target close ahead -> along accel goes negative (brake), not accelerate
     g = NavGains()

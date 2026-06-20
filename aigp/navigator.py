@@ -216,6 +216,17 @@ def _course_guidance(pos, vel, target, cam_live, lat_course, gains):
     return a_al, a_lat
 
 
+def _dr_vel(vw_prev, pos_xy, pos_prev_xy, dt, alpha=0.85):
+    """EMA-filtered world velocity dead-reckoned from position deltas. vq_waypoint2 closes the
+    strafe loop on THIS (not ds.vel_ned) because the live-world velocity's lateral sign convention
+    fights the push chain; position-derived vel is in the SAME frame as the position error, so the
+    lateral damping has the correct sign. Returns the filtered (vx, vy)."""
+    if dt <= 1e-4:
+        return np.asarray(vw_prev, float)
+    vw_raw = (np.asarray(pos_xy, float) - np.asarray(pos_prev_xy, float)) / dt
+    return alpha * np.asarray(vw_prev, float) + (1.0 - alpha) * vw_raw
+
+
 def _strafe_recompose(a_al, a_lat, fwd, s_lat):
     """Emit course-frame intents (a_al forward, a_lat course-perp) along the drone's CURRENT
     true-heading basis (fwd, lat=[-fwd_y,fwd_x]) with the calibrated lateral sign s_lat. Verbatim
@@ -262,6 +273,26 @@ class WaypointNavigator:
         self._s_lat = 0.0                         # strafe lateral sign (0 = unprobed); locked by _probe_s_lat
         self._tf_ymirror = True                   # world-y mirror in the true frame (proven by vq_waypoint2 --square)
         self._zvd = None
+        # dead-reckoned world velocity for the strafe loop (frame-consistent with position error)
+        self._vw = np.zeros(2)
+        self._pos_prev_vw = None
+        self._t_prev_vw = None
+
+    def _world_vel(self, pos):
+        """Stateful position-derived world velocity (see _dr_vel). Call once per loop step with the
+        live pos_ned; returns the filtered (vx, vy)."""
+        now = time.time()
+        pos = np.asarray(pos, float)
+        if self._pos_prev_vw is None:
+            self._pos_prev_vw = pos.copy(); self._t_prev_vw = now; self._vw = np.zeros(2)
+            return self._vw
+        dt = min(now - self._t_prev_vw, 0.05); self._t_prev_vw = now
+        self._vw = _dr_vel(self._vw, pos[:2], self._pos_prev_vw[:2], dt)
+        self._pos_prev_vw = pos.copy()
+        return self._vw
+
+    def _reset_world_vel(self):
+        self._vw = np.zeros(2); self._pos_prev_vw = None; self._t_prev_vw = None
 
     # --- pure helpers (IO-free) ---
     def set_origin(self, pos_ned=None, yaw=None):
@@ -401,11 +432,13 @@ class WaypointNavigator:
         if ds0 is None:
             self._s_lat = 1.0
             return
-        v0 = float(ds0.vel_ned[:2] @ self._lat_course)
-        t0 = time.time()
+        self._reset_world_vel()
+        v0 = float(self._world_vel(ds0.pos_ned) @ self._lat_course)
+        t0 = time.time(); vw = self._vw
         while time.time() - t0 < 1.5:
             ds = self.store.get_drone()
             if ds is not None:
+                vw = self._world_vel(ds.pos_ned)          # keep the position-derived filter warm
                 rate, thr, tilt, dbg = self._strafe_attitude(ds, 0.0, 1.2, z_sp, self._yaw0_t)
                 if self._zvd is not None:
                     rate = self._zvd.shape(rate)
@@ -416,8 +449,7 @@ class WaypointNavigator:
                 if tilt > self.gains.ABORT_TILT_DEG:
                     break
             time.sleep(self.gains.LOOP_DT)
-        ds = self.store.get_drone()
-        v1 = float(ds.vel_ned[:2] @ self._lat_course) if ds is not None else v0
+        v1 = float(vw @ self._lat_course)
         self._s_lat = 1.0 if (v1 - v0) > 0 else -1.0
         print(f"  s_lat locked: {self._s_lat:+.0f} (dv {v1 - v0:+.2f})", flush=True)
 
@@ -560,7 +592,8 @@ class WaypointNavigator:
                 if float(np.linalg.norm(ds.vel_ned[:2])) < self.gains.SETTLE_V:
                     return
                 if self._is_strafe(yaw):
-                    a_al, a_lat = _course_guidance(ds.pos_ned, ds.vel_ned, target,
+                    vw = self._world_vel(ds.pos_ned)
+                    a_al, a_lat = _course_guidance(ds.pos_ned, np.array([vw[0], vw[1], 0.0]), target,
                                                    self._cam_live, self._lat_course, self.gains)
                     rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(target[2]),
                                                                  self._yaw_ref_tf(yaw, ds))
@@ -628,11 +661,12 @@ class WaypointNavigator:
                 if float(np.linalg.norm(rel)) < g.ARRIVE:
                     return "reached"
                 if self._is_strafe(yaw_mode):     # camera-decoupled: fixed-course-frame strafe
-                    a_al, a_lat = _course_guidance(ds.pos_ned, ds.vel_ned, target,
+                    vw = self._world_vel(ds.pos_ned)
+                    a_al, a_lat = _course_guidance(ds.pos_ned, np.array([vw[0], vw[1], 0.0]), target,
                                                    self._cam_live, self._lat_course, g)
                     rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(target[2]),
                                                                  self._yaw_ref_tf(yaw_mode, ds))
-                    tv = self._cam_live; spd = float(np.linalg.norm(ds.vel_ned[:2]))
+                    tv = self._cam_live; spd = float(np.linalg.norm(vw))
                 else:
                     a2, tv, spd = cruise_accel(ds, leg_start, target, g)
                     rate, thr, tilt, dbg = attitude_command(ds, a2, float(target[2]),
