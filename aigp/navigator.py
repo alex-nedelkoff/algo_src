@@ -67,6 +67,8 @@ class NavGains:
     FWD_AMAX: float = 0.6   # forward accel cap (m/s^2) -> terminal ~3 m/s vs drag
     REV_SP: float = 0.8     # max reverse along-track speed (m/s)
     BRAKE_MARGIN: float = 0.85   # stop-profile: brake as if slightly under DECEL (covers vel-est lag -> no overshoot)
+    C_MAX: float = 18.0     # collective accel cap (m/s^2). vq_waypoint2 value; raise for anti-sag thrust
+    #                         headroom at aggressive accel (clamps how hard the drone can fight altitude loss)
     KP_Z: float = 1.8
     KD_Z: float = 3.0
     KI_Z: float = 0.8       # gated z-integral gain: cancels the ~1.2 m analytic-z sag for 3D waypoints
@@ -203,7 +205,7 @@ def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=F
     w[2] = float(np.clip(gains.KP_YAW * ((yaw_body - yaw_cur + np.pi) % (2 * np.pi) - np.pi)
                          - gains.KD_YAW * om_t[2], -1.5, 1.5))
     w = w * WFIX
-    c_max = 10.0 if tilt > 40.0 else 18.0
+    c_max = 10.0 if tilt > 40.0 else gains.C_MAX
     # Collective from the DESIRED thrust magnitude |a - g| (anticipatory: it accounts for the
     # COMMANDED tilt, not the lagging ACTUAL tilt) -> adds lift before the lean costs altitude, so
     # aggressive accel doesn't sag into the ground. At level it equals the old (g - a_z); diverges

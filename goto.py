@@ -77,7 +77,8 @@ def parse_opts(argv):
     opts = {"yaw": "course", "lookat": None, "osgn": None, "maxspeed": None,
             "vcruise": 2.5, "legs": False, "zvd": False, "zvddelay": (14, 14, 14),
             "slat": None, "ymirror": None, "capture": None,
-            "vmax": None, "amax": None, "tilt": None, "kiz": None, "stop": False, "zff": None}
+            "vmax": None, "amax": None, "tilt": None, "kiz": None, "stop": False, "zff": None,
+            "cmax": None}
     out, i = [], 0
     while i < len(argv):
         a = argv[i]
@@ -111,6 +112,8 @@ def parse_opts(argv):
             opts["stop"] = True; i += 1
         elif a == "--zff" and i + 1 < len(argv):
             opts["zff"] = float(argv[i + 1]); i += 2
+        elif a == "--cmax" and i + 1 < len(argv):
+            opts["cmax"] = float(argv[i + 1]); i += 2
         elif a == "--slat" and i + 1 < len(argv):
             opts["slat"] = float(argv[i + 1]); i += 2
         elif a == "--ymirror" and i + 1 < len(argv):
@@ -183,6 +186,8 @@ def main():
         gains.KI_Z = opts["kiz"]
     if opts["zff"] is not None:
         gains.Z_FF = opts["zff"]
+    if opts["cmax"] is not None:
+        gains.C_MAX = opts["cmax"]
 
     # real rate_gain (plant[2]) so FlightLog reconstructs rad/s for display (parity with old goto.py);
     # store=s streams the COLLISION flag too (dashboard hard rule).
