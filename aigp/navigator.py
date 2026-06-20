@@ -299,7 +299,7 @@ class WaypointNavigator:
         self._yaw0_t = 0.0
         self._cam_live = np.array([1.0, 0.0])    # FIXED spawn course-forward (world XY), set in set_origin
         self._lat_course = np.array([0.0, 1.0])  # FIXED spawn course-perp (world XY)
-        self._s_lat = 0.0                         # strafe lateral sign (0 = unprobed); locked by _probe_s_lat
+        self._s_lat = 0.0                         # strafe lateral sign (0 = unprobed); locked by _probe_inflight
         self._tf_ymirror = True                   # world-y mirror in the true frame (proven by vq_waypoint2 --square)
         self._zvd = None
         # dead-reckoned world velocity for the strafe loop (frame-consistent with position error)
@@ -442,8 +442,7 @@ class WaypointNavigator:
         # legs engine
         self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
         if self._is_strafe(yaw):
-            self._probe_s_lat(float(np.asarray(target, float)[2]))
-            return self._fly_strafe_course([target], yaw)   # line-following, same as follow()
+            return self._fly_strafe_course([target], yaw)   # line-following (probes s_lat in-flight)
         self._align_yaw(target, yaw, self._origin_pos)   # turn-in-place (nose-first)
         return self._fly_leg(target, self._origin_pos, yaw)
 
@@ -462,10 +461,11 @@ class WaypointNavigator:
             return self._follow_legs(targets, yaw=yaw, settle=True)
         return self._follow_spline(targets, yaw=yaw, v_cruise=v_cruise)
 
-    def _probe_s_lat(self, z_sp):
-        """Lock the strafe lateral sign before flying camera-decoupled legs: command a fixed lateral
-        push (~1.5 s) along the FIXED course-perp and read the achieved world-lateral velocity sign.
-        Port of vq_waypoint2's s_lat probe. No-op once locked (self._s_lat != 0)."""
+    def _probe_inflight(self, target, leg_start, yaw):
+        """Lock the strafe lateral sign WHILE flying the first leg (vq_waypoint2-style): drive forward
+        toward the first waypoint via line-following + superimpose a brief FIXED lateral nudge, then
+        read the achieved world-lateral velocity sign. No separate stationary sideways push -> no
+        start hook. No-op once locked (self._s_lat != 0)."""
         if self._s_lat != 0.0:
             return
         ds0 = self.store.get_drone()
@@ -473,18 +473,24 @@ class WaypointNavigator:
             self._s_lat = 1.0
             return
         self._reset_world_vel()
+        yref = self._yaw_ref_tf(yaw, ds0)
+        z_sp = float(np.asarray(target, float)[2])
         v0 = float(self._world_vel(ds0.pos_ned) @ self._lat_course)
         t0 = time.time(); vw = self._vw
         while time.time() - t0 < 1.5:
             ds = self.store.get_drone()
             if ds is not None:
-                vw = self._world_vel(ds.pos_ned)          # keep the position-derived filter warm
-                rate, thr, tilt, dbg = self._strafe_attitude(ds, 0.0, 1.2, z_sp, self._yaw0_t)
+                vw = self._world_vel(ds.pos_ned)
+                a_al, _ = _line_guidance(ds.pos_ned, vw, leg_start, target,
+                                         self._cam_live, self._lat_course, self.gains)
+                # forward toward wp0 + a FIXED lateral nudge (s_lat still 0 -> recompose uses +1 = raw push)
+                rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, 1.2, z_sp, yref)
                 if self._zvd is not None:
                     rate = self._zvd.shape(rate)
                 self.commander.send_attitude_target(rate, thr)
                 if self.flog is not None:
-                    self.flog.push(time.time() - self._t0, ds, dbg, cruise=0.0,
+                    self.flog.push(time.time() - self._t0, ds, dbg, nearest=target,
+                                   tangent=self._cam_live, cruise=float(np.linalg.norm(vw)),
                                    running=self.store.get_race_live(), armed=True)
                 if tilt > self.gains.ABORT_TILT_DEG:
                     break
@@ -500,8 +506,7 @@ class WaypointNavigator:
             self.flog.set_path(np.vstack([self._current_pos()] + targets))
         self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
         if self._is_strafe(yaw):
-            self._probe_s_lat(float(np.asarray(targets[0], float)[2]))   # lock lateral sign first
-            return self._fly_strafe_course(targets, yaw)   # continuous flow (no per-corner stop)
+            return self._fly_strafe_course(targets, yaw)   # continuous flow (probes s_lat in-flight)
         leg_start = self._origin_pos.copy()
         for i, target in enumerate(targets):
             leg_tan = self._tan(leg_start, target)    # fixed leg direction (camera holds it)
@@ -525,6 +530,7 @@ class WaypointNavigator:
         n = len(targets)
         i = 0
         leg_start = self._origin_pos.copy()   # straight-line segment is leg_start -> targets[i]
+        self._probe_inflight(np.asarray(targets[0], float), leg_start, yaw)   # lock s_lat on the way to wp0
         t0 = time.time()
         last_log = -1
         while i < n and time.time() - t0 < g.WP_TIMEOUT * n:
