@@ -395,17 +395,17 @@ class WaypointNavigator:
         t_run = time.time()
         last = -1
         s_ref = 0.0
-        pos_prev = None
         nloop = 0
         while time.time() - t_run < g.WP_TIMEOUT * max(2, len(targets)):
             ds = self.store.get_drone()
             if ds is not None:
                 nloop += 1
-                pos = ds.pos_ned
-                if pos_prev is not None:
-                    s_ref = min(s_ref + float(np.linalg.norm((pos - pos_prev)[:2])), traj.s_max)
-                pos_prev = pos.copy()
-                ref = traj.sample(min(s_ref + 1.5, traj.s_max))
+                lo = int(np.searchsorted(traj._s, s_ref - 2.0))
+                hi = int(np.searchsorted(traj._s, s_ref + 5.0))
+                hi = max(hi, lo + 1)
+                seg = traj._P[lo:hi] - ds.pos_ned
+                s_ref = float(traj._s[lo + int(np.argmin(np.einsum("ij,ij->i", seg, seg)))])
+                ref = traj.sample(s_ref)
                 ref = dict(ref)
                 ref["v"] = min(ref["v"], g.V_RAMP_RATE * (time.time() - t_run))
                 a2, travel = _spline_accel(ds, ref, g)
