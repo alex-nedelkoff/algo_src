@@ -583,6 +583,9 @@ class WaypointNavigator:
                 if k != last_log:
                     last_log = k
                     print(f"  wp{i} dist={float(np.linalg.norm(rel)):4.1f} "
+                          f"dxy={float(np.linalg.norm(rel[:2])):4.1f} "
+                          f"z={float(ds.pos_ned[2]):+4.1f}/{float(target[2]):+4.1f} "
+                          f"zi={self._z_int:+4.1f} thr={dbg['thr']:.2f} "
                           f"v={float(np.linalg.norm(vw)):4.1f} tilt={tilt:3.0f}", flush=True)
             time.sleep(g.LOOP_DT)
         if i >= n:
