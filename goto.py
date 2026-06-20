@@ -170,6 +170,7 @@ def main():
         gains.MAX_SPEED = opts["vmax"]; gains.VLAT_MAX = opts["vmax"]
     if opts["amax"] is not None:
         gains.FWD_AMAX = opts["amax"]
+        gains.DECEL_MAX = max(gains.DECEL_MAX, opts["amax"])   # symmetric brake -> less final-wp overshoot
     if opts["tilt"] is not None:
         gains.TILT_MAX_DEG = opts["tilt"]
 
