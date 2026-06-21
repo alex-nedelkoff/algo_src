@@ -120,3 +120,51 @@ class _StatusBox:
             return Status(self._s.result, self._s.phase, self._s.pos_ned.copy(), self._s.vel,
                           self._s.tilt_deg, self._s.mode, None if self._s.target is None
                           else self._s.target.copy(), self._s.progress, self._s.error)
+
+
+class Mission:
+    """A flight running on a background thread. run_fn(abort_evt, pause_evt, box) -> Result must
+    honor the events and write progress to box; its return value becomes the final result."""
+
+    def __init__(self, run_fn, abort_evt, pause_evt, box):
+        self._run_fn = run_fn
+        self._abort_evt = abort_evt
+        self._pause_evt = pause_evt
+        self._box = box
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        try:
+            result = self._run_fn(self._abort_evt, self._pause_evt, self._box)
+        except Exception as e:                       # surface loop crashes as ERROR, don't kill thread
+            self._box.set_result(Result.ERROR, error=repr(e))
+            return
+        self._box.set_result(result if isinstance(result, Result) else Result.REACHED)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def abort(self):
+        self._abort_evt.set()
+
+    def pause(self):
+        self._pause_evt.set()
+
+    def resume(self):
+        self._pause_evt.clear()
+
+    def status(self) -> Status:
+        return self._box.get()
+
+    def wait(self, timeout=None) -> Status:
+        self._thread.join(timeout)
+        return self._box.get()
+
+    @property
+    def done(self) -> bool:
+        return not self._thread.is_alive()
+
+    @property
+    def result(self):
+        return self._box.get().result
