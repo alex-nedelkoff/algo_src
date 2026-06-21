@@ -57,25 +57,27 @@ def main():
     assert fresh_start(s, c, m, boot), "not live"
 
     ds0 = s.get_drone(); spawn = ds0.pos_ned.copy()
+    yaw0 = float(np.arctan2(*(quat_to_R(ds0.quat_wxyz)[[1, 0], 0])))
+    cam_fwd = -np.array([np.cos(yaw0), np.sin(yaw0)])     # camera-forward world dir (-body_x)
 
-    # gate 0 world pose (TRACK_INFO). The first post-reset broadcast can be GARBAGE (z = -4569 m
-    # seen) -> poll until a sane reading: within ~150 m of spawn and |z| < 30 m. (gates[].pos_ned is
-    # the same world-NED frame as the drone's pos_ned -- vq_track_wp flies to it directly.)
+    # gate 0 in the DRONE's NED frame. TRACK_INFO gate coords are ABSOLUTE and the odometry origin
+    # jumps between resets -> often the gate is thousands of metres off in the drone frame. Accept a
+    # gate only if it is local (within 150 m of spawn, |dz|<30); else fall back to where gate 0
+    # visually is: ~23 m ahead along the camera-forward (the drone spawns just behind the start gate).
     gate0 = None
     t = time.time()
-    while time.time() - t < 12.0:
+    while time.time() - t < 4.0 and gate0 is None:
         gates = s.get_gates()
         if gates:
             g0 = np.asarray(gates[0].pos_ned, float)
             if np.linalg.norm((g0 - spawn)[:2]) < 150.0 and abs(g0[2] - spawn[2]) < 30.0:
-                gate0 = g0; break
-            print(f"  ...rejecting garbage gate0 {np.round(g0, 1).tolist()}", flush=True)
+                gate0 = g0
         time.sleep(0.2)
-    assert gate0 is not None, "no SANE gate0 from TRACK_INFO (only garbage reads)"
-    print(f"gate0 world NED: {np.round(gate0, 1).tolist()} (width {gates[0].width:.2f}); "
-          f"spawn {np.round(spawn, 1).tolist()}", flush=True)
-
-    yaw0 = float(np.arctan2(*(quat_to_R(ds0.quat_wxyz)[[1, 0], 0])))
+    if gate0 is None:
+        gate0 = np.array([spawn[0] + cam_fwd[0] * 23.0, spawn[1] + cam_fwd[1] * 23.0, spawn[2]])
+        print("TRACK_INFO gate is in a non-local frame -> using camera-forward estimate (~23 m ahead)",
+              flush=True)
+    print(f"gate0 (NED): {np.round(gate0, 1).tolist()}; spawn {np.round(spawn, 1).tolist()}", flush=True)
     flog = ftm.from_args(sys.argv, plant[2], "look_at_gate", store=s)
 
     # BEST CASE for a FIXED 20deg-up camera + yaw-only aim: view the gate from a point R_VIEW in
