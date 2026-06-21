@@ -203,7 +203,7 @@ class Drone:
     def _start(self, run_fn) -> Mission:
         if self._mission is not None and not self._mission.done:
             self._mission.abort()
-            self._mission.wait(timeout=2.0)
+            self._mission.wait(timeout=2.0)  # generous backstop: nav loops poll abort_evt every ~4 ms (~250 Hz), so the old worker exits well under 2 s; timeout only fires for a pathologically blocked loop
         abort_evt, pause_evt, box = threading.Event(), threading.Event(), _StatusBox()
         self.nav._abort_evt = abort_evt
         self.nav._pause_evt = pause_evt
@@ -223,8 +223,7 @@ class Drone:
         v = speed if speed is not None else self.config.default_speed
         if look_at is not None:
             self.look_at(look_at, frame)
-        if stop:
-            self.nav._stop_each = True
+        self.nav._stop_each = bool(stop)
 
         def run_fn(abort_evt, pause_evt, box):
             res = (self.nav.goto(targets[0], yaw=yaw, v_cruise=v, engine="legs", frame=frame)

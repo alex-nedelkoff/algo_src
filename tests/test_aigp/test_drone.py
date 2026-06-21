@@ -144,3 +144,12 @@ def test_new_mission_auto_aborts_previous():
     m2 = d.goto((4, 0, 0), yaw="hold")     # should auto-abort m1
     m2.wait(timeout=2)
     assert "aborted" in order and m1.result is Result.ABORT
+
+
+def test_stop_flag_does_not_leak_between_calls():
+    d = _drone()
+    d.nav.goto = lambda *a, **k: "reached"
+    d.goto((3, 0, 0), yaw="hold", stop=True).wait(timeout=2)
+    assert d.nav._stop_each is True
+    d.goto((4, 0, 0), yaw="hold", stop=False).wait(timeout=2)
+    assert d.nav._stop_each is False     # reset, not leaked
