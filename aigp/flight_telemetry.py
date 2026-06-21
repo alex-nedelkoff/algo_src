@@ -268,6 +268,7 @@ class FlightLog:
                 cam_live = -np.array([np.cos(yaw_live), np.sin(yaw_live)])
                 self._s_cam = 1.0 if float(R_t[:2, 0] @ cam_live) > 0 else -1.0
                 self._r_opt = _r_opt_body_true(self._s_cam)
+                print(f"[viz] frustum s_cam={self._s_cam:+.0f}", flush=True)
                 rr.log("world/cam_fov", rr.Pinhole(resolution=[640, 360], focal_length=[320.0, 320.0],
                                                    principal_point=[320.0, 180.0],
                                                    image_plane_distance=3.0), static=True)
