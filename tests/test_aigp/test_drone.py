@@ -153,3 +153,34 @@ def test_stop_flag_does_not_leak_between_calls():
     assert d.nav._stop_each is True
     d.goto((4, 0, 0), yaw="hold", stop=False).wait(timeout=2)
     assert d.nav._stop_each is False     # reset, not leaked
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Motion primitives (orbit, hover, takeoff, descend)
+# ---------------------------------------------------------------------------
+from aigp.drone import _orbit_ring
+
+
+def test_orbit_ring_geometry():
+    center = np.array([10.0, 0.0, -3.0])
+    ring = _orbit_ring(center, radius=5.0, n=24, direction="ccw")
+    assert len(ring) == 24
+    for p in ring:
+        assert abs(np.linalg.norm((p - center)[:2]) - 5.0) < 1e-6   # on the circle
+        assert abs(p[2] - center[2]) < 1e-9                          # planar (center altitude)
+    # ccw winding: cross of first two spokes is +z (NED down +, so signed area sign is consistent)
+    a = (ring[0] - center)[:2]; b = (ring[1] - center)[:2]
+    assert (a[0] * b[1] - a[1] * b[0]) > 0
+
+
+def test_takeoff_and_descend_targets():
+    d = _drone()
+    captured = {}
+    def capture_nav(targets, **k):
+        captured["t"] = np.asarray(targets[0], float)
+        return captured["t"]
+    d._navigate = capture_nav
+    d.takeoff(3.0)
+    assert abs(captured["t"][2] - (-2.0 - 3.0)) < 1e-9    # current z (-2) minus 3 = up
+    d.descend(2.0)
+    assert abs(captured["t"][2] - (-2.0 + 2.0)) < 1e-9    # down

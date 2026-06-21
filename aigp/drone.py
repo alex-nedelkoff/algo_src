@@ -24,6 +24,18 @@ import numpy as np
 from aigp.navigator import NavGains, WaypointNavigator
 
 
+def _orbit_ring(center, radius, n, direction):
+    """n waypoints on the circle of `radius` around `center` (XY), at center's altitude."""
+    center = np.asarray(center, float)
+    sgn = 1.0 if direction == "ccw" else -1.0
+    out = []
+    for k in range(n):
+        th = sgn * 2.0 * np.pi * k / n
+        out.append(np.array([center[0] + radius * np.cos(th),
+                             center[1] + radius * np.sin(th), center[2]]))
+    return out
+
+
 class Result(Enum):
     RUNNING = "running"
     REACHED = "reached"
@@ -240,3 +252,48 @@ class Drone:
     def follow(self, wps, *, yaw="course", look_at=None, speed=None, frame="body", stop=False) -> Mission:
         return self._navigate(list(wps), yaw=yaw, look_at=look_at, speed=speed, frame=frame,
                               stop=stop, single=False)
+
+    def orbit(self, center, *, radius, speed=None, seconds, frame="body", direction="ccw") -> Mission:
+        _check_frame(frame); _check_positive("radius", radius); _check_positive("seconds", seconds)
+        if speed is not None:
+            _check_positive("speed", speed)
+        if direction not in ("cw", "ccw"):
+            raise ValueError("direction must be 'cw' or 'ccw'")
+        v = speed if speed is not None else self.config.default_speed
+        center_w = self.nav._resolve(np.asarray(center, float), frame)
+        self.nav.set_look_point(center_w)
+        ring = _orbit_ring(center_w, radius, 24, direction)
+
+        def run_fn(abort_evt, pause_evt, box):
+            t0 = time.time()
+            while time.time() - t0 < seconds and not abort_evt.is_set():
+                res = self.nav.follow(ring, yaw="lookat", v_cruise=v, engine="legs", frame="world")
+                if res == "abort":
+                    return Result.ABORT
+            return Result.ABORT if abort_evt.is_set() else Result.REACHED
+        return self._start(run_fn)
+
+    def hover(self, seconds=None) -> Mission:
+        if seconds is not None:
+            _check_positive("seconds", seconds)
+
+        def run_fn(abort_evt, pause_evt, box):
+            t0 = time.time()
+            while not abort_evt.is_set() and (seconds is None or time.time() - t0 < seconds):
+                self.nav.settle()      # holds current position ~SETTLE_T; loop re-holds
+            return Result.ABORT if abort_evt.is_set() else Result.REACHED
+        return self._start(run_fn)
+
+    def takeoff(self, altitude) -> Mission:
+        _check_positive("altitude", altitude)
+        pos = self.nav._current_pos()
+        return self._navigate([np.array([pos[0], pos[1], pos[2] - altitude])], yaw="hold",
+                              look_at=None, speed=None, frame="world", stop=True, single=True)
+
+    def descend(self, altitude) -> Mission:
+        _check_positive("altitude", altitude)
+        pos = self.nav._current_pos()
+        return self._navigate([np.array([pos[0], pos[1], pos[2] + altitude])], yaw="hold",
+                              look_at=None, speed=None, frame="world", stop=True, single=True)
+
+    land = descend
