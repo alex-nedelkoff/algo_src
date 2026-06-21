@@ -659,7 +659,7 @@ class WaypointNavigator:
                           f"z={float(ds.pos_ned[2]):+4.1f}/{float(target[2]):+4.1f} "
                           f"zi={self._z_int:+4.1f} thr={dbg['thr']:.2f} "
                           f"v={float(np.linalg.norm(vw)):4.1f} tilt={tilt:3.0f} "
-                          f"camerr={self._cam_aim_err(ds, self._los_target(ds, yaw)):+4.0f}", flush=True)
+                          f"{self._cam_diag(ds, self._los_target(ds, yaw))}", flush=True)
                 self._emit(f"leg {i + 1}/{n}", ds, tilt, yaw, target, i / max(n, 1))
             time.sleep(g.LOOP_DT)
         if i >= n:
@@ -772,16 +772,20 @@ class WaypointNavigator:
         n = float(np.linalg.norm(v))
         return v / n if n > 1e-9 else np.array([1.0, 0.0])
 
-    def _cam_aim_err(self, ds, los):
-        """Signed horizontal angle (deg) between the ACTUAL camera view axis (world, same basis as the
-        Rerun frustum: R_qfix @ [s_cam*cos20, 0, -sin20]) and the DESIRED line-of-sight (drone->los).
-        ~0 = camera on target; ~180 = camera points opposite (nose/cam flip); else a chart-bridge sign bug."""
+    def _cam_diag(self, ds, los):
+        """Ground-truth camera bearings for diagnosis (no self-confirming error). Returns a string:
+        gbear = world bearing drone->los (where the camera SHOULD point);
+        nose  = world bearing of body-x (true-frame R_qfix[:,0]);
+        frus  = world bearing of the Rerun frustum axis (R_qfix @ [s_cam*cos20,0,-sin20]) -- the ACTUAL
+                camera the user sees. If frus tracks gbear -> camera aims correctly."""
         T = np.radians(20.0); C = np.cos(T); S = np.sin(T)
-        cam = quat_to_R(_qfix(ds.quat_wxyz)) @ np.array([self._s_cam * C, 0.0, -S])
-        dh = (np.asarray(los, float) - ds.pos_ned)[:2]; ah = cam[:2]
-        if float(np.linalg.norm(dh)) < 1e-6 or float(np.linalg.norm(ah)) < 1e-6:
-            return 0.0
-        return float(np.degrees(np.arctan2(dh[0] * ah[1] - dh[1] * ah[0], float(dh @ ah))))
+        R_t = quat_to_R(_qfix(ds.quat_wxyz))
+        d = (np.asarray(los, float) - ds.pos_ned)[:2]
+        gbear = np.degrees(np.arctan2(d[1], d[0]))
+        nose = np.degrees(np.arctan2(R_t[1, 0], R_t[0, 0]))
+        cam = R_t @ np.array([self._s_cam * C, 0.0, -S])
+        frus = np.degrees(np.arctan2(cam[1], cam[0]))
+        return f"gbear={gbear:+4.0f} nose={nose:+4.0f} frus={frus:+4.0f} scam={self._s_cam:+.0f}"
 
     def _los_target(self, ds, yaw, length=5.0):
         """World point the CAMERA is expected to point at (commanded line-of-sight), for the Rerun
