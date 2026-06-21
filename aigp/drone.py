@@ -205,9 +205,11 @@ class Drone:
         self._mission = None
 
     def set_origin(self, pos_ned=None, yaw=None):
+        """Set the NED origin (home) and optional heading."""
         self.nav.set_origin(pos_ned, yaw)
 
     def look_at(self, point, frame="body"):
+        """Point the camera at a given coordinate (body or world frame)."""
         _check_frame(frame)
         self.nav.set_look_point(self.nav._resolve(np.asarray(point, float), frame))
 
@@ -246,14 +248,17 @@ class Drone:
 
     # --- public motion ---
     def goto(self, wp, *, yaw="course", look_at=None, speed=None, frame="body", stop=False) -> Mission:
+        """Fly to a waypoint; returns Mission (call .wait() to block)."""
         return self._navigate([wp], yaw=yaw, look_at=look_at, speed=speed, frame=frame,
                               stop=stop, single=True)
 
     def follow(self, wps, *, yaw="course", look_at=None, speed=None, frame="body", stop=False) -> Mission:
+        """Fly through a sequence of waypoints; returns Mission (call .wait() to block)."""
         return self._navigate(list(wps), yaw=yaw, look_at=look_at, speed=speed, frame=frame,
                               stop=stop, single=False)
 
     def orbit(self, center, *, radius, speed=None, seconds, frame="body", direction="ccw") -> Mission:
+        """Circle a point at a fixed radius for a duration; camera locked on center; returns Mission."""
         _check_frame(frame); _check_positive("radius", radius); _check_positive("seconds", seconds)
         if speed is not None:
             _check_positive("speed", speed)
@@ -274,6 +279,7 @@ class Drone:
         return self._start(run_fn)
 
     def hover(self, seconds=None) -> Mission:
+        """Hold position for a duration (None = indefinite); returns Mission."""
         if seconds is not None:
             _check_positive("seconds", seconds)
 
@@ -285,12 +291,14 @@ class Drone:
         return self._start(run_fn)
 
     def takeoff(self, altitude) -> Mission:
+        """Climb vertically by the given altitude; returns Mission."""
         _check_positive("altitude", altitude)
         pos = self.nav._current_pos()
         return self._navigate([np.array([pos[0], pos[1], pos[2] - altitude])], yaw="hold",
                               look_at=None, speed=None, frame="world", stop=True, single=True)
 
     def descend(self, altitude) -> Mission:
+        """Descend vertically by the given altitude; returns Mission."""
         _check_positive("altitude", altitude)
         pos = self.nav._current_pos()
         return self._navigate([np.array([pos[0], pos[1], pos[2] + altitude])], yaw="hold",
