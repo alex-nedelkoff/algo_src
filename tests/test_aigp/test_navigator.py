@@ -513,3 +513,13 @@ def test_status_cb_invoked_with_phase():
     nav._status_cb = lambda **k: (seen.append(k["phase"]), nav._abort_evt.set())  # 1 iter then stop
     nav._fly_strafe_course([nav._origin_pos + np.array([5.0, 0, 0])], "course")
     assert seen and isinstance(seen[0], str)
+
+
+def test_settle_honors_abort():
+    # vel above SETTLE_V so settle would otherwise loop sending until SETTLE_T
+    nav = WaypointNavigator(_FakeStore(_mkstate([0, 0, -2], [1, 0, 0], quat=_WIRE_LEVEL)),
+                            _RecCommander(), _PLANT)
+    nav.set_origin()
+    nav._abort_evt = threading.Event(); nav._abort_evt.set()
+    nav.settle(target=nav._origin_pos)      # must return immediately
+    assert nav.commander.n == 0             # abort checked before any command was sent

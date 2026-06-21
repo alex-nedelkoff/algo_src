@@ -812,6 +812,8 @@ class WaypointNavigator:
             self._t0 = time.time()
         t0 = time.time()
         while time.time() - t0 < self.gains.SETTLE_T:
+            if self._interrupted():
+                return
             ds = self.store.get_drone()
             if ds is not None:
                 if float(np.linalg.norm(ds.vel_ned[:2])) < self.gains.SETTLE_V:
@@ -880,6 +882,8 @@ class WaypointNavigator:
         t_leg = time.time()
         last = -1
         while time.time() - t_leg < g.WP_TIMEOUT:
+            if self._interrupted():
+                return "abort"
             ds = self.store.get_drone()
             if ds is not None:
                 rel = target - ds.pos_ned
