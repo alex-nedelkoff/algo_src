@@ -56,16 +56,25 @@ def main():
     plant = load_plant("sysid/sim_response.json")
     assert fresh_start(s, c, m, boot), "not live"
 
-    # gate 0 world pose, broadcast via TRACK_INFO after the reset
-    gates = None
-    t = time.time()
-    while gates is None and time.time() - t < 5.0:
-        gates = s.get_gates(); time.sleep(0.05)
-    assert gates, "no gates received (TRACK_INFO)"
-    gate0 = np.asarray(gates[0].pos_ned, float)
-    print(f"gate0 world NED: {np.round(gate0, 1).tolist()} (width {gates[0].width:.2f})", flush=True)
-
     ds0 = s.get_drone(); spawn = ds0.pos_ned.copy()
+
+    # gate 0 world pose (TRACK_INFO). The first post-reset broadcast can be GARBAGE (z = -4569 m
+    # seen) -> poll until a sane reading: within ~150 m of spawn and |z| < 30 m. (gates[].pos_ned is
+    # the same world-NED frame as the drone's pos_ned -- vq_track_wp flies to it directly.)
+    gate0 = None
+    t = time.time()
+    while time.time() - t < 12.0:
+        gates = s.get_gates()
+        if gates:
+            g0 = np.asarray(gates[0].pos_ned, float)
+            if np.linalg.norm((g0 - spawn)[:2]) < 150.0 and abs(g0[2] - spawn[2]) < 30.0:
+                gate0 = g0; break
+            print(f"  ...rejecting garbage gate0 {np.round(g0, 1).tolist()}", flush=True)
+        time.sleep(0.2)
+    assert gate0 is not None, "no SANE gate0 from TRACK_INFO (only garbage reads)"
+    print(f"gate0 world NED: {np.round(gate0, 1).tolist()} (width {gates[0].width:.2f}); "
+          f"spawn {np.round(spawn, 1).tolist()}", flush=True)
+
     yaw0 = float(np.arctan2(*(quat_to_R(ds0.quat_wxyz)[[1, 0], 0])))
     flog = ftm.from_args(sys.argv, plant[2], "look_at_gate", store=s)
 
