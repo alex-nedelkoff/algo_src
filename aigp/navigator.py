@@ -646,7 +646,8 @@ class WaypointNavigator:
                 if self.flog is not None:
                     self.flog.push(time.time() - self._t0, ds, dbg, nearest=target,
                                    tangent=self._cam_live, cruise=float(np.linalg.norm(vw)),
-                                   running=self.store.get_race_live(), armed=True)
+                                   running=self.store.get_race_live(), armed=True,
+                                   los=self._los_target(ds, yaw))
                 if tilt > g.ABORT_TILT_DEG:
                     print(f"  ABORT tilt={tilt:.0f}", flush=True)
                     return "abort"
@@ -769,6 +770,23 @@ class WaypointNavigator:
         v = np.asarray(v, float)[:2]
         n = float(np.linalg.norm(v))
         return v / n if n > 1e-9 else np.array([1.0, 0.0])
+
+    def _los_target(self, ds, yaw, length=5.0):
+        """World point the CAMERA is expected to point at (commanded line-of-sight), for the Rerun
+        overlay. lookat -> the look-point itself; hold/fixed -> spawn camera dir; course -> travel;
+        face -> away from the target (nose-at-target)."""
+        pos = np.asarray(ds.pos_ned, float)
+        if yaw == "lookat" and self._look_point is not None:
+            return np.asarray(self._look_point, float)
+        if yaw in ("hold", "fixed"):
+            d = self._cam_live
+        elif yaw == "course":
+            d = self._unit_xy(self._cur_travel)
+        elif yaw == "face":
+            d = -self._unit_xy((np.asarray(self._cur_target, float) - pos))
+        else:
+            d = self._cam_live
+        return np.array([pos[0] + d[0] * length, pos[1] + d[1] * length, pos[2]])
 
     @staticmethod
     def _is_tf_mode(yaw):

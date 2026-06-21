@@ -207,13 +207,15 @@ class FlightLog:
         self._rr.log(path, self._rr.Scalars(float(v)))
 
     def push(self, t_s, ds, dbg=None, nearest=None, tangent=None, cruise=None,
-             running=None, armed=None):
+             running=None, armed=None, los=None):
         """Stow the latest snapshot for the logging thread. ~microseconds -- safe every control loop.
-        dbg: {a(3), w_des(3 rad/s), q_des(4), thr} from cmd(). Other args are optional context."""
+        dbg: {a(3), w_des(3 rad/s), q_des(4), thr} from cmd(). los: world-NED point the camera is
+        EXPECTED to point at (commanded line-of-sight) -- drawn as a ray to compare vs the actual
+        frustum. Other args are optional context."""
         if not self.ok:
             return
         with self._lock:
-            self._latest = (float(t_s), ds, dbg, nearest, tangent, cruise, running, armed)
+            self._latest = (float(t_s), ds, dbg, nearest, tangent, cruise, running, armed, los)
 
     def close(self):
         self._stop = True
@@ -232,7 +234,7 @@ class FlightLog:
                     pass
             _time.sleep(period)
 
-    def _log(self, t_s, ds, dbg, nearest, tangent, cruise, running, armed):
+    def _log(self, t_s, ds, dbg, nearest, tangent, cruise, running, armed, los=None):
         """All Rerun I/O -- runs ONLY on the daemon thread, never the control loop."""
         rr = self._rr
         pos = np.asarray(ds.pos_ned, float)
@@ -250,6 +252,10 @@ class FlightLog:
                 rr.log("world/trail", rr.LineStrips3D([np.array(self._trail)], colors=[255, 200, 0]))
             rr.log("world/vel", rr.Arrows3D(origins=[pos], vectors=[vel], colors=[0, 220, 120]))
             rr.log("world/nose", rr.Arrows3D(origins=[pos], vectors=[cam * 1.5], colors=[255, 80, 80]))
+            if los is not None:                              # EXPECTED line-of-sight (cyan) vs actual frustum
+                losp = np.asarray(los, float)
+                rr.log("world/expected_los", rr.LineStrips3D([np.array([pos, losp])], colors=[0, 255, 255]))
+                rr.log("world/los_target", rr.Points3D([losp], radii=0.35, colors=[0, 255, 255]))
             # --- camera FOV frustum (spec intrinsics: 640x360, fx=fy=320 -> 90 deg horizontal;
             # camera tilted 20 deg UP off the nose). Pose from the TRUE attitude (qfix) -- the raw
             # live quat is a shuffled chart, NOT a rotation; using it made the frustum drift in
