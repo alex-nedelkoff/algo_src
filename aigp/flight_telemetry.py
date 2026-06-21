@@ -272,6 +272,20 @@ class FlightLog:
                                                    principal_point=[320.0, 180.0],
                                                    image_plane_distance=3.0), static=True)
             rr.log("world/cam_fov", rr.Transform3D(translation=pos, mat3x3=R_t @ self._r_opt))
+            if los is not None:
+                # ACTUAL camera view axis in world (same basis as the frustum above) vs the DESIRED
+                # line-of-sight (drone->los). aim_err_deg = signed horizontal angle between them:
+                # ~0 = camera on target; ~180 = pointing opposite (nose/camera flip); else a sign bug.
+                cam_axis = R_t @ self._r_opt[:, 2]
+                na = float(np.linalg.norm(cam_axis))
+                if na > 1e-9:
+                    cam_axis = cam_axis / na
+                    rr.log("world/cam_axis", rr.Arrows3D(origins=[pos], vectors=[cam_axis * 4.0],
+                                                         colors=[255, 0, 255]))   # magenta = ACTUAL camera
+                    dh = (np.asarray(los, float) - pos)[:2]; ah = cam_axis[:2]
+                    if np.linalg.norm(dh) > 1e-6 and np.linalg.norm(ah) > 1e-6:
+                        self._scal("cam/aim_err_deg", float(np.degrees(
+                            np.arctan2(dh[0] * ah[1] - dh[1] * ah[0], float(dh @ ah)))))
             if dbg is not None and dbg.get("a") is not None:
                 rr.log("world/accel_cmd", rr.Arrows3D(origins=[pos], vectors=[np.asarray(dbg["a"], float)],
                                                       colors=[180, 120, 255]))
