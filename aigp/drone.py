@@ -70,3 +70,53 @@ class FlightConfig:
         g.KI_Z = self.kiz
         g.C_MAX = self.c_max
         return g
+
+
+_FRAMES = ("world", "body")
+_YAWS = ("hold", "fixed", "course", "face", "lookat")
+
+
+def _check_frame(frame):
+    if frame not in _FRAMES:
+        raise ValueError(f"frame must be one of {_FRAMES}, got {frame!r}")
+
+
+def _check_yaw(yaw):
+    if yaw not in _YAWS:
+        raise ValueError(f"yaw must be one of {_YAWS}, got {yaw!r}")
+
+
+def _check_positive(name, val):
+    if not (isinstance(val, (int, float)) and val > 0):
+        raise ValueError(f"{name} must be > 0, got {val!r}")
+
+
+class _StatusBox:
+    """Thread-safe holder of the latest Status. The worker thread calls update()/set_result();
+    the caller reads get() (a copy)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._s = Status(result=Result.RUNNING, phase="init", pos_ned=np.zeros(3), vel=0.0,
+                         tilt_deg=0.0, mode="", target=None, progress=0.0, error=None)
+
+    def update(self, *, phase, ds_pos, vel, tilt, mode, target, progress):
+        with self._lock:
+            self._s.phase = phase
+            self._s.pos_ned = np.asarray(ds_pos, float).copy()
+            self._s.vel = float(vel)
+            self._s.tilt_deg = float(tilt)
+            self._s.mode = mode
+            self._s.target = None if target is None else np.asarray(target, float).copy()
+            self._s.progress = float(progress)
+
+    def set_result(self, result, error=None):
+        with self._lock:
+            self._s.result = result
+            self._s.error = error
+
+    def get(self) -> Status:
+        with self._lock:
+            return Status(self._s.result, self._s.phase, self._s.pos_ned.copy(), self._s.vel,
+                          self._s.tilt_deg, self._s.mode, None if self._s.target is None
+                          else self._s.target.copy(), self._s.progress, self._s.error)

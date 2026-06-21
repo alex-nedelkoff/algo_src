@@ -1,5 +1,6 @@
+import pytest
 import numpy as np
-from aigp.drone import Result, Status, FlightConfig
+from aigp.drone import Result, Status, FlightConfig, _StatusBox, _check_frame, _check_yaw, _check_positive
 from aigp.navigator import NavGains
 
 
@@ -21,3 +22,24 @@ def test_status_defaults_running():
     s = Status(result=Result.RUNNING, phase="x", pos_ned=np.zeros(3), vel=0.0,
                tilt_deg=0.0, mode="hold", target=None, progress=0.0, error=None)
     assert s.result is Result.RUNNING and s.error is None
+
+
+def test_statusbox_roundtrip_and_thread_safe_copy():
+    box = _StatusBox()
+    box.update(phase="leg 1/2", ds_pos=np.array([1.0, 2.0, -3.0]), vel=2.0, tilt=5.0,
+               mode="course", target=np.array([4.0, 0.0, -3.0]), progress=0.5)
+    s = box.get()
+    assert s.phase == "leg 1/2" and s.vel == 2.0 and s.mode == "course"
+    assert s.result is Result.RUNNING
+    box.set_result(Result.REACHED)
+    assert box.get().result is Result.REACHED
+
+
+def test_validation_raises():
+    with pytest.raises(ValueError):
+        _check_frame("polar")
+    with pytest.raises(ValueError):
+        _check_yaw("spin")
+    with pytest.raises(ValueError):
+        _check_positive("radius", -1.0)
+    _check_frame("body"); _check_yaw("lookat"); _check_positive("radius", 2.0)  # no raise
