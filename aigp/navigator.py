@@ -785,7 +785,11 @@ class WaypointNavigator:
         nose = np.degrees(np.arctan2(R_t[1, 0], R_t[0, 0]))
         cam = R_t @ np.array([self._s_cam * C, 0.0, -S])
         frus = np.degrees(np.arctan2(cam[1], cam[0]))
-        return f"gbear={gbear:+4.0f} nose={nose:+4.0f} frus={frus:+4.0f} scam={self._s_cam:+.0f}"
+        horiz = float(np.linalg.norm(d))
+        gel = np.degrees(np.arctan2(float(ds.pos_ned[2] - np.asarray(los, float)[2]), max(horiz, 1e-6)))
+        cel = np.degrees(np.arctan2(-cam[2], float(np.linalg.norm(cam[:2]))))   # camera up-angle (~20 fixed)
+        return (f"gbear={gbear:+4.0f} frus={frus:+4.0f} scam={self._s_cam:+.0f} "
+                f"gel={gel:+3.0f} cel={cel:+3.0f}")   # elevation: gate vs camera -> centered when gel~=cel
 
     def _los_target(self, ds, yaw, length=5.0):
         """World point the CAMERA is expected to point at (commanded line-of-sight), for the Rerun

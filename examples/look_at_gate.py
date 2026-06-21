@@ -78,17 +78,32 @@ def main():
     yaw0 = float(np.arctan2(*(quat_to_R(ds0.quat_wxyz)[[1, 0], 0])))
     flog = ftm.from_args(sys.argv, plant[2], "look_at_gate", store=s)
 
-    drone = Drone(s, c, plant, config=FlightConfig(), flog=flog)
+    # BEST CASE for a FIXED 20deg-up camera + yaw-only aim: view the gate from a point R_VIEW in
+    # front of it and DZ = R_VIEW*tan(20) BELOW it, so the gate sits at the camera's 20deg elevation
+    # (gel ~= cel ~= +20 -> centered). Gentle config -> minimal body tilt -> steady camera. A slow
+    # lateral sweep keeps the gate ~centered while the heading tracks it.
+    R_VIEW = 12.0
+    DZ = R_VIEW * np.tan(np.radians(20.0))               # ~4.4 m below the gate
+    front = (spawn - gate0)[:2]; front = front / max(np.linalg.norm(front), 1e-6)  # gate -> spawn dir
+    perp = np.array([-front[1], front[0]])
+    view0 = np.array([gate0[0] + front[0] * R_VIEW, gate0[1] + front[1] * R_VIEW, gate0[2] + DZ])
+    viewL = view0 + np.array([perp[0] * 4.0, perp[1] * 4.0, 0.0])
+    viewR = view0 - np.array([perp[0] * 4.0, perp[1] * 4.0, 0.0])
+
+    drone = Drone(s, c, plant, config=FlightConfig(vmax=2.0, amax=1.5, tilt_deg=12.0,
+                                                   default_speed=1.5), flog=flog)
     drone.nav.set_origin(pos_ned=spawn, yaw=yaw0)
     c.arm()
 
     drone.look_at(tuple(gate0), frame="world")           # persistent world look point = gate 0
-    print("strafe right, camera on gate 0...", flush=True)
-    drone.goto((0, 6, 0), yaw="lookat", frame="body").wait()    # strafe right; camera pans to gate
-    print("strafe left...", flush=True)
-    drone.goto((0, -6, 0), yaw="lookat", frame="body").wait()   # strafe left
-    print("back to center...", flush=True)
-    drone.goto((0, 0, 0), yaw="lookat", frame="body").wait()
+    print(f"move to view point {np.round(view0, 1).tolist()} (in front of + below gate)...", flush=True)
+    drone.goto(tuple(view0), yaw="lookat", frame="world", speed=1.5).wait()
+    print("slow sweep left, camera holding gate 0...", flush=True)
+    drone.goto(tuple(viewL), yaw="lookat", frame="world", speed=1.2).wait()
+    print("slow sweep right...", flush=True)
+    drone.goto(tuple(viewR), yaw="lookat", frame="world", speed=1.2).wait()
+    print("center...", flush=True)
+    drone.goto(tuple(view0), yaw="lookat", frame="world", speed=1.2).wait()
     print("done", flush=True)
 
 
