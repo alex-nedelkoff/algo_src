@@ -836,7 +836,7 @@ class WaypointNavigator:
             if ds is not None:
                 if float(np.linalg.norm(ds.vel_ned[:2])) < self.gains.SETTLE_V:
                     return
-                if self._is_strafe(yaw):
+                if self._is_tf_mode(yaw):     # hold/fixed/course/lookat/face all park in the TRUE frame
                     vw = self._world_vel(ds.pos_ned)
                     a_al, a_lat = _course_guidance(ds.pos_ned, np.array([vw[0], vw[1], 0.0]), target,
                                                    self._cam_live, self._lat_course, self.gains)
