@@ -246,6 +246,12 @@ def _dr_vel(vw_prev, pos_xy, pos_prev_xy, dt, alpha=0.85):
     return alpha * np.asarray(vw_prev, float) + (1.0 - alpha) * vw_raw
 
 
+def _signed_angle(a, b):
+    """Signed angle (rad) rotating unit-ish vector a -> b in the XY plane (CCW positive)."""
+    a = np.asarray(a, float); b = np.asarray(b, float)
+    return float(np.arctan2(a[0] * b[1] - a[1] * b[0], float(a @ b)))
+
+
 def _z_int_step(z_int, ze, dt, ki, gate, clip):
     """One gated z-integrator step (clamped to +-clip). Cancels the VQ analytic z-loop's ~1.2 m sag
     (collective deficit, worse at higher tilt) so altitude-changing waypoints reach z. Anti-windup:
@@ -348,6 +354,7 @@ class WaypointNavigator:
         self._t_prev_zi = None
         self._stop_each = False    # True: stop-on-a-dime at EVERY waypoint (else only the final)
         self._cur_travel = np.array([1.0, 0.0])   # current leg travel dir (world XY) for course yaw
+        self._cur_target = np.zeros(3)   # current waypoint (world) for yaw='face'
 
     def _world_vel(self, pos):
         """Stateful position-derived world velocity (see _dr_vel). Call once per loop step with the
@@ -407,6 +414,10 @@ class WaypointNavigator:
         # cam_live = the camera's world-XY direction at spawn; lat_course = its perpendicular.
         self._cam_live = -np.array([np.cos(self._origin_yaw), np.sin(self._origin_yaw)])
         self._lat_course = np.array([-self._cam_live[1], self._cam_live[0]])
+
+    def set_look_point(self, point_world):
+        """Set the world-NED point the camera tracks in yaw='lookat'."""
+        self._look_point = np.asarray(point_world, float)
 
     def _resolve(self, wp, frame):
         wp = np.asarray(wp, float)
@@ -584,6 +595,7 @@ class WaypointNavigator:
                 is_last = (i == n - 1)
                 stop_here = is_last or self._stop_each   # crisp halt at the final wp (or every wp in --stop)
                 self._cur_travel = self._unit_xy(target - leg_start)   # camera tracks this (course mode)
+                self._cur_target = target   # for yaw='face'
                 rel = target - ds.pos_ned
                 if self._advance_wp(float(np.linalg.norm(rel)), stop_here, g):
                     print(f"   REACHED wp{i}", flush=True)
@@ -704,19 +716,22 @@ class WaypointNavigator:
         return "timeout"
 
     def _yaw_ref_tf(self, yaw, ds):
-        """NOSE heading in the true-cam frame. 'hold'/'fixed' hold the spawn true-cam heading.
-        'course' points the CAMERA along the current travel direction (camera-forward): rotate the
-        true-cam yaw by the world angle from cam_live to the travel dir, sign = s_lat (the world-y
-        mirror) -- so the camera tracks where the drone is going. (s_lat=0 during the probe -> holds
-        yaw0_t.)"""
+        """NOSE heading in the true-cam frame. hold/fixed hold the spawn heading; course points the
+        CAMERA along travel; lookat points the CAMERA at self._look_point; face points the NOSE at
+        self._cur_target (= camera at the anti-direction). All use the same chart bridge
+        yaw0_t + s_lat*signed_angle(cam_live, d) (s_lat=0 during the probe -> yaw0_t)."""
         if yaw in ("hold", "fixed"):
             return self._yaw0_t
         if yaw == "course":
-            d = np.asarray(self._cur_travel, float)
-            ang = float(np.arctan2(self._cam_live[0] * d[1] - self._cam_live[1] * d[0],
-                                   float(self._cam_live @ d)))
-            return self._yaw0_t + (self._s_lat or 0.0) * ang
-        raise NotImplementedError(yaw)   # 'lookat' (camera about a point) is a follow-up
+            d = self._unit_xy(self._cur_travel)
+        elif yaw == "lookat":
+            d = self._unit_xy((np.asarray(self._look_point, float) - ds.pos_ned)
+                              if self._look_point is not None else self._cur_travel)
+        elif yaw == "face":
+            d = -self._unit_xy(np.asarray(self._cur_target, float) - ds.pos_ned)
+        else:
+            raise NotImplementedError(yaw)
+        return self._yaw0_t + (self._s_lat or 0.0) * _signed_angle(self._cam_live, d)
 
     @staticmethod
     def _unit_xy(v):
@@ -727,8 +742,8 @@ class WaypointNavigator:
     @staticmethod
     def _is_tf_mode(yaw):
         """Modes that fly the true-frame continuous engine (_fly_strafe_course): camera-decoupled
-        strafe (hold/fixed) + camera-forward (course)."""
-        return yaw in ("hold", "fixed", "course")
+        strafe (hold/fixed) + camera-forward (course) + lookat/face."""
+        return yaw in ("hold", "fixed", "course", "lookat", "face")
 
     @staticmethod
     def _is_strafe(yaw_mode):

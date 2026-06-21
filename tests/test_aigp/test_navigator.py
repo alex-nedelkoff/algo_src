@@ -2,7 +2,7 @@ import json
 import numpy as np
 from aigp.navigator import (
     NavGains, load_plant, attitude_command,
-    cruise_accel, settle_accel, WaypointNavigator,
+    cruise_accel, settle_accel, WaypointNavigator, _signed_angle,
 )
 from aigp.state import DroneState
 
@@ -450,3 +450,37 @@ def test_strafe_attitude_level_hover_zero_rate():
     rate, thr, tilt, dbg = nav._strafe_attitude(ds, a_al=0.0, a_lat=0.0, z_sp=-2.0, yaw_ref_tf=0.0)
     assert abs(thr - 0.5) < 1e-6 and abs(tilt) < 1e-6
     np.testing.assert_allclose(rate, [0, 0, 0], atol=1e-6)
+
+
+def test_signed_angle_basic():
+    assert abs(_signed_angle(np.array([1.0, 0.0]), np.array([0.0, 1.0])) - np.pi / 2) < 1e-9
+    assert abs(_signed_angle(np.array([1.0, 0.0]), np.array([0.0, -1.0])) + np.pi / 2) < 1e-9
+
+
+def test_yaw_ref_tf_lookat_points_camera_at_point():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL))
+    nav.set_origin()
+    nav._s_lat = 1.0
+    nav._look_point = nav._origin_pos + np.array([5.0, 0.0, 0.0])  # 5 m along cam_live? compute angle
+    ds = nav.store.get_drone()
+    d = nav._unit_xy((nav._look_point - ds.pos_ned))
+    expect = nav._yaw0_t + _signed_angle(nav._cam_live, d)
+    assert abs(nav._yaw_ref_tf("lookat", ds) - expect) < 1e-6
+
+
+def test_yaw_ref_tf_face_points_nose_at_target():
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL))
+    nav.set_origin()
+    nav._s_lat = 1.0
+    nav._cur_target = nav._origin_pos + np.array([4.0, 3.0, 0.0])
+    ds = nav.store.get_drone()
+    d = nav._unit_xy((nav._cur_target - ds.pos_ned))
+    # face = nose at target = camera at the ANTI-direction
+    expect = nav._yaw0_t + _signed_angle(nav._cam_live, -d)
+    assert abs(nav._yaw_ref_tf("face", ds) - expect) < 1e-6
+
+
+def test_is_tf_mode_includes_lookat_face():
+    for m in ("hold", "fixed", "course", "lookat", "face"):
+        assert WaypointNavigator._is_tf_mode(m)
+    assert not WaypointNavigator._is_tf_mode("bogus")
