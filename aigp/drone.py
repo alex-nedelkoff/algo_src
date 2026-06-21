@@ -168,3 +168,76 @@ class Mission:
     @property
     def result(self):
         return self._box.get().result
+
+
+# ---------------------------------------------------------------------------
+# Result mapper
+# ---------------------------------------------------------------------------
+
+def _result_from_str(s):
+    return {"reached": Result.REACHED, "timeout": Result.TIMEOUT,
+            "abort": Result.ABORT}.get(s, Result.ERROR)
+
+
+# ---------------------------------------------------------------------------
+# Drone facade
+# ---------------------------------------------------------------------------
+
+class Drone:
+    """Public control facade. Janahan owns connect+arm; pass the live store/commander/plant in."""
+
+    def __init__(self, store, commander, plant, *, config: FlightConfig = None, flog=None):
+        self.config = config or FlightConfig()
+        self.nav = WaypointNavigator(store, commander, plant,
+                                     gains=self.config.to_navgains(), flog=flog)
+        self._mission = None
+
+    def set_origin(self, pos_ned=None, yaw=None):
+        self.nav.set_origin(pos_ned, yaw)
+
+    def look_at(self, point, frame="body"):
+        _check_frame(frame)
+        self.nav.set_look_point(self.nav._resolve(np.asarray(point, float), frame))
+
+    # --- mission plumbing ---
+    def _start(self, run_fn) -> Mission:
+        if self._mission is not None and not self._mission.done:
+            self._mission.abort()
+            self._mission.wait(timeout=2.0)
+        abort_evt, pause_evt, box = threading.Event(), threading.Event(), _StatusBox()
+        self.nav._abort_evt = abort_evt
+        self.nav._pause_evt = pause_evt
+        self.nav._status_cb = lambda *, phase, ds, tilt, mode, target, progress: box.update(
+            phase=phase, ds_pos=ds.pos_ned, vel=float(np.linalg.norm(ds.vel_ned[:2])),
+            tilt=tilt, mode=mode, target=target, progress=progress)
+        m = Mission(run_fn, abort_evt, pause_evt, box).start()
+        self._mission = m
+        return m
+
+    def _navigate(self, targets, *, yaw, look_at, speed, frame, stop, single):
+        _check_frame(frame); _check_yaw(yaw)
+        if speed is not None:
+            _check_positive("speed", speed)
+        if yaw == "lookat" and look_at is None and self.nav._look_point is None:
+            raise ValueError("yaw='lookat' requires look_at=... or a prior look_at()")
+        v = speed if speed is not None else self.config.default_speed
+        if look_at is not None:
+            self.look_at(look_at, frame)
+        if stop:
+            self.nav._stop_each = True
+
+        def run_fn(abort_evt, pause_evt, box):
+            res = (self.nav.goto(targets[0], yaw=yaw, v_cruise=v, engine="legs", frame=frame)
+                   if single else
+                   self.nav.follow(targets, yaw=yaw, v_cruise=v, engine="legs", frame=frame))
+            return _result_from_str(res)
+        return self._start(run_fn)
+
+    # --- public motion ---
+    def goto(self, wp, *, yaw="course", look_at=None, speed=None, frame="body", stop=False) -> Mission:
+        return self._navigate([wp], yaw=yaw, look_at=look_at, speed=speed, frame=frame,
+                              stop=stop, single=True)
+
+    def follow(self, wps, *, yaw="course", look_at=None, speed=None, frame="body", stop=False) -> Mission:
+        return self._navigate(list(wps), yaw=yaw, look_at=look_at, speed=speed, frame=frame,
+                              stop=stop, single=False)

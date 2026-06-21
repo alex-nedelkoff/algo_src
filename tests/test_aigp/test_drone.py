@@ -88,3 +88,59 @@ def test_mission_pause_resume_gates_progress():
     m.resume()
     s = m.wait(timeout=5)
     assert s.result is Result.REACHED and s.progress > p1
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Drone facade tests
+# ---------------------------------------------------------------------------
+from aigp.drone import Drone
+
+
+class _FakeStore2:
+    def __init__(self, ds): self._ds = ds
+    def get_drone(self): return self._ds
+    def get_race_live(self): return True
+
+
+class _RecCmd:
+    def send_attitude_target(self, rate, thr): pass
+
+
+def _drone():
+    from aigp.state import DroneState
+    ds = DroneState(np.array([0, 0, -2.0]), np.zeros(3), np.array([0.0, 1, 0, 0]), np.zeros(3), 0)
+    return Drone(_FakeStore2(ds), _RecCmd(), (0.5, 13.0, np.array([1.0, 1.0, 1.0])))
+
+
+def test_goto_validates_inputs():
+    d = _drone()
+    with pytest.raises(ValueError):
+        d.goto((1, 0, 0), frame="polar").wait(timeout=1)
+    with pytest.raises(ValueError):
+        d.goto((1, 0, 0), yaw="spin").wait(timeout=1)
+
+
+def test_goto_returns_mission_and_runs():
+    d = _drone()
+    # stub the navigator's blocking call so no real loop runs
+    d.nav.goto = lambda *a, **k: "reached"
+    m = d.goto((3, 0, 0), yaw="hold")
+    s = m.wait(timeout=2)
+    assert isinstance(m, Mission) and s.result is Result.REACHED
+
+
+def test_new_mission_auto_aborts_previous():
+    d = _drone()
+    order = []
+    def slow(*a, **k):
+        for _ in range(100):
+            if d.nav._abort_evt is not None and d.nav._abort_evt.is_set():
+                order.append("aborted"); return "abort"
+            time.sleep(0.005)
+        order.append("finished"); return "reached"
+    d.nav.goto = slow
+    m1 = d.goto((3, 0, 0), yaw="hold")
+    time.sleep(0.02)
+    m2 = d.goto((4, 0, 0), yaw="hold")     # should auto-abort m1
+    m2.wait(timeout=2)
+    assert "aborted" in order and m1.result is Result.ABORT
