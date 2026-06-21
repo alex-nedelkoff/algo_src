@@ -355,6 +355,9 @@ class WaypointNavigator:
         self._stop_each = False    # True: stop-on-a-dime at EVERY waypoint (else only the final)
         self._cur_travel = np.array([1.0, 0.0])   # current leg travel dir (world XY) for course yaw
         self._cur_target = np.zeros(3)   # current waypoint (world) for yaw='face'
+        self._abort_evt = None     # threading.Event injected by the Drone facade (None = no-op)
+        self._pause_evt = None
+        self._status_cb = None     # callable(phase=, ds=, tilt=, mode=, target=, progress=)
 
     def _world_vel(self, pos):
         """Stateful position-derived world velocity (see _dr_vel). Call once per loop step with the
@@ -372,6 +375,15 @@ class WaypointNavigator:
         self._vw = _dr_vel(self._vw, pos[:2], self._pos_prev_vw[:2], dt)
         self._pos_prev_vw = pos.copy()
         return self._vw
+
+    def _interrupted(self):
+        return self._abort_evt is not None and self._abort_evt.is_set()
+
+    def _emit(self, phase, ds, tilt, mode, target, progress):
+        if self._status_cb is not None:
+            self._status_cb(phase=phase, ds=ds, tilt=float(tilt), mode=mode,
+                            target=None if target is None else np.asarray(target, float),
+                            progress=float(progress))
 
     @staticmethod
     def _advance_wp(rel_norm, is_last, gains):
@@ -533,6 +545,8 @@ class WaypointNavigator:
         while time.time() - t0 < 1.5:
             ds = self.store.get_drone()
             if ds is not None:
+                if self._interrupted():
+                    return
                 vw = self._world_vel(ds.pos_ned)
                 a_al, _ = _line_guidance(ds.pos_ned, vw, leg_start, target,
                                          self._cam_live, self._lat_course, self.gains)
@@ -579,6 +593,8 @@ class WaypointNavigator:
         next wp at the loose CAPTURE radius while still moving (rounded corners, steady speed = no
         stop-and-go lurch); only the final wp uses the tight ARRIVE + a settle. Guidance/attitude
         reuse the proven fixed-course-frame strafe (_course_guidance + _strafe_attitude)."""
+        if self._interrupted():
+            return "abort"
         g = self.gains
         n = len(targets)
         i = 0
@@ -591,6 +607,20 @@ class WaypointNavigator:
         while i < n and time.time() - t0 < g.WP_TIMEOUT * n:
             ds = self.store.get_drone()
             if ds is not None:
+                if self._interrupted():
+                    return "abort"
+                while self._pause_evt is not None and self._pause_evt.is_set() \
+                        and not self._interrupted():
+                    rate, thr, tilt, dbg = self._strafe_attitude(
+                        ds, 0.0, 0.0, float(ds.pos_ned[2]), self._yaw_ref_tf(yaw, ds))
+                    self.commander.send_attitude_target(rate, thr)
+                    self._emit("pause", ds, tilt, yaw, None, 0.0)
+                    time.sleep(g.LOOP_DT)
+                    ds = self.store.get_drone()
+                    if ds is None:
+                        break
+                if ds is None:
+                    time.sleep(g.LOOP_DT); continue
                 target = np.asarray(targets[i], float)
                 is_last = (i == n - 1)
                 stop_here = is_last or self._stop_each   # crisp halt at the final wp (or every wp in --stop)
@@ -628,6 +658,7 @@ class WaypointNavigator:
                           f"z={float(ds.pos_ned[2]):+4.1f}/{float(target[2]):+4.1f} "
                           f"zi={self._z_int:+4.1f} thr={dbg['thr']:.2f} "
                           f"v={float(np.linalg.norm(vw)):4.1f} tilt={tilt:3.0f}", flush=True)
+                self._emit(f"leg {i + 1}/{n}", ds, tilt, yaw, target, i / max(n, 1))
             time.sleep(g.LOOP_DT)
         if i >= n:
             self.settle(np.asarray(targets[-1], float), yaw)   # park at the final wp

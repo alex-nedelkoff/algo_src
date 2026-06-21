@@ -484,3 +484,32 @@ def test_is_tf_mode_includes_lookat_face():
     for m in ("hold", "fixed", "course", "lookat", "face"):
         assert WaypointNavigator._is_tf_mode(m)
     assert not WaypointNavigator._is_tf_mode("bogus")
+
+
+import threading
+
+
+class _RecCommander:
+    def __init__(self): self.n = 0
+    def send_attitude_target(self, rate, thr): self.n += 1
+
+
+def test_abort_event_returns_immediately_no_commands():
+    nav = WaypointNavigator(_FakeStore(_mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)),
+                            _RecCommander(), _PLANT)
+    nav.set_origin()
+    nav._abort_evt = threading.Event(); nav._abort_evt.set()
+    res = nav._fly_strafe_course([nav._origin_pos + np.array([5.0, 0, 0])], "course")
+    assert res == "abort"
+    assert nav.commander.n == 0      # never sent a command
+
+
+def test_status_cb_invoked_with_phase():
+    seen = []
+    nav = WaypointNavigator(_FakeStore(_mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)),
+                            _RecCommander(), _PLANT)
+    nav.set_origin()
+    nav._abort_evt = threading.Event()
+    nav._status_cb = lambda **k: (seen.append(k["phase"]), nav._abort_evt.set())  # 1 iter then stop
+    nav._fly_strafe_course([nav._origin_pos + np.array([5.0, 0, 0])], "course")
+    assert seen and isinstance(seen[0], str)
