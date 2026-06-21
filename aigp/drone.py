@@ -209,7 +209,14 @@ class Drone:
         self.nav.set_origin(pos_ned, yaw)
 
     def look_at(self, point, frame="body"):
-        """Point the camera at a given coordinate (body or world frame)."""
+        """Aim the camera HEADING at a coordinate (body or world); used when yaw='lookat'.
+
+        LIMITATION: YAW-ONLY. The camera is body-bolted at a fixed 20 deg up-pitch and the airframe
+        pitches/rolls for FLIGHT, not aim, so only the heading (bearing) tracks the target --
+        elevation and roll follow the body. A point stays roughly IN the FOV but is not centered and
+        can leave it during maneuvers; true 3-axis lock needs a gimbal the sim lacks. Best hold: view
+        from the camera's elevation (~tan(20 deg)*range below the target) and fly gently (low
+        speed/tilt). See examples/look_at_gate.py."""
         _check_frame(frame)
         self.nav.set_look_point(self.nav._resolve(np.asarray(point, float), frame))
 
