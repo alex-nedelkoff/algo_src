@@ -81,6 +81,7 @@ def test_mission_abort_stops_and_reports():
 def test_mission_pause_resume_gates_progress():
     m = _mk_mission(); m.start()
     time.sleep(0.02); m.pause()
+    time.sleep(0.01)     # let the in-flight tick finish + block inside the pause loop before sampling
     p1 = m.status().progress
     time.sleep(0.05)
     assert abs(m.status().progress - p1) < 1e-9     # frozen while paused
