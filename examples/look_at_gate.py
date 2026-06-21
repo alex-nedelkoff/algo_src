@@ -1,10 +1,12 @@
-"""Demo: connect + arm the VQ sim, then drive the Drone control API.
+"""Demo: lock the camera on the FIRST RACE GATE (gate 0 from the sim's TRACK_INFO broadcast)
+while the drone strafes side to side, so the camera pans to keep the gate in view.
 
-Run on the laptop worktree (sim up):  python examples/drone_demo.py
+Run on the laptop worktree (sim up):  python examples/look_at_gate.py
+Watch Mac Rerun: the cyan `world/expected_los` ray + `world/los_target` marker sit ON gate 0;
+the camera frustum (and FPV feed) should hold the gate.
 """
 import os
 import sys
-import threading
 import time
 
 import numpy as np
@@ -53,21 +55,32 @@ def main():
     boot = int(time.time() * 1000); c = Commander(m.conn, boot)
     plant = load_plant("sysid/sim_response.json")
     assert fresh_start(s, c, m, boot), "not live"
+
+    # gate 0 world pose, broadcast via TRACK_INFO after the reset
+    gates = None
+    t = time.time()
+    while gates is None and time.time() - t < 5.0:
+        gates = s.get_gates(); time.sleep(0.05)
+    assert gates, "no gates received (TRACK_INFO)"
+    gate0 = np.asarray(gates[0].pos_ned, float)
+    print(f"gate0 world NED: {np.round(gate0, 1).tolist()} (width {gates[0].width:.2f})", flush=True)
+
     ds0 = s.get_drone(); spawn = ds0.pos_ned.copy()
     yaw0 = float(np.arctan2(*(quat_to_R(ds0.quat_wxyz)[[1, 0], 0])))
-    flog = ftm.from_args(sys.argv, plant[2], "drone_demo", store=s)
+    flog = ftm.from_args(sys.argv, plant[2], "look_at_gate", store=s)
 
     drone = Drone(s, c, plant, config=FlightConfig(), flog=flog)
-    drone.set_origin(pos_ned=spawn, yaw=yaw0)
+    drone.nav.set_origin(pos_ned=spawn, yaw=yaw0)
     c.arm()
 
-    drone.takeoff(2.0).wait()                                  # climb 2 m
-    drone.orbit((10, 0, 0), radius=5.0, seconds=8.0).wait()    # circle a point, camera locked
-    m_far = drone.goto((12, 8, 0), yaw="lookat", look_at=(0, 0, 0))   # fly while watching spawn
-    time.sleep(2.0); print("status:", m_far.status().phase, m_far.status().tilt_deg)
-    drone.goto((0, 0, 0), yaw="hold")                          # preempts m_far (auto-abort)
-    drone.land(2.0).wait()
-    print("done")
+    drone.look_at(tuple(gate0), frame="world")           # persistent world look point = gate 0
+    print("strafe right, camera on gate 0...", flush=True)
+    drone.goto((0, 6, 0), yaw="lookat", frame="body").wait()    # strafe right; camera pans to gate
+    print("strafe left...", flush=True)
+    drone.goto((0, -6, 0), yaw="lookat", frame="body").wait()   # strafe left
+    print("back to center...", flush=True)
+    drone.goto((0, 0, 0), yaw="lookat", frame="body").wait()
+    print("done", flush=True)
 
 
 if __name__ == "__main__":
