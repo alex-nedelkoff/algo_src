@@ -189,6 +189,19 @@ class FlightLog:
         except Exception:
             pass
 
+    def clear_trail(self):
+        """Wipe the actual-flight trail + stale commanded path so the NEXT mission renders clean
+        (actual-vs-commanded for one maneuver instead of the whole session)."""
+        if not self.ok:
+            return
+        with self._lock:
+            self._trail = []
+        try:
+            for ent in ("world/trail", "world/cmd_path", "world/cmd_path_pts", "world/nearest"):
+                self._rr.log(ent, self._rr.Clear(recursive=False))
+        except Exception:
+            pass
+
     def log_gates(self, points, name="gates", color=(0, 255, 0), radii=2.0):
         """Log gate centers as labeled spheres + a connecting line (static). points in world NED.
         radii defaults to the 2 m geometric-pass detection radius so the trail-vs-sphere overlap is visible."""

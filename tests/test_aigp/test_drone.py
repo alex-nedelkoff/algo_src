@@ -47,6 +47,23 @@ def test_validation_raises():
     _check_frame("body"); _check_yaw("lookat"); _check_positive("radius", 2.0)  # no raise
 
 
+def test_check_positive_rejects_inf_and_bool():
+    from aigp.drone import _check_positive
+    for bad in (float("inf"), float("-inf"), float("nan"), 0, -1, True, False, "3"):
+        with pytest.raises(ValueError):
+            _check_positive("speed", bad)
+    _check_positive("speed", 3.0); _check_positive("speed", 1)  # finite >0 ok
+
+
+def test_check_wp_rejects_nonfinite_and_wrong_shape():
+    from aigp.drone import _check_wp
+    for bad in [(float("nan"), 0, 0), (float("inf"), 0, 0), (1, 0), (1, 0, 0, 0), (), (1, 2, 3, 4, 5)]:
+        with pytest.raises(ValueError):
+            _check_wp(bad)
+    out = _check_wp((1.0, 2.0, -3.0))
+    assert out.shape == (3,) and np.allclose(out, [1, 2, -3])
+
+
 def _fake_run(abort_evt, pause_evt, box, n=50):
     # spins up to n ticks, honoring pause/abort, updating status; returns REACHED if it finishes
     for k in range(n):
@@ -118,6 +135,36 @@ def test_goto_validates_inputs():
         d.goto((1, 0, 0), frame="polar").wait(timeout=1)
     with pytest.raises(ValueError):
         d.goto((1, 0, 0), yaw="spin").wait(timeout=1)
+
+
+def test_goto_rejects_bad_waypoint_synchronously():
+    d = _drone()
+    d.nav.goto = lambda *a, **k: "reached"  # would mask a bad coord if it reached the loop
+    for bad in [(float("nan"), 0, 0), (float("inf"), 0, 0), (1, 0), (1, 0, 0, 0)]:
+        with pytest.raises(ValueError):
+            d.goto(bad, yaw="hold")            # raises in caller, never launches a NaN-streaming mission
+
+
+def test_follow_empty_raises():
+    d = _drone()
+    with pytest.raises(ValueError):
+        d.follow([], yaw="hold")
+
+
+def test_inf_scalars_rejected():
+    d = _drone()
+    with pytest.raises(ValueError):
+        d.goto((1, 0, 0), yaw="hold", speed=float("inf"))
+    with pytest.raises(ValueError):
+        d.orbit((1, 0, 0), radius=float("inf"), seconds=1)
+    with pytest.raises(ValueError):
+        d.takeoff(float("inf"))
+
+
+def test_orbit_rejects_bad_center():
+    d = _drone()
+    with pytest.raises(ValueError):
+        d.orbit((float("nan"), 0, 0), radius=2, seconds=1)
 
 
 def test_goto_returns_mission_and_runs():

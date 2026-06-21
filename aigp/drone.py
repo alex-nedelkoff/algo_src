@@ -14,6 +14,7 @@ Quickstart:
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -99,8 +100,23 @@ def _check_yaw(yaw):
 
 
 def _check_positive(name, val):
-    if not (isinstance(val, (int, float)) and val > 0):
-        raise ValueError(f"{name} must be > 0, got {val!r}")
+    # reject bool (True is an int), non-numerics, NaN AND inf -- an inf speed/radius/altitude
+    # silently bypassed the old `val > 0` check and propagated into the flight loop.
+    if isinstance(val, bool) or not isinstance(val, (int, float)) \
+            or not math.isfinite(val) or val <= 0:
+        raise ValueError(f"{name} must be a finite number > 0, got {val!r}")
+
+
+def _check_wp(wp, name="waypoint"):
+    """Validate a single NED waypoint: a finite 3-vector. A non-finite (NaN/inf) or wrong-shape
+    coordinate previously flowed straight into the attitude loop and streamed NaN rate+thrust
+    commands to the FC (live loss-of-control). Returns the float ndarray."""
+    a = np.asarray(wp, float)
+    if a.shape != (3,):
+        raise ValueError(f"{name} must be a 3-vector (NED x,y,z), got shape {a.shape}")
+    if not np.all(np.isfinite(a)):
+        raise ValueError(f"{name} must be finite, got {wp!r}")
+    return a
 
 
 class _StatusBox:
@@ -218,7 +234,7 @@ class Drone:
         from the camera's elevation (~tan(20 deg)*range below the target) and fly gently (low
         speed/tilt). See examples/look_at_gate.py."""
         _check_frame(frame)
-        self.nav.set_look_point(self.nav._resolve(np.asarray(point, float), frame))
+        self.nav.set_look_point(self.nav._resolve(_check_wp(point, "look_at point"), frame))
 
     # --- mission plumbing ---
     def _start(self, run_fn) -> Mission:
@@ -237,6 +253,9 @@ class Drone:
 
     def _navigate(self, targets, *, yaw, look_at, speed, frame, stop, single):
         _check_frame(frame); _check_yaw(yaw)
+        if not targets:
+            raise ValueError("need at least one waypoint")
+        targets = [_check_wp(t) for t in targets]
         if speed is not None:
             _check_positive("speed", speed)
         if yaw == "lookat" and look_at is None and self.nav._look_point is None:
@@ -265,24 +284,30 @@ class Drone:
                               stop=stop, single=False)
 
     def orbit(self, center, *, radius, speed=None, seconds, frame="body", direction="ccw") -> Mission:
-        """Circle a point at a fixed radius for a duration; camera locked on center; returns Mission."""
+        """Circle a point SMOOTHLY at a fixed radius for ~`seconds`; camera locked on center; returns
+        Mission. All laps fly as ONE continuous follow() pass -- the engine settles only at the very
+        end, so there is no per-waypoint (and no per-lap) stop. The ring is densely sampled (36
+        pts/lap) so the continuous-flow CAPTURE rounds to a smooth circle (~0.2 m inward on a 4 m
+        radius) while the along-track speed law still reaches v_cruise (tightening CAPTURE to the
+        point spacing made it accurate but crawl, since speed scales with distance-to-target)."""
         _check_frame(frame); _check_positive("radius", radius); _check_positive("seconds", seconds)
+        center = _check_wp(center, "orbit center")
         if speed is not None:
             _check_positive("speed", speed)
         if direction not in ("cw", "ccw"):
             raise ValueError("direction must be 'cw' or 'ccw'")
         v = speed if speed is not None else self.config.default_speed
-        center_w = self.nav._resolve(np.asarray(center, float), frame)
+        center_w = self.nav._resolve(center, frame)
         self.nav.set_look_point(center_w)
-        ring = _orbit_ring(center_w, radius, 24, direction)
+        n = 36
+        circ = 2.0 * np.pi * radius
+        laps = max(1, int(round(seconds * v / max(circ, 1e-6))))
+        ring = _orbit_ring(center_w, radius, n, direction) * laps   # list*int -> `laps` full circles, one pass
 
         def run_fn(abort_evt, pause_evt, box):
-            t0 = time.time()
-            while time.time() - t0 < seconds and not abort_evt.is_set():
-                res = self.nav.follow(ring, yaw="lookat", v_cruise=v, engine="legs", frame="world")
-                if res == "abort":
-                    return Result.ABORT
-            return Result.ABORT if abort_evt.is_set() else Result.REACHED
+            self.nav._stop_each = False                            # continuous: don't settle at every point
+            return _result_from_str(
+                self.nav.follow(ring, yaw="lookat", v_cruise=v, engine="legs", frame="world"))
         return self._start(run_fn)
 
     def hover(self, seconds=None) -> Mission:

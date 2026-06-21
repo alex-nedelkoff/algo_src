@@ -147,10 +147,12 @@ def settle_accel(state, target, gains):
     return np.clip(gains.KP_CT * err, -1.0, 1.0) - gains.KD_CT * state.vel_ned[:2]
 
 
-def attitude_command(state, a2, z_sp, yaw_ref, plant, gains):
+def attitude_command(state, a2, z_sp, yaw_ref, plant, gains, kd_rate=0.0):
     """Inner law (pure goto.py:cmd): horizontal accel -> tilt-clamp -> desired attitude ->
     normalized body-rate command (clipped) + thrust. Yaw rate steers toward yaw_ref.
-    Returns (rate_cmd_norm, thrust, tilt_deg, dbg)."""
+    kd_rate>0 adds roll/pitch rate damping (-kd_rate*omega) -- a PD inner loop instead of pure-P, to
+    suppress attitude overshoot (the strafe law attitude_command_tf already does this; default 0 keeps
+    every other caller's proven pure-P behavior). Returns (rate_cmd_norm, thrust, tilt_deg, dbg)."""
     hover, k_a, rg = plant
     a = np.zeros(3)
     a[:2] = np.asarray(a2, float)
@@ -164,6 +166,9 @@ def attitude_command(state, a2, z_sp, yaw_ref, plant, gains):
     yaw_cur = float(np.arctan2(R[1, 0], R[0, 0]))
     q_des = mat_to_quat(desired_attitude(a, yaw_cur))
     w_des = gains.KP_ATT * attitude_error_quat(state.quat_wxyz, q_des)
+    if kd_rate:                                    # PD inner loop: damp roll/pitch rate (body gyro)
+        w_des[0] -= kd_rate * float(state.omega[0])
+        w_des[1] -= kd_rate * float(state.omega[1])
     w_des[2] = (gains.KP_YAW * ((yaw_ref - yaw_cur + np.pi) % (2 * np.pi) - np.pi)
                 - gains.KD_YAW * float(state.omega[2]))
     thr = accel_to_thrust_norm(collective_accel(a, state.quat_wxyz), hover, k_a)
@@ -720,7 +725,8 @@ class WaypointNavigator:
                 a2, travel = _spline_accel(ds, ref, g)
                 if yaw == "course":
                     rate, thr, tilt, dbg = attitude_command(ds, a2, float(ref["pos"][2]),
-                                                            ref["yaw"], self.plant, g)
+                                                            ref["yaw"], self.plant, g,
+                                                            kd_rate=g.KD_ATT)
                 else:
                     yref = self._yaw_ref_tf(yaw, ds)
                     rate, thr, tilt, dbg = attitude_command_tf(ds, a2, float(ref["pos"][2]),
@@ -742,8 +748,13 @@ class WaypointNavigator:
                 k = int((time.time() - t_run) / 1.0)
                 if k != last:
                     last = k
+                    Rdes = quat_to_R(dbg["q_des"])               # COMMANDED tilt vs ACHIEVED tilt:
+                    cmd_tilt = float(np.degrees(np.arccos(max(-1.0, min(1.0, Rdes[2, 2])))))
+                    wcmd = float(np.linalg.norm(np.asarray(rate, float)[:2]))   # commanded roll/pitch rate (norm)
+                    om = float(np.linalg.norm(np.asarray(ds.omega, float)[:2]))  # ACHIEVED body rate
                     print(f"  s={s_ref:5.1f}/{traj.s_max:.0f} v={float(np.linalg.norm(ds.vel_ned[:2])):4.1f}"
-                          f"/{ref['v']:.1f} tilt={tilt:3.0f}"
+                          f"/{ref['v']:.1f} cmd_tilt={cmd_tilt:3.0f} tilt={tilt:3.0f}"
+                          f" wcmd={wcmd:4.1f} om={om:4.1f}"
                           f" hz={nloop / max(time.time() - t_run, 1e-6):.0f}", flush=True)
             time.sleep(g.LOOP_DT)
         return "timeout"
