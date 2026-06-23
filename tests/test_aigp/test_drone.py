@@ -12,12 +12,26 @@ def test_flightconfig_safe_defaults_within_envelope():
 
 
 def test_flightconfig_to_navgains_maps_fields():
-    c = FlightConfig(vmax=7.0, amax=4.0, tilt_deg=20.0, zff=-2.4, capture=2.5, kiz=0.8, c_max=18.0)
+    c = FlightConfig(vmax=7.0, vlat_max=4.0, amax=4.0, tilt_deg=20.0, zff=-2.4, capture=2.5,
+                     kiz=0.8, c_max=18.0)
     g = c.to_navgains()
     assert isinstance(g, NavGains)
-    assert g.MAX_SPEED == 7.0 and g.VLAT_MAX == 7.0 and g.FWD_AMAX == 4.0
+    assert g.MAX_SPEED == 7.0 and g.VLAT_MAX == 4.0 and g.FWD_AMAX == 4.0   # vlat NOT slaved to vmax
     assert g.DECEL_MAX >= 4.0 and g.TILT_MAX_DEG == 20.0 and g.Z_FF == -2.4
     assert g.CAPTURE == 2.5 and g.KI_Z == 0.8 and g.C_MAX == 18.0
+
+
+def test_flightconfig_default_lateral_cap_stays_conservative():
+    g = FlightConfig().to_navgains()
+    assert g.VLAT_MAX <= 1.5 and g.MAX_SPEED <= 5.0   # default envelope inside the proven stable region
+
+
+def test_flightconfig_rejects_garbage_envelope():
+    for kw in (dict(vmax=-5.0), dict(vmax=float("inf")), dict(vmax=True), dict(tilt_deg=400.0),
+               dict(tilt_deg=0.0), dict(vmax=9.0), dict(vlat_max=20.0), dict(kiz=-1.0),
+               dict(zff=float("nan")), dict(default_speed=0)):
+        with pytest.raises(ValueError):
+            FlightConfig(**kw)
 
 
 def test_status_defaults_running():
@@ -218,6 +232,22 @@ def test_orbit_ring_geometry():
     # ccw winding: cross of first two spokes is +z (NED down +, so signed area sign is consistent)
     a = (ring[0] - center)[:2]; b = (ring[1] - center)[:2]
     assert (a[0] * b[1] - a[1] * b[0]) > 0
+
+
+def test_hover_streams_commands_on_still_drone():
+    # regression: hover used to route through settle(), which stops sending once vel < SETTLE_V,
+    # so a stationary drone received ZERO setpoints. Active hover must keep commanding.
+    from aigp.state import DroneState
+    sends = {"n": 0}
+
+    class CountCmd:
+        def send_attitude_target(self, rate, thr): sends["n"] += 1
+
+    ds = DroneState(np.array([0, 0, -2.0]), np.zeros(3), np.array([0.0, 1, 0, 0]), np.zeros(3), 0)
+    d = Drone(_FakeStore2(ds), CountCmd(), (0.5, 13.0, np.array([1.0, 1.0, 1.0])))
+    d.set_origin(pos_ned=np.zeros(3), yaw=0.0)
+    d.hover(seconds=0.2).wait(timeout=2)
+    assert sends["n"] > 0
 
 
 def test_takeoff_and_descend_targets():

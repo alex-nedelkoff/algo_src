@@ -177,6 +177,16 @@ def test_set_origin_computes_scam_and_yaw0t():
     assert np.isfinite(nav._yaw0_t)
 
 
+def test_set_origin_resets_frame_dependent_calibration():
+    # a re-origin into a new frame must NOT carry the old lateral SIGN / z-integral (frame-bound) --
+    # a stale _s_lat inverts lateral control (positive feedback) in the new frame.
+    nav = _nav(_mkstate([0, 0, -2], [0, 0, 0]))
+    nav.set_origin(pos_ned=np.zeros(3), yaw=0.0)
+    nav._s_lat = -1.0; nav._z_int = 2.0
+    nav.set_origin(pos_ned=np.array([9, 9, -5.0]), yaw=1.2)
+    assert nav._s_lat == 0.0 and nav._z_int == 0.0 and nav._t_prev_zi is None
+
+
 from aigp.navigator import ZVDShaper, attitude_command_tf, _spline_accel
 
 # sim-wire quat whose TRUE attitude (qfix) is level + nose along +N: true wxyz [1,0,0,0] -> wire [0,1,0,0]

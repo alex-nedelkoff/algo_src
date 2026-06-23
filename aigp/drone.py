@@ -60,9 +60,13 @@ class Status:
 
 @dataclass
 class FlightConfig:
-    """Flight envelope. Defaults are the proven-safe values (tilt <=20, ~5 m/s -> <1 m z-sag,
-    no ground-crash). Raising amax/tilt past ~25 deg risks the high-tilt z-sag into terrain."""
-    vmax: float = 6.0
+    """Flight envelope. Defaults sit INSIDE the live-proven stable envelope (~v5; tilt <=20 ->
+    <1 m z-sag, no ground-crash). Raising vmax past ~6 or tilt past ~25 deg risks the sharp
+    rate-loop runaway / high-tilt z-sag into terrain (see feedback_vq_live_runaway_threshold).
+    `vlat_max` is the SIDEWAYS speed cap and is kept conservative (the lateral axis is the
+    runaway-prone one) -- it is NOT slaved to vmax. __post_init__ rejects a garbage envelope."""
+    vmax: float = 5.0
+    vlat_max: float = 1.5
     amax: float = 4.0
     tilt_deg: float = 20.0
     zff: float = -2.4
@@ -71,10 +75,28 @@ class FlightConfig:
     c_max: float = 18.0
     default_speed: float = 5.0
 
+    def __post_init__(self):
+        for name in ("vmax", "vlat_max", "amax", "capture", "c_max", "default_speed"):
+            v = getattr(self, name)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) \
+                    or not math.isfinite(v) or v <= 0:
+                raise ValueError(f"FlightConfig.{name} must be a finite number > 0, got {v!r}")
+        if isinstance(self.kiz, bool) or not isinstance(self.kiz, (int, float)) \
+                or not math.isfinite(self.kiz) or self.kiz < 0:
+            raise ValueError(f"FlightConfig.kiz must be a finite number >= 0, got {self.kiz!r}")
+        if isinstance(self.zff, bool) or not isinstance(self.zff, (int, float)) \
+                or not math.isfinite(self.zff):
+            raise ValueError(f"FlightConfig.zff must be a finite number, got {self.zff!r}")
+        if not (0.0 < self.tilt_deg <= 60.0):
+            raise ValueError(f"FlightConfig.tilt_deg must be in (0, 60], got {self.tilt_deg!r}")
+        if self.vmax > 8.0 or self.vlat_max > 8.0:
+            raise ValueError(f"FlightConfig vmax/vlat_max past the rate-loop runaway wall "
+                             f"(stable ~5, hard cap 8); got vmax={self.vmax}, vlat_max={self.vlat_max}")
+
     def to_navgains(self) -> NavGains:
         g = NavGains()
         g.MAX_SPEED = self.vmax
-        g.VLAT_MAX = self.vmax
+        g.VLAT_MAX = self.vlat_max
         g.FWD_AMAX = self.amax
         g.DECEL_MAX = max(g.DECEL_MAX, self.amax)
         g.TILT_MAX_DEG = self.tilt_deg
@@ -165,6 +187,8 @@ class Mission:
         try:
             result = self._run_fn(self._abort_evt, self._pause_evt, self._box)
         except Exception as e:                       # surface loop crashes as ERROR, don't kill thread
+            import sys, traceback
+            traceback.print_exc(file=sys.stderr)     # also log -- fire-and-forget callers never poll status()
             self._box.set_result(Result.ERROR, error=repr(e))
             return
         self._box.set_result(result if isinstance(result, Result) else Result.REACHED)
@@ -261,11 +285,13 @@ class Drone:
         if yaw == "lookat" and look_at is None and self.nav._look_point is None:
             raise ValueError("yaw='lookat' requires look_at=... or a prior look_at()")
         v = speed if speed is not None else self.config.default_speed
-        if look_at is not None:
-            self.look_at(look_at, frame)
-        self.nav._stop_each = bool(stop)
 
         def run_fn(abort_evt, pause_evt, box):
+            # Mutate shared nav state on the WORKER, after _start has aborted+joined the prior
+            # mission -- setting these on the caller thread first leaks them into the dying flight.
+            if look_at is not None:
+                self.look_at(look_at, frame)
+            self.nav._stop_each = bool(stop)
             res = (self.nav.goto(targets[0], yaw=yaw, v_cruise=v, engine="legs", frame=frame)
                    if single else
                    self.nav.follow(targets, yaw=yaw, v_cruise=v, engine="legs", frame=frame))
@@ -284,12 +310,14 @@ class Drone:
                               stop=stop, single=False)
 
     def orbit(self, center, *, radius, speed=None, seconds, frame="body", direction="ccw") -> Mission:
-        """Circle a point SMOOTHLY at a fixed radius for ~`seconds`; camera locked on center; returns
-        Mission. All laps fly as ONE continuous follow() pass -- the engine settles only at the very
-        end, so there is no per-waypoint (and no per-lap) stop. The ring is densely sampled (36
-        pts/lap) so the continuous-flow CAPTURE rounds to a smooth circle (~0.2 m inward on a 4 m
-        radius) while the along-track speed law still reaches v_cruise (tightening CAPTURE to the
-        point spacing made it accurate but crawl, since speed scales with distance-to-target)."""
+        """Circle a point SMOOTHLY at a fixed radius; camera HEADING locked on center (yaw-only, same
+        limitation as look_at -- not a true 3-axis lock); returns Mission. `seconds` is the target
+        duration but the path flies a whole number of laps, so it is QUANTIZED: laps =
+        round(seconds * speed / circumference), min 1. A request that works out to <1.5 laps flies
+        exactly one full lap. The actual duration is ~laps*circumference/speed. All laps fly as ONE
+        continuous follow() pass (settle only at the very end -- no per-lap stop). The ring is densely
+        sampled (36 pts/lap) so the continuous-flow CAPTURE rounds to a smooth circle (~0.2 m inward
+        on a 4 m radius) while the along-track speed law still reaches v_cruise."""
         _check_frame(frame); _check_positive("radius", radius); _check_positive("seconds", seconds)
         center = _check_wp(center, "orbit center")
         if speed is not None:
@@ -298,28 +326,26 @@ class Drone:
             raise ValueError("direction must be 'cw' or 'ccw'")
         v = speed if speed is not None else self.config.default_speed
         center_w = self.nav._resolve(center, frame)
-        self.nav.set_look_point(center_w)
         n = 36
         circ = 2.0 * np.pi * radius
         laps = max(1, int(round(seconds * v / max(circ, 1e-6))))
         ring = _orbit_ring(center_w, radius, n, direction) * laps   # list*int -> `laps` full circles, one pass
 
         def run_fn(abort_evt, pause_evt, box):
+            self.nav.set_look_point(center_w)                     # on the worker (after prior mission joins)
             self.nav._stop_each = False                            # continuous: don't settle at every point
             return _result_from_str(
                 self.nav.follow(ring, yaw="lookat", v_cruise=v, engine="legs", frame="world"))
         return self._start(run_fn)
 
     def hover(self, seconds=None) -> Mission:
-        """Hold position for a duration (None = indefinite); returns Mission."""
+        """Actively hold position for a duration (None = indefinite); returns Mission. Streams a
+        station-keep command every loop -- a still drone keeps getting setpoints (no FC failsafe)."""
         if seconds is not None:
             _check_positive("seconds", seconds)
 
         def run_fn(abort_evt, pause_evt, box):
-            t0 = time.time()
-            while not abort_evt.is_set() and (seconds is None or time.time() - t0 < seconds):
-                self.nav.settle()      # holds current position ~SETTLE_T; loop re-holds
-            return Result.ABORT if abort_evt.is_set() else Result.REACHED
+            return _result_from_str(self.nav.hover_hold(seconds, abort_evt, pause_evt))
         return self._start(run_fn)
 
     def takeoff(self, altitude) -> Mission:

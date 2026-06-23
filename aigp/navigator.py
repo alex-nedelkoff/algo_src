@@ -432,6 +432,15 @@ class WaypointNavigator:
         self._cam_live = -np.array([np.cos(self._origin_yaw), np.sin(self._origin_yaw)])
         self._lat_course = np.array([-self._cam_live[1], self._cam_live[0]])
 
+        # A new reference frame invalidates the frame-dependent strafe calibration + integrators.
+        # _s_lat is the lateral-control SIGN in the OLD frame; carrying it into a re-origin'd frame
+        # can invert lateral control (positive feedback -> runaway). The gated z-integral is likewise
+        # accumulated against the old altitude reference. Reset both so the next flight re-probes.
+        self._s_lat = 0.0
+        self._z_int = 0.0
+        self._t_prev_zi = None
+        self._reset_world_vel()
+
     def set_look_point(self, point_world):
         """Set the world-NED point the camera tracks in yaw='lookat'."""
         self._look_point = np.asarray(point_world, float)
@@ -497,7 +506,7 @@ class WaypointNavigator:
 
     # --- blocking flight loop (live sim; not unit-tested) ---
     def goto(self, wp, *, yaw="course", look_point=None, v_cruise=2.5,
-             engine="spline", frame="body"):
+             engine="legs", frame="body"):   # every supported yaw is a tf-mode -> 'legs' (spline is experimental/unreachable here)
         if self._origin_pos is None:
             self.set_origin()
         if self._t0 is None:
@@ -517,7 +526,7 @@ class WaypointNavigator:
         return self._fly_leg(target, self._origin_pos, yaw)
 
     def follow(self, wps, *, yaw="course", look_point=None, v_cruise=2.5,
-               engine="spline", frame="body"):
+               engine="legs", frame="body"):   # see goto: tf-modes force 'legs'; spline is experimental
         if self._origin_pos is None:
             self.set_origin()
         if self._t0 is None:
@@ -685,6 +694,8 @@ class WaypointNavigator:
         # launch step rings the underdamped rate loop (tilt 18 -> 40 -> abort).
         t_pre = time.time()
         while time.time() - t_pre < 3.0:
+            if self._interrupted():
+                return "abort"
             ds = self.store.get_drone()
             if ds is not None:
                 R = quat_to_R(ds.quat_wxyz)
@@ -711,6 +722,8 @@ class WaypointNavigator:
         s_ref = 0.0
         nloop = 0
         while time.time() - t_run < g.WP_TIMEOUT * max(2, len(targets)):
+            if self._interrupted():
+                return "abort"
             ds = self.store.get_drone()
             if ds is not None:
                 nloop += 1
@@ -889,6 +902,51 @@ class WaypointNavigator:
                     return
             time.sleep(self.gains.LOOP_DT)
 
+    def hover_hold(self, seconds=None, abort_evt=None, pause_evt=None):
+        """ACTIVE station-keep: stream a hold command EVERY loop until `seconds` elapses (None =
+        indefinite) or abort. Unlike settle() -- which stops sending once the drone is slow -- this
+        never short-circuits, so a stationary drone keeps receiving setpoints (no FC failsafe/drift).
+        Holds the position captured on entry; honors abort/pause. Returns 'reached' | 'abort'."""
+        if self._t0 is None:
+            self._t0 = time.time()
+        g = self.gains
+        hold_pos = None
+        t0 = time.time()
+        while seconds is None or time.time() - t0 < seconds:
+            if abort_evt is not None and abort_evt.is_set():
+                return "abort"
+            ds = self.store.get_drone()
+            if ds is not None:
+                if hold_pos is None:
+                    hold_pos = ds.pos_ned.copy()
+                while pause_evt is not None and pause_evt.is_set() \
+                        and not (abort_evt is not None and abort_evt.is_set()):
+                    rate, thr, tilt, dbg = self._strafe_attitude(
+                        ds, 0.0, 0.0, float(hold_pos[2]), self._yaw_ref_tf("hold", ds))
+                    self.commander.send_attitude_target(rate, thr)
+                    time.sleep(g.LOOP_DT)
+                    ds = self.store.get_drone()
+                    if ds is None:
+                        break
+                if ds is None:
+                    time.sleep(g.LOOP_DT); continue
+                vw = self._world_vel(ds.pos_ned)
+                a_al, a_lat = _course_guidance(ds.pos_ned, np.array([vw[0], vw[1], 0.0]), hold_pos,
+                                               self._cam_live, self._lat_course, g)
+                rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(hold_pos[2]),
+                                                             self._yaw_ref_tf("hold", ds))
+                if self._zvd is not None:
+                    rate = self._zvd.shape(rate)
+                self.commander.send_attitude_target(rate, thr)
+                if self.flog is not None:
+                    self.flog.push(time.time() - self._t0, ds, dbg, nearest=hold_pos, cruise=0.0,
+                                   running=self.store.get_race_live(), armed=True)
+                if tilt > g.ABORT_TILT_DEG:
+                    print(f"  ABORT hover tilt={tilt:.0f}", flush=True)
+                    return "abort"
+            time.sleep(g.LOOP_DT)
+        return "reached"
+
     def _align_yaw(self, target, yaw_mode, pos_hold, tol_deg=15.0, t_max=4.0):
         """Travel-facing modes ('face'/'course'/'lookat'-at-target): rotate IN PLACE at pos_hold
         until the heading faces the leg direction, BEFORE translating — so the drone flies each
@@ -902,6 +960,8 @@ class WaypointNavigator:
         tangent = self._tan(pos_hold, target)   # fixed leg direction to align to
         t0 = time.time()
         while time.time() - t0 < t_max:
+            if self._interrupted():
+                return
             ds = self.store.get_drone()
             if ds is not None:
                 yaw_ref = self._yaw_ref(yaw_mode, target, tangent)
