@@ -623,12 +623,23 @@ class WaypointNavigator:
             if ds is not None:
                 if self._interrupted():
                     return "abort"
+                # PAUSE = brake to a stop and HOLD there (don't coast away, don't crawl back to the
+                # freeze point). While still moving, target = current pos -> pure velocity damping
+                # (active brake, capped at DECEL_MAX, so from cruise it covers its brake distance);
+                # once slow, latch the stopping point and station-keep on it.
+                hold_pos = None
                 while self._pause_evt is not None and self._pause_evt.is_set() \
                         and not self._interrupted():
+                    vw = self._world_vel(ds.pos_ned)
+                    if hold_pos is None and float(np.linalg.norm(vw)) < g.SETTLE_V:
+                        hold_pos = ds.pos_ned.copy()
+                    tgt = hold_pos if hold_pos is not None else ds.pos_ned
+                    a_al, a_lat = _course_guidance(ds.pos_ned, np.array([vw[0], vw[1], 0.0]),
+                                                   tgt, self._cam_live, self._lat_course, g)
                     rate, thr, tilt, dbg = self._strafe_attitude(
-                        ds, 0.0, 0.0, float(ds.pos_ned[2]), self._yaw_ref_tf(yaw, ds))
+                        ds, a_al, a_lat, float(tgt[2]), self._yaw_ref_tf(yaw, ds))
                     self.commander.send_attitude_target(rate, thr)
-                    self._emit("pause", ds, tilt, yaw, None, 0.0)
+                    self._emit("pause", ds, tilt, yaw, tgt, 0.0)
                     time.sleep(g.LOOP_DT)
                     ds = self.store.get_drone()
                     if ds is None:
