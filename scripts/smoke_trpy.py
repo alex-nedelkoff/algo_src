@@ -9,12 +9,14 @@ Validated 2026-06-23 (exp-log TRPY-BYPASS):
   C. torque calib  -> data-driven effectiveness M (3x4, cond ~1.4): ALL axes          PASS
                       controllable. (dyn_probe's assumed X-mix gave roll/yaw ~0 -- the
                       old "direct-TRPY doesn't work" was a WRONG MIXER, not the message.)
-  D. closed loop   -> our PD on raw motors LEVELS the drone 18deg -> ~1deg and holds   PARTIAL
-                      altitude for ~5 s, then a slow secondary instability grows
-                      (~6 s) and it tumbles. The bypass is real; a production hover
-                      needs yaw-hold + a proper integral + an averaged M calibration.
+  D. closed loop   -> our PD on raw motors LEVELS the drone 18deg -> 0.0deg and holds   PASS
+                      a clean level hover (tilt ~0, no drift) indefinitely. The earlier
+                      ~6 s instability was a WRONG ROLL-ERROR SIGN (COR-138 task 1):
+                      reduced-attitude righting is e=[-R[2,1], +R[2,0]] (asymmetric);
+                      +roll is positive feedback (slow, masked by the pitch-only spawn).
 
-Open-loop (raw motors, no controller) is unstable -- like any quad. The interface itself works.
+Open-loop (raw motors, no controller) is unstable -- like any quad. The interface itself works,
+and a simple PD on it holds a clean hover -> viable rate-loop bypass (the COR-138 / WPTRACK-04 lever).
 """
 import os, sys, time
 import numpy as np
@@ -126,7 +128,7 @@ def main():
         ds = s.get_drone()
         if ds is not None:
             R = quat_to_R(_qfix(ds.quat_wxyz)); om = np.asarray(ds.omega, float) * WFIX
-            e = np.array([float(R[2, 1]), float(R[2, 0])])         # sr=+1 sp=+1 (stable sign)
+            e = np.array([-float(R[2, 1]), float(R[2, 0])])        # reduced-attitude righting sr=-1 sp=+1 (COR-138 t1: +roll = positive feedback)
             tau = np.array([KP * e[0] - KD * om[0], KP * e[1] - KD * om[1], -KD * om[2]])
             coll = HOVER + KPZ * (float(ds.pos_ned[2]) - z_ref) + KDZ * float(ds.vel_ned[2])   # NED z+ down
             c.send_motor_command(np.clip(coll + Minv @ tau, 0., 1.).tolist())
@@ -139,8 +141,9 @@ def main():
             if k != last: last = k; print(f"   t={now:4.1f}s tilt={ti:4.1f} z={float(ds.pos_ned[2]):+5.2f}/{z_ref:+.2f}", flush=True)
         time.sleep(0.01)
     leveled = minlevel < 5.0
-    rec(leveled, "closed-loop levels + holds",
-        f"-> leveled 18deg -> {minlevel:.1f}deg, held to ~{t_unstable or 12:.0f}s (slow instability after; needs full controller)")
+    stable = leveled and t_unstable is None
+    rec(stable, "closed-loop clean hover",
+        f"-> leveled 18deg -> {minlevel:.1f}deg, {'HELD level (no instability)' if stable else 'destabilized ~'+format(t_unstable or 12,'.0f')+'s'}")
 
     print("\n=== SUMMARY ===", flush=True)
     npass = sum(1 for r in RES if r[0])
