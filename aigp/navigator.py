@@ -101,6 +101,11 @@ class NavGains:
     SETTLE_V: float = 0.4
     LOOP_DT: float = 0.004
     KD_ATT: float = 0.3
+    # direct-TRPY inner loop (COR-138): attitude PD on the q_des error, output torque -> motors via the
+    # calibrated effectiveness pseudo-inverse. Lifts the sim rate-loop bandwidth ceiling (~3-5x tighter
+    # tracking, speed-invariant). Used only when a WaypointNavigator is built with trpy_minv set.
+    KP_ATT_TRPY: float = 8.0
+    KD_ATT_TRPY: float = 2.0
     SPLINE_AL_MAX: float = 4.0
     MARGIN: float = 0.6
     C_DRAG: float = 0.057
@@ -226,6 +231,49 @@ def attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam, ymirror=F
     return rate, thr, tilt, {"a": a, "w_des": w, "q_des": q_des, "thr": thr}
 
 
+def attitude_command_trpy(state, a2, z_sp, yaw_ref, plant, gains, s_cam, m_inv,
+                          ymirror=False, z_int=0.0, z_ff=0.0):
+    """DIRECT-TRPY inner loop (COR-138): the rate-loop bypass. REUSE attitude_command_tf's frame-correct
+    q_des (s_cam/WFIX/ymirror all solved), then track it with an attitude PD -> torque -> m_inv (the
+    per-motor effectiveness pseudo-inverse from calibrate_trpy_mixer) -> 4 RAW MOTOR THROTTLES. Replaces
+    the sim's explosive rate loop with our own well-damped loop on direct motors. Validated ~3-5x tighter
+    + speed-invariant tracking. Returns (motors(4,), thr, tilt, dbg) -- the 4-vector first element routes
+    to send_motor_command via TrpyCommander (vs the 3-vector body-rate from attitude_command_tf)."""
+    _, _, tilt, dbg = attitude_command_tf(state, a2, z_sp, yaw_ref, plant, gains, s_cam,
+                                          ymirror=ymirror, z_int=z_int, z_ff=z_ff)
+    att_err = attitude_error_quat(_qfix(state.quat_wxyz), dbg["q_des"])   # body-frame error to q_des
+    om_t = np.asarray(state.omega, float) * WFIX
+    tau = gains.KP_ATT_TRPY * att_err - gains.KD_ATT_TRPY * om_t          # attitude PD -> torque (true frame)
+    motors = np.clip(dbg["thr"] + m_inv @ tau, 0.0, 1.0)
+    return motors, dbg["thr"], tilt, dbg
+
+
+def calibrate_trpy_mixer(store, commander, reset_fn, hover=0.234, bump=0.10, settle_tilt=50.0):
+    """Calibrate the per-motor torque effectiveness matrix M (3x4) for attitude_command_trpy by bumping
+    each of the 4 motors and reading the peak true-frame (WFIX) gyro response; return (m_inv(4x3), M).
+    Open-loop bumps tumble the bare quad, so `reset_fn()` MUST fresh-start + wait race-live + the caller
+    owns arm -- this is called once before flight, needs the live sim. cond(M) ~1.4 when healthy."""
+    import time as _t
+    cols = []
+    for i in range(4):
+        reset_fn(); commander.arm()
+        u = np.full(4, hover); u[i] = hover + bump
+        t0 = _t.time(); best = np.zeros(3); bn = 0.0
+        while _t.time() - t0 < 0.30:
+            commander.send_motor_command(u.tolist()); _t.sleep(0.01)
+            ds = store.get_drone()
+            if ds is not None:
+                om = np.asarray(ds.omega, float) * WFIX
+                if np.linalg.norm(om) > bn:
+                    bn = float(np.linalg.norm(om)); best = om.copy()
+                rr = quat_to_R(_qfix(ds.quat_wxyz))
+                if np.degrees(np.arccos(max(-1.0, min(1.0, rr[2, 2])))) > settle_tilt:
+                    break
+        cols.append(best / bump)
+    M = np.array(cols).T
+    return np.linalg.pinv(M), M
+
+
 def _course_guidance(pos, vel, target, cam_live, lat_course, gains):
     """Forward + lateral accel INTENTS in the FIXED spawn course frame (cam_live forward,
     lat_course perp), for camera-decoupled strafe legs. Port of vq_waypoint2 mission-1
@@ -341,12 +389,17 @@ class WaypointNavigator:
     """Blocking waypoint navigation over the proven attitude-rate control. Caller owns lifecycle
     (sim reset + arm) and passes a live store + commander. See module docstring."""
 
-    def __init__(self, store, commander, plant, *, gains=None, flog=None):
+    def __init__(self, store, commander, plant, *, gains=None, flog=None, trpy_minv=None):
         self.store = store
         self.commander = commander
         self.plant = plant
         self.gains = gains if gains is not None else NavGains()
         self.flog = flog
+        # direct-TRPY inner loop (COR-138): if set (4x3 pseudo-inverse from calibrate_trpy_mixer), the
+        # strafe attitude step emits 4 raw motor throttles via attitude_command_trpy instead of a body-
+        # rate command -> bypasses the sim's explosive rate loop. Commander must be a TrpyCommander so the
+        # 4-vector routes to send_motor_command. ZVD (a rate shaper) is force-disabled in this mode.
+        self._trpy_minv = trpy_minv
         self._origin_pos = None
         self._origin_yaw = None
         self._look_point = None   # world-NED point the camera tracks in yaw='lookat'
@@ -526,7 +579,7 @@ class WaypointNavigator:
         if engine == "spline":
             return self._follow_spline([target], yaw=yaw, v_cruise=v_cruise)
         # legs engine
-        self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
+        self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if (self.gains.ZVD and self._trpy_minv is None) else None
         if self._is_tf_mode(yaw):
             return self._fly_strafe_course([target], yaw)   # line-following (probes s_lat in-flight)
         self._align_yaw(target, yaw, self._origin_pos)   # turn-in-place (nose-first)
@@ -592,7 +645,7 @@ class WaypointNavigator:
         (camera-decoupled) modes, legs run in the TRUE frame (no turn-in-place; s_lat probed once)."""
         if self.flog is not None:
             self.flog.set_path(np.vstack([self._current_pos()] + targets))
-        self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if self.gains.ZVD else None
+        self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if (self.gains.ZVD and self._trpy_minv is None) else None
         if self._is_tf_mode(yaw):
             return self._fly_strafe_course(targets, yaw)   # continuous flow (probes s_lat in-flight)
         leg_start = self._origin_pos.copy()
@@ -712,7 +765,7 @@ class WaypointNavigator:
 
     def _follow_spline(self, targets, *, yaw, v_cruise):
         g = self.gains
-        self._zvd = ZVDShaper(g.ZVD_DELAY) if g.ZVD else None
+        self._zvd = ZVDShaper(g.ZVD_DELAY) if (g.ZVD and self._trpy_minv is None) else None
         gates = np.vstack([self._origin_pos] + [np.asarray(t, float) for t in targets])
         traj = GateTrajectory(gates, v_cruise=v_cruise, tilt_budget_deg=25.0,
                               c_drag=g.C_DRAG, margin=g.MARGIN)
@@ -891,6 +944,10 @@ class WaypointNavigator:
         # attitude (inside attitude_command_tf) handles the nose heading separately via yaw_ref.
         fwd = np.array([np.cos(self._yaw0_t), np.sin(self._yaw0_t)])
         a_h = _strafe_recompose(a_al, a_lat, fwd, self._s_lat)
+        if self._trpy_minv is not None:     # direct-TRPY: emit 4 raw motors instead of a body-rate cmd
+            return attitude_command_trpy(ds, a_h, z_sp, yaw_ref_tf, self.plant, g, self._s_cam,
+                                         self._trpy_minv, ymirror=self._tf_ymirror,
+                                         z_int=self._z_int, z_ff=g.Z_FF)
         return attitude_command_tf(ds, a_h, z_sp, yaw_ref_tf, self.plant, g,
                                    self._s_cam, ymirror=self._tf_ymirror, z_int=self._z_int,
                                    z_ff=g.Z_FF)

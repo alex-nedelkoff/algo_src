@@ -533,3 +533,66 @@ def test_settle_honors_abort():
     nav._abort_evt = threading.Event(); nav._abort_evt.set()
     nav.settle(target=nav._origin_pos)      # must return immediately
     assert nav.commander.n == 0             # abort checked before any command was sent
+
+
+# ---------------------------------------------------------------------------
+# COR-138: direct-TRPY inner loop (attitude_command_trpy / calibrate / TrpyCommander)
+# ---------------------------------------------------------------------------
+from aigp.navigator import attitude_command_trpy, calibrate_trpy_mixer
+from aigp.commander import TrpyCommander
+
+
+def test_trpy_level_hover_motors_equal():
+    g = NavGains()
+    st = _mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)
+    m_inv = np.zeros((4, 3))                      # no differential -> motors = collective
+    motors, thr, tilt, dbg = attitude_command_trpy(st, np.zeros(2), -2.0, 0.0, _PLANT, g, 1.0, m_inv)
+    assert motors.shape == (4,)                   # 4-vector (routes to send_motor_command)
+    assert abs(thr - 0.5) < 1e-6                  # hover collective when level + no accel
+    assert np.allclose(motors, thr)              # m_inv=0 -> all four motors = collective
+    assert abs(tilt) < 1e-6
+    assert "q_des" in dbg                         # reuses attitude_command_tf's frame-correct q_des
+
+
+def test_trpy_returns_4vector_for_tilted_accel():
+    g = NavGains()
+    st = _mkstate([0, 0, -2], [0, 0, 0], quat=_WIRE_LEVEL)
+    motors, *_ = attitude_command_trpy(st, np.array([2.0, 0.0]), -2.0, 0.0, _PLANT, g, 1.0, np.zeros((4, 3)))
+    assert motors.shape == (4,)
+
+
+def test_trpy_commander_routes_by_length():
+    class _Rec:
+        def __init__(self): self.rate = None; self.motors = None; self.armed = False
+        def send_attitude_target(self, c, t): self.rate = (np.asarray(c, float), t)
+        def send_motor_command(self, u): self.motors = np.asarray(u, float)
+        def arm(self): self.armed = True
+    r = _Rec(); tc = TrpyCommander(r)
+    tc.send_attitude_target(np.array([0.2, 0.3, 0.4, 0.5]), 0.0)   # 4-vec -> motors
+    assert r.motors is not None and r.rate is None
+    tc.send_attitude_target(np.array([0.1, 0.2, 0.3]), 0.6)        # 3-vec -> rate
+    assert r.rate is not None
+    tc.arm(); assert r.armed                                       # delegation via __getattr__
+
+
+def test_calibrate_trpy_mixer_recovers_effectiveness():
+    from aigp.state import DroneState
+    M_true = np.array([[-10., 10., -12., 12.], [8., 8., -13., -13.], [8., -8., -10., 10.]])
+
+    class _FStore:
+        def __init__(self): self.u = np.full(4, 0.234)
+        def get_drone(self):
+            om_t = M_true @ (self.u - 0.234)           # true-frame gyro from the bump
+            om = om_t * np.array([1., -1., 1.])        # calib multiplies by WFIX -> recovers om_t
+            return DroneState(np.array([0, 0, -2.0]), np.zeros(3), np.array([0., 1, 0, 0]), om, 0)
+
+    class _FCmd:
+        def __init__(self, st): self.st = st
+        def arm(self): pass
+        def send_motor_command(self, u): self.st.u = np.asarray(u, float)
+
+    st = _FStore()
+    m_inv, M = calibrate_trpy_mixer(st, _FCmd(st), reset_fn=lambda: None, bump=0.10)
+    assert M.shape == (3, 4) and m_inv.shape == (4, 3)
+    np.testing.assert_allclose(M, M_true, atol=1e-6)   # recovers the per-motor columns
+    assert np.linalg.cond(M) < 5.0                     # well-conditioned (like the real cond ~1.4)

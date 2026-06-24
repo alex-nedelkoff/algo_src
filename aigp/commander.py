@@ -92,3 +92,24 @@ class Commander:
             float(body_rates[0]), float(body_rates[1]), float(body_rates[2]),
             float(np.clip(thrust_norm, 0.0, 1.0)),
         )
+
+
+class TrpyCommander:
+    """Wrap a Commander for the direct-TRPY inner loop (COR-138). The navigator always calls
+    send_attitude_target(cmd, thr); this routes a 4-vector cmd (raw motor throttles from
+    attitude_command_trpy) to send_motor_command, and a 3-vector cmd (body rates from the normal
+    attitude_command paths) to the real rate interface. Everything else (arm, sim_reset,
+    send_motor_command, conn, ...) delegates to the wrapped commander."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def send_attitude_target(self, cmd, thrust_norm):
+        cmd = np.asarray(cmd, float)
+        if cmd.shape == (4,):
+            self._real.send_motor_command(cmd.tolist())
+        else:
+            self._real.send_attitude_target(cmd, thrust_norm)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)   # arm / sim_reset / send_motor_command / conn / ...

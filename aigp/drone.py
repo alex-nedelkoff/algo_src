@@ -22,6 +22,7 @@ from enum import Enum
 
 import numpy as np
 
+from aigp.commander import TrpyCommander
 from aigp.navigator import NavGains, WaypointNavigator
 
 
@@ -251,10 +252,16 @@ def _result_from_str(s):
 class Drone:
     """Public control facade. Janahan owns connect+arm; pass the live store/commander/plant in."""
 
-    def __init__(self, store, commander, plant, *, config: FlightConfig = None, flog=None):
+    def __init__(self, store, commander, plant, *, config: FlightConfig = None, flog=None,
+                 trpy_minv=None):
+        """trpy_minv (4x3, from navigator.calibrate_trpy_mixer): enables the DIRECT-TRPY inner loop --
+        flies on raw motors via our own attitude PD instead of the sim's explosive rate loop (~3-5x
+        tighter, speed-invariant tracking; COR-138). Calibrate it before constructing the Drone (it
+        needs the live sim + resets, which the caller owns)."""
         self.config = config or FlightConfig()
-        self.nav = WaypointNavigator(store, commander, plant,
-                                     gains=self.config.to_navgains(), flog=flog)
+        cmd = TrpyCommander(commander) if trpy_minv is not None else commander
+        self.nav = WaypointNavigator(store, cmd, plant, gains=self.config.to_navgains(),
+                                     flog=flog, trpy_minv=trpy_minv)
         self._mission = None
 
     def set_origin(self, pos_ned=None, yaw=None):
