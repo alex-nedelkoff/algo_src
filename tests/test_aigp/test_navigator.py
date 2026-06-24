@@ -368,11 +368,11 @@ def test_brake_to_stop_carries_speed_where_linear_brakes_early():
     # 4 m out at 4 m/s: on the constant-decel stop curve sqrt(2*2*4)=4 -> ~cruise (carry speed)
     a_brake, _ = _line_guidance(np.array([6.0, 0.0, -2.0]), np.array([4.0, 0.0]),
                                 np.array([0.0, 0.0, -2.0]), np.array([10.0, 0.0, -2.0]),
-                                cam, lat, g, brake_to_stop=True)
+                                cam, lat, g, v_target=0.0)
     # linear profile (KV*4=2.8 < 4) would already be braking here
     a_lin, _ = _line_guidance(np.array([6.0, 0.0, -2.0]), np.array([4.0, 0.0]),
                               np.array([0.0, 0.0, -2.0]), np.array([10.0, 0.0, -2.0]),
-                              cam, lat, g, brake_to_stop=False)
+                              cam, lat, g, v_target=None)
     assert a_brake > a_lin                 # stop-profile carries speed; linear brakes early (creep)
     assert a_lin < 0
 
@@ -383,7 +383,7 @@ def test_brake_to_stop_hard_brake_near_target():
     # 0.5 m out at 3 m/s: sqrt(2*2*0.5)=1.41 < 3 -> decelerate hard
     a_al, _ = _line_guidance(np.array([9.5, 0.0, -2.0]), np.array([3.0, 0.0]),
                              np.array([0.0, 0.0, -2.0]), np.array([10.0, 0.0, -2.0]),
-                             cam, lat, g, brake_to_stop=True)
+                             cam, lat, g, v_target=0.0)
     assert a_al < 0
 
 

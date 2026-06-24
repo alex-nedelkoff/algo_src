@@ -91,6 +91,11 @@ class NavGains:
     RATE_SIGN: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, 1.0]))
     ARRIVE: float = 1.5
     CAPTURE: float = 2.5    # strafe flow: advance to the next wp at this radius (no stop -> smooth corners)
+    CORNER_SLOW: float = 0.0   # 0 = off (free flow); (0,1] = anticipatory corner braking, value = the min
+    #   speed fraction held through the SHARPEST (U-)turn (straights stay full speed). WARNING: measured
+    #   COUNTERPRODUCTIVE on the VQ plant -- slowing into a corner drops the drone into the low-speed
+    #   lateral limit cycle (same root as the hover sway), so it strays MORE (deviation 2.1 -> 4.3 m at
+    #   v5). Constant moderate speed (vmax~3) tracks tighter. Kept as a knob for better-damped plants.
     DECEL_MAX: float = 2.0
     SETTLE_T: float = 2.5
     SETTLE_V: float = 0.4
@@ -270,15 +275,16 @@ def _z_int_step(z_int, ze, dt, ki, gate, clip):
     return z_int
 
 
-def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains, brake_to_stop=False):
+def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains, v_target=None):
     """Straight-LINE segment following (not point-seeking) for crisp legs. Tracks the segment
     leg_start->target: along-track speed control + a STIFF cross-track term that holds the drone ON
     the line (the property point-seeking lacks on diagonal legs -> bowed paths). Computes the world
     accel in the leg's along/cross basis, then projects onto the FIXED course axes (cam_live,
     lat_course) for the true-frame recompose (so s_lat stays consistent). `vw` = position-derived
-    world velocity (frame-consistent with the position error). brake_to_stop=True uses a constant-
-    deceleration STOP profile (v_sp = sqrt(2*DECEL_MAX*e_along)) -> carry full speed, then brake hard
-    to a crisp halt at the target (stop-on-a-dime; no asymptotic creep). Returns (a_al, a_lat)."""
+    world velocity (frame-consistent with the position error). `v_target` = speed to ARRIVE at the
+    waypoint with: None = free cruise (KV_AL ramp); 0 = stop-on-a-dime; >0 = a corner speed (brake INTO
+    a turn, then accelerate out). All use a constant-decel profile v_sp = sqrt(v_target^2 +
+    2*DECEL_MAX*e_along) -> carry full speed, brake just in time to the target speed. Returns (a_al, a_lat)."""
     pos = np.asarray(pos, float)[:2]; vw = np.asarray(vw, float)[:2]
     leg_start = np.asarray(leg_start, float)[:2]; target = np.asarray(target, float)[:2]
     seg = target - leg_start
@@ -293,8 +299,9 @@ def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains, brak
     e_cross = float((pos - leg_start) @ n_hat)
     v_along = float(vw @ t_hat); v_cross = float(vw @ n_hat)
     tilt_max_acc = np.tan(np.radians(gains.TILT_MAX_DEG)) * G
-    if brake_to_stop:
-        v_cap = float(np.sqrt(2.0 * gains.DECEL_MAX * gains.BRAKE_MARGIN * abs(e_along)))   # stoppable speed
+    if v_target is not None:
+        v_cap = float(np.sqrt(max(0.0, v_target) ** 2
+                              + 2.0 * gains.DECEL_MAX * gains.BRAKE_MARGIN * abs(e_along)))  # arrive at v_target
         v_along_sp = float(np.clip(np.sign(e_along) * min(gains.MAX_SPEED, v_cap),
                                    -gains.REV_SP, gains.MAX_SPEED))
     else:
@@ -660,9 +667,20 @@ class WaypointNavigator:
                     i += 1
                     continue
                 vw = self._world_vel(ds.pos_ned)
+                # arrival speed for this wp: 0 = stop (final / --stop); a corner speed when CORNER_SLOW
+                # is on (brake into the turn, accelerate out -> tight corners without stop-and-go); else
+                # None = free flow. Corner speed scales with the turn sharpness to the NEXT wp.
+                if stop_here:
+                    v_tgt = 0.0
+                elif g.CORNER_SLOW > 0.0 and i + 1 < n:
+                    din = self._unit_xy(target - leg_start)
+                    dout = self._unit_xy(np.asarray(targets[i + 1], float) - target)
+                    tc = float(np.clip(din @ dout, -1.0, 1.0))   # 1 straight, -1 U-turn
+                    v_tgt = g.MAX_SPEED * (g.CORNER_SLOW + (1.0 - g.CORNER_SLOW) * 0.5 * (1.0 + tc))
+                else:
+                    v_tgt = None
                 a_al, a_lat = _line_guidance(ds.pos_ned, vw, leg_start, target,
-                                             self._cam_live, self._lat_course, g,
-                                             brake_to_stop=stop_here)
+                                             self._cam_live, self._lat_course, g, v_target=v_tgt)
                 rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(target[2]),
                                                              self._yaw_ref_tf(yaw, ds))
                 if self._zvd is not None:
@@ -913,11 +931,14 @@ class WaypointNavigator:
                     return
             time.sleep(self.gains.LOOP_DT)
 
-    def hover_hold(self, seconds=None, abort_evt=None, pause_evt=None):
+    def hover_hold(self, seconds=None, abort_evt=None, pause_evt=None, yaw="hold"):
         """ACTIVE station-keep: stream a hold command EVERY loop until `seconds` elapses (None =
         indefinite) or abort. Unlike settle() -- which stops sending once the drone is slow -- this
         never short-circuits, so a stationary drone keeps receiving setpoints (no FC failsafe/drift).
-        Holds the position captured on entry; honors abort/pause. Returns 'reached' | 'abort'."""
+        Holds the position captured on entry; `yaw` selects the camera behaviour while holding
+        ('hold' = spawn heading; 'lookat' = camera on self._look_point; 'face'/'course'). NOTE: the
+        lookat/face aim uses the chart bridge, which is a no-op until the lateral sign _s_lat is
+        locked by a prior flight leg. Honors abort/pause. Returns 'reached' | 'abort'."""
         if self._t0 is None:
             self._t0 = time.time()
         g = self.gains
@@ -933,7 +954,7 @@ class WaypointNavigator:
                 while pause_evt is not None and pause_evt.is_set() \
                         and not (abort_evt is not None and abort_evt.is_set()):
                     rate, thr, tilt, dbg = self._strafe_attitude(
-                        ds, 0.0, 0.0, float(hold_pos[2]), self._yaw_ref_tf("hold", ds))
+                        ds, 0.0, 0.0, float(hold_pos[2]), self._yaw_ref_tf(yaw, ds))
                     self.commander.send_attitude_target(rate, thr)
                     time.sleep(g.LOOP_DT)
                     ds = self.store.get_drone()
@@ -942,16 +963,31 @@ class WaypointNavigator:
                 if ds is None:
                     time.sleep(g.LOOP_DT); continue
                 vw = self._world_vel(ds.pos_ned)
-                a_al, a_lat = _course_guidance(ds.pos_ned, np.array([vw[0], vw[1], 0.0]), hold_pos,
-                                               self._cam_live, self._lat_course, g)
+                # Tight station-keep PD in the fixed course frame -- NOT the strafe cruise law
+                # (_course_guidance). That law's lateral speed-setpoint clip (VLAT_MAX) lets the drone
+                # accelerate to ~1.5 m/s toward the hold point and overshoot -> a ~6 m, 0.12 Hz lateral
+                # limit cycle (the reported "hover sway").
+                # Velocity MUST be the position-derived vw (same frame as the position error). The sim's
+                # live vel_ned has the opposite lateral-sign convention here and DIVERGES (tested: 23 m).
+                # Gentle, heavily-damped gains: a higher KP overshoots the VQ lateral plant lag +
+                # weathervane disturbance back into the limit cycle. KP=0.2 holds to ~+-1 m laterally with
+                # NO oscillation (a small steady offset vs the weathervane is the tradeoff). Verified
+                # live: lateral span 6.3 m -> 1.9 m, tilt 0-3 deg.
+                err = (hold_pos - ds.pos_ned)[:2]
+                kp, kd = 0.2, 1.5
+                a_al = float(np.clip(kp * float(err @ self._cam_live)
+                                     - kd * float(vw @ self._cam_live), -2.0, 2.0))
+                a_lat = float(np.clip(kp * float(err @ self._lat_course)
+                                      - kd * float(vw @ self._lat_course), -2.0, 2.0))
                 rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(hold_pos[2]),
-                                                             self._yaw_ref_tf("hold", ds))
+                                                             self._yaw_ref_tf(yaw, ds))
                 if self._zvd is not None:
                     rate = self._zvd.shape(rate)
                 self.commander.send_attitude_target(rate, thr)
                 if self.flog is not None:
                     self.flog.push(time.time() - self._t0, ds, dbg, nearest=hold_pos, cruise=0.0,
-                                   running=self.store.get_race_live(), armed=True)
+                                   running=self.store.get_race_live(), armed=True,
+                                   los=self._los_target(ds, yaw))
                 if tilt > g.ABORT_TILT_DEG:
                     print(f"  ABORT hover tilt={tilt:.0f}", flush=True)
                     return "abort"

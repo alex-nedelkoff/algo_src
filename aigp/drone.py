@@ -74,6 +74,7 @@ class FlightConfig:
     kiz: float = 0.8
     c_max: float = 18.0
     default_speed: float = 5.0
+    corner_slow: float = 0.0   # 0 = free flow; (0,1] = anticipatory corner braking (min speed frac on a U-turn)
 
     def __post_init__(self):
         for name in ("vmax", "vlat_max", "amax", "capture", "c_max", "default_speed"):
@@ -89,6 +90,9 @@ class FlightConfig:
             raise ValueError(f"FlightConfig.zff must be a finite number, got {self.zff!r}")
         if not (0.0 < self.tilt_deg <= 60.0):
             raise ValueError(f"FlightConfig.tilt_deg must be in (0, 60], got {self.tilt_deg!r}")
+        if isinstance(self.corner_slow, bool) or not isinstance(self.corner_slow, (int, float)) \
+                or not math.isfinite(self.corner_slow) or not (0.0 <= self.corner_slow <= 1.0):
+            raise ValueError(f"FlightConfig.corner_slow must be in [0, 1], got {self.corner_slow!r}")
         if self.vmax > 8.0 or self.vlat_max > 8.0:
             raise ValueError(f"FlightConfig vmax/vlat_max past the rate-loop runaway wall "
                              f"(stable ~5, hard cap 8); got vmax={self.vmax}, vlat_max={self.vlat_max}")
@@ -104,6 +108,7 @@ class FlightConfig:
         g.CAPTURE = self.capture
         g.KI_Z = self.kiz
         g.C_MAX = self.c_max
+        g.CORNER_SLOW = self.corner_slow
         return g
 
 
@@ -338,14 +343,23 @@ class Drone:
                 self.nav.follow(ring, yaw="lookat", v_cruise=v, engine="legs", frame="world"))
         return self._start(run_fn)
 
-    def hover(self, seconds=None) -> Mission:
+    def hover(self, seconds=None, *, yaw="hold", look_at=None, frame="body") -> Mission:
         """Actively hold position for a duration (None = indefinite); returns Mission. Streams a
-        station-keep command every loop -- a still drone keeps getting setpoints (no FC failsafe)."""
+        station-keep command every loop -- a still drone keeps getting setpoints (no FC failsafe).
+        `yaw` picks the camera behaviour while holding ('hold' = spawn heading, 'lookat' = camera on
+        `look_at`/the prior look_at(), 'face', 'course'). lookat/face aim only works once a prior
+        flight leg has locked the lateral sign -- hover from a fresh spawn can't probe it, so fly a
+        leg first (e.g. goto(..., yaw='lookat')) then hover(yaw='lookat')."""
         if seconds is not None:
             _check_positive("seconds", seconds)
+        _check_yaw(yaw); _check_frame(frame)
+        if yaw == "lookat" and look_at is None and self.nav._look_point is None:
+            raise ValueError("yaw='lookat' requires look_at=... or a prior look_at()")
 
         def run_fn(abort_evt, pause_evt, box):
-            return _result_from_str(self.nav.hover_hold(seconds, abort_evt, pause_evt))
+            if look_at is not None:
+                self.look_at(look_at, frame)
+            return _result_from_str(self.nav.hover_hold(seconds, abort_evt, pause_evt, yaw=yaw))
         return self._start(run_fn)
 
     def takeoff(self, altitude) -> Mission:
