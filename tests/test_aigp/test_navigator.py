@@ -575,6 +575,33 @@ def test_trpy_commander_routes_by_length():
     tc.arm(); assert r.armed                                       # delegation via __getattr__
 
 
+# ---------------------------------------------------------------------------
+# COR-139: per-waypoint arrival speed (vgate) -- brake INTO each gate aperture,
+# carry speed on the straights. _arrival_speed picks v_target per wp.
+# ---------------------------------------------------------------------------
+from aigp.navigator import _arrival_speed
+
+
+def test_arrival_speed_explicit_vgate_wins_over_stop_and_corner():
+    # explicit per-wp speed overrides BOTH the final-wp stop AND the CORNER_SLOW geometry value
+    assert _arrival_speed(2, 3, stop_here=True, speeds=[None, None, 4.0], corner_v=1.0) == 4.0
+    assert _arrival_speed(1, 3, stop_here=False, speeds=[None, 2.5, None], corner_v=1.0) == 2.5
+
+
+def test_arrival_speed_explicit_zero_is_honored_not_treated_as_none():
+    # 0.0 is a real "brake to a stop at this gate" request -- must NOT fall through (is-None guard,
+    # never truthiness); a `if speeds[i]:` bug would silently drop it
+    assert _arrival_speed(1, 3, stop_here=False, speeds=[None, 0.0, None], corner_v=None) == 0.0
+
+
+def test_arrival_speed_none_entry_falls_through_to_stop_then_corner_then_free():
+    # speeds[i] is None -> normal precedence: final/stop wp = 0, else corner_v, else None (free cruise)
+    assert _arrival_speed(2, 3, stop_here=True, speeds=[None, None, None], corner_v=None) == 0.0
+    assert _arrival_speed(1, 3, stop_here=False, speeds=[None, None, None], corner_v=1.5) == 1.5
+    assert _arrival_speed(1, 3, stop_here=False, speeds=[None, None, None], corner_v=None) is None
+    assert _arrival_speed(1, 3, stop_here=False, speeds=None, corner_v=None) is None
+
+
 def test_calibrate_trpy_mixer_recovers_effectiveness():
     from aigp.state import DroneState
     M_true = np.array([[-10., 10., -12., 12.], [8., 8., -13., -13.], [8., -8., -10., 10.]])

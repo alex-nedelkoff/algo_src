@@ -360,6 +360,21 @@ def _line_guidance(pos, vw, leg_start, target, cam_live, lat_course, gains, v_ta
     return float(a_world @ np.asarray(cam_live, float)), float(a_world @ np.asarray(lat_course, float))
 
 
+def _arrival_speed(i, n, stop_here, speeds, corner_v):
+    """Pick the arrival speed (v_target for _line_guidance) for waypoint i in a continuous course
+    flow. Precedence: an EXPLICIT per-wp speed `speeds[i]` (vgate -- brake into a gate aperture) wins
+    over everything; else the final/stop wp brakes to 0; else `corner_v` (the CORNER_SLOW geometry
+    speed, or None for free cruise). `speeds[i]` is honored via an is-None guard, NOT truthiness, so a
+    0.0 (brake to a full stop at this wp) is NOT dropped. COR-139: lets the gate flier carry speed on
+    the straights and brake into each aperture (the teacher's vgate), which the geometry-driven
+    CORNER_SLOW cannot do for perpendicular through-points (no geometric corner at the gate)."""
+    if speeds is not None and speeds[i] is not None:
+        return float(speeds[i])
+    if stop_here:
+        return 0.0
+    return corner_v
+
+
 def _strafe_recompose(a_al, a_lat, fwd, s_lat):
     """Emit course-frame intents (a_al forward, a_lat course-perp) along the drone's CURRENT
     true-heading basis (fwd, lat=[-fwd_y,fwd_x]) with the calibrated lateral sign s_lat. Verbatim
@@ -586,7 +601,7 @@ class WaypointNavigator:
         return self._fly_leg(target, self._origin_pos, yaw)
 
     def follow(self, wps, *, yaw="course", look_point=None, v_cruise=2.5,
-               engine="legs", frame="body"):   # see goto: tf-modes force 'legs'; spline is experimental
+               engine="legs", frame="body", speeds=None):   # see goto: tf-modes force 'legs'; spline experimental
         if self._origin_pos is None:
             self.set_origin()
         if self._t0 is None:
@@ -597,7 +612,7 @@ class WaypointNavigator:
         if self._is_tf_mode(yaw):      # strafe (hold/fixed) + camera-forward (course) -> legs engine
             engine = "legs"
         if engine == "legs":
-            return self._follow_legs(targets, yaw=yaw, settle=True)
+            return self._follow_legs(targets, yaw=yaw, settle=True, speeds=speeds)
         return self._follow_spline(targets, yaw=yaw, v_cruise=v_cruise)
 
     def _probe_inflight(self, target, leg_start, yaw):
@@ -640,14 +655,15 @@ class WaypointNavigator:
         self._s_lat = 1.0 if (v1 - v0) > 0 else -1.0
         print(f"  s_lat locked: {self._s_lat:+.0f} (dv {v1 - v0:+.2f})", flush=True)
 
-    def _follow_legs(self, targets, *, yaw, settle=True):
+    def _follow_legs(self, targets, *, yaw, settle=True, speeds=None):
         """Original legs engine: aligned yaw + point-to-point fly + settle at each wp. For strafe
-        (camera-decoupled) modes, legs run in the TRUE frame (no turn-in-place; s_lat probed once)."""
+        (camera-decoupled) modes, legs run in the TRUE frame (no turn-in-place; s_lat probed once).
+        `speeds` (per-wp arrival speed, vgate) is honored only in the continuous course/strafe flow."""
         if self.flog is not None:
             self.flog.set_path(np.vstack([self._current_pos()] + targets))
         self._zvd = ZVDShaper(self.gains.ZVD_DELAY) if (self.gains.ZVD and self._trpy_minv is None) else None
         if self._is_tf_mode(yaw):
-            return self._fly_strafe_course(targets, yaw)   # continuous flow (probes s_lat in-flight)
+            return self._fly_strafe_course(targets, yaw, speeds=speeds)   # continuous flow (probes s_lat in-flight)
         leg_start = self._origin_pos.copy()
         for i, target in enumerate(targets):
             leg_tan = self._tan(leg_start, target)    # fixed leg direction (camera holds it)
@@ -661,7 +677,7 @@ class WaypointNavigator:
             leg_start = self._current_pos()
         return "reached"
 
-    def _fly_strafe_course(self, targets, yaw):
+    def _fly_strafe_course(self, targets, yaw, speeds=None):
         """Continuous camera-decoupled flight through all waypoints: ONE loop, no per-corner stop.
         Heading is fixed (no turn-in-place), so the drone flows through corners -- advance to the
         next wp at the loose CAPTURE radius while still moving (rounded corners, steady speed = no
@@ -720,18 +736,18 @@ class WaypointNavigator:
                     i += 1
                     continue
                 vw = self._world_vel(ds.pos_ned)
-                # arrival speed for this wp: 0 = stop (final / --stop); a corner speed when CORNER_SLOW
-                # is on (brake into the turn, accelerate out -> tight corners without stop-and-go); else
-                # None = free flow. Corner speed scales with the turn sharpness to the NEXT wp.
-                if stop_here:
-                    v_tgt = 0.0
-                elif g.CORNER_SLOW > 0.0 and i + 1 < n:
+                # arrival speed for this wp: an EXPLICIT per-wp speed (vgate -- brake into a gate
+                # aperture, carry speed on the straights, COR-139) wins; else 0 = stop (final / --stop);
+                # else a CORNER_SLOW geometry speed (brake into the turn, accelerate out -> tight corners
+                # without stop-and-go, scaled by the turn sharpness to the NEXT wp); else None = free flow.
+                if g.CORNER_SLOW > 0.0 and i + 1 < n:
                     din = self._unit_xy(target - leg_start)
                     dout = self._unit_xy(np.asarray(targets[i + 1], float) - target)
                     tc = float(np.clip(din @ dout, -1.0, 1.0))   # 1 straight, -1 U-turn
-                    v_tgt = g.MAX_SPEED * (g.CORNER_SLOW + (1.0 - g.CORNER_SLOW) * 0.5 * (1.0 + tc))
+                    corner_v = g.MAX_SPEED * (g.CORNER_SLOW + (1.0 - g.CORNER_SLOW) * 0.5 * (1.0 + tc))
                 else:
-                    v_tgt = None
+                    corner_v = None
+                v_tgt = _arrival_speed(i, n, stop_here, speeds, corner_v)
                 a_al, a_lat = _line_guidance(ds.pos_ned, vw, leg_start, target,
                                              self._cam_live, self._lat_course, g, v_target=v_tgt)
                 rate, thr, tilt, dbg = self._strafe_attitude(ds, a_al, a_lat, float(target[2]),

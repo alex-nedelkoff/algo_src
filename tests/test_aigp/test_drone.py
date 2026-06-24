@@ -224,6 +224,37 @@ def test_stop_flag_does_not_leak_between_calls():
     assert d.nav._stop_each is False     # reset, not leaked
 
 
+# --- COR-139: per-waypoint arrival speed (vgate) -------------------------------
+
+def test_check_speeds_validates():
+    from aigp.drone import _check_speeds
+    assert _check_speeds(None, 3) is None                 # None = free flow, unchanged behavior
+    out = _check_speeds([None, 0.0, 2.5], 3)              # None entries + a 0.0 (brake to stop) are OK
+    assert out[0] is None and out[1] == 0.0 and out[2] == 2.5
+    for bad in ([2.0, 3.0], [None, None, None, None]):   # length must match wp count
+        with pytest.raises(ValueError):
+            _check_speeds(bad, 3)
+    for bad in ([1.0, -1.0, 2.0], [1.0, float("inf"), 2.0], [1.0, float("nan"), 2.0]):
+        with pytest.raises(ValueError):                  # negative / non-finite arrival speed rejected
+            _check_speeds(bad, 3)
+
+
+def test_follow_speeds_threads_to_navigator():
+    d = _drone()
+    seen = {}
+    d.nav.follow = lambda targets, **k: (seen.update(k), "reached")[1]
+    d.follow([(3, 0, 0), (6, 0, 0), (9, 0, 0)], yaw="course",
+             speeds=[None, 1.0, 0.0]).wait(timeout=2)
+    assert list(seen["speeds"]) == [None, 1.0, 0.0]       # per-wp arrival speeds reach nav.follow
+
+
+def test_follow_rejects_bad_speeds_synchronously():
+    d = _drone()
+    d.nav.follow = lambda *a, **k: "reached"              # would mask it if it reached the loop
+    with pytest.raises(ValueError):
+        d.follow([(3, 0, 0), (6, 0, 0)], speeds=[1.0])    # wrong length raises in the caller
+
+
 # ---------------------------------------------------------------------------
 # Task 7: Motion primitives (orbit, hover, takeoff, descend)
 # ---------------------------------------------------------------------------

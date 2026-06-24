@@ -155,6 +155,24 @@ def _check_wp(wp, name="waypoint"):
     return a
 
 
+def _check_speeds(speeds, n):
+    """Validate an optional per-waypoint arrival-speed list (vgate, COR-139): None = free flow
+    everywhere (unchanged behavior), else exactly `n` entries, each either None (free flow at that
+    wp) or a finite speed >= 0 (0 = brake to a full stop at that wp). A non-finite or negative
+    arrival speed would feed a bad v_target into the guidance loop. Returns the list (or None)."""
+    if speeds is None:
+        return None
+    speeds = list(speeds)
+    if len(speeds) != n:
+        raise ValueError(f"speeds must have one entry per waypoint ({n}), got {len(speeds)}")
+    for i, v in enumerate(speeds):
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+            raise ValueError(f"speeds[{i}] must be None or a finite speed >= 0, got {v!r}")
+    return speeds
+
+
 class _StatusBox:
     """Thread-safe holder of the latest Status. The worker thread calls update()/set_result();
     the caller reads get() (a copy)."""
@@ -295,13 +313,14 @@ class Drone:
         self._mission = m
         return m
 
-    def _navigate(self, targets, *, yaw, look_at, speed, frame, stop, single):
+    def _navigate(self, targets, *, yaw, look_at, speed, frame, stop, single, speeds=None):
         _check_frame(frame); _check_yaw(yaw)
         if not targets:
             raise ValueError("need at least one waypoint")
         targets = [_check_wp(t) for t in targets]
         if speed is not None:
             _check_positive("speed", speed)
+        speeds = _check_speeds(speeds, len(targets))
         if yaw == "lookat" and look_at is None and self.nav._look_point is None:
             raise ValueError("yaw='lookat' requires look_at=... or a prior look_at()")
         v = speed if speed is not None else self.config.default_speed
@@ -314,7 +333,8 @@ class Drone:
             self.nav._stop_each = bool(stop)
             res = (self.nav.goto(targets[0], yaw=yaw, v_cruise=v, engine="legs", frame=frame)
                    if single else
-                   self.nav.follow(targets, yaw=yaw, v_cruise=v, engine="legs", frame=frame))
+                   self.nav.follow(targets, yaw=yaw, v_cruise=v, engine="legs", frame=frame,
+                                   speeds=speeds))
             return _result_from_str(res)
         return self._start(run_fn)
 
@@ -324,10 +344,15 @@ class Drone:
         return self._navigate([wp], yaw=yaw, look_at=look_at, speed=speed, frame=frame,
                               stop=stop, single=True)
 
-    def follow(self, wps, *, yaw="course", look_at=None, speed=None, frame="body", stop=False) -> Mission:
-        """Fly through a sequence of waypoints; returns Mission (call .wait() to block)."""
+    def follow(self, wps, *, yaw="course", look_at=None, speed=None, frame="body", stop=False,
+               speeds=None) -> Mission:
+        """Fly through a sequence of waypoints; returns Mission (call .wait() to block). `speeds` is an
+        optional per-waypoint ARRIVAL-speed list (vgate, COR-139): one entry per wp, each None (free
+        flow, the cruise default) or a speed >= 0 (0 = brake to a full stop). The drone carries `speed`
+        on the straights and brakes to `speeds[i]` arriving at wp i -- used by the gate flier to brake
+        into each aperture while carrying speed between gates. Honored in continuous course/strafe flow."""
         return self._navigate(list(wps), yaw=yaw, look_at=look_at, speed=speed, frame=frame,
-                              stop=stop, single=False)
+                              stop=stop, single=False, speeds=speeds)
 
     def orbit(self, center, *, radius, speed=None, seconds, frame="body", direction="ccw") -> Mission:
         """Circle a point SMOOTHLY at a fixed radius; camera HEADING locked on center (yaw-only, same
