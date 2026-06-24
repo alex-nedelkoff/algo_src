@@ -26,6 +26,14 @@ def test_flightconfig_default_lateral_cap_stays_conservative():
     assert g.VLAT_MAX <= 1.5 and g.MAX_SPEED <= 5.0   # default envelope inside the proven stable region
 
 
+def test_default_is_tracking_preset_and_fast_is_v5():
+    d = FlightConfig()                                        # default = tight waypoint tracking
+    assert d.vmax == 3.0 and d.capture == 1.0 and d.default_speed == 3.0
+    f = FlightConfig.fast()                                   # opt-in speed preset = the old v5 envelope
+    assert f.vmax == 5.0 and f.capture == 2.5 and f.default_speed == 5.0
+    assert FlightConfig.fast(tilt_deg=15.0).tilt_deg == 15.0  # kwargs override
+
+
 def test_flightconfig_rejects_garbage_envelope():
     for kw in (dict(vmax=-5.0), dict(vmax=float("inf")), dict(vmax=True), dict(tilt_deg=400.0),
                dict(tilt_deg=0.0), dict(vmax=9.0), dict(vlat_max=20.0), dict(kiz=-1.0),

@@ -60,21 +60,29 @@ class Status:
 
 @dataclass
 class FlightConfig:
-    """Flight envelope. Defaults sit INSIDE the live-proven stable envelope (~v5; tilt <=20 ->
-    <1 m z-sag, no ground-crash). Raising vmax past ~6 or tilt past ~25 deg risks the sharp
-    rate-loop runaway / high-tilt z-sag into terrain (see feedback_vq_live_runaway_threshold).
-    `vlat_max` is the SIDEWAYS speed cap and is kept conservative (the lateral axis is the
-    runaway-prone one) -- it is NOT slaved to vmax. __post_init__ rejects a garbage envelope."""
-    vmax: float = 5.0
+    """Flight envelope. Defaults are tuned for TIGHT WAYPOINT TRACKING (vmax=3, capture=1.0):
+    measured live across 5 random 8-waypoint courses to track 31% closer to the commanded path than
+    the old v5 default, with half the variance -- moderate speed stays out of the v5 rate-loop runaway
+    edge and the small CAPTURE commits to each waypoint. For SPEED over precision use FlightConfig.fast()
+    (~v5; see feedback_vq_live_runaway_threshold). `vlat_max` is the SIDEWAYS speed cap, kept conservative
+    (the lateral axis is the runaway-prone one) -- NOT slaved to vmax. __post_init__ rejects garbage."""
+    vmax: float = 3.0
     vlat_max: float = 1.5
     amax: float = 4.0
     tilt_deg: float = 20.0
     zff: float = -2.4
-    capture: float = 2.5
+    capture: float = 1.0
     kiz: float = 0.8
     c_max: float = 18.0
-    default_speed: float = 5.0
+    default_speed: float = 3.0
     corner_slow: float = 0.0   # 0 = free flow; (0,1] = anticipatory corner braking (min speed frac on a U-turn)
+
+    @classmethod
+    def fast(cls, **kw) -> "FlightConfig":
+        """The old v5 envelope: faster cruise + loose corner flow (vmax=5, capture=2.5). Strays ~31%
+        more from the commanded path than the tracking default and sits at the v5 runaway edge -- use
+        when speed matters more than waypoint precision. Override any field via kwargs."""
+        return cls(**{"vmax": 5.0, "capture": 2.5, "default_speed": 5.0, **kw})
 
     def __post_init__(self):
         for name in ("vmax", "vlat_max", "amax", "capture", "c_max", "default_speed"):
