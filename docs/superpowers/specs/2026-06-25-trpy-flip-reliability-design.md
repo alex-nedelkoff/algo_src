@@ -74,3 +74,37 @@ if config can't close it.
   aligned stays ≥ today (ideally 3/3 with the gate5 tune).
 - Every run streams telemetry to the Mac Rerun (hard rule).
 - Append a TRPY-FLIP2 row to the experiment log.
+
+## Outcome (2026-06-25)
+
+The implementation diverged substantially from the plan above — the original "continuous
+re-anchor / refinement" hypothesis was wrong about the root cause. What actually shipped
+(commit `e5ec6a7`):
+
+**Flipped 6/6 (forced-flip 5/5) via a DIRECT-fly 3-axis anchor**, not a refine detour. The
+diagnostic (TRPY-DIAG) and ~13 live forced-flip iterations (collision + per-gate crossing
+telemetry) showed flipped failure was three stacked gate0-localization errors on the tight
+~1.5 m hole:
+- **X (range):** the assumed 1.5 m aperture under-ranged ~18% → range off the KNOWN 2.7 m
+  outer red-square width (`localize_front_gate(gate_w=)`, `Z=FX*gate_w/det.w_px`).
+- **Z (height):** vision gives the hole CENTER but `zr` is tuned to the gate BASE → pin gate0
+  to a base reference (`--gz0 0`) and let gates 1-5 follow the reliable track-RELATIVE z.
+- **Y (lateral):** the H_DEFAULT chart's known ~+1 m cross-track bias → `--ybias 0.7`.
+- **Fly DIRECT** (no detour): the close-approach "refine" (`--refine`, kept opt-in) dropped the
+  drone to low altitude right before gate0 → crossed settled not mid-descent → wrong hole
+  height. The natural descent from takeoff = the same dynamics the aligned RAW path uses.
+
+The TRACK frame can be garbage and it still flies 6/6 — the vision anchor + GZ0 + relative
+layout fully absorb the jump.
+
+**Not done (deferred):**
+- **Real-flip confirmation** — only `--forceflip 160` (perfect, clean-spawn translation) is
+  proven. A real natural flip (`ga1`) exposed the open blocker below.
+- **Spawn-localize attitude anomaly** — ~13% of resets the spawn vision is anomalous
+  (z ~+3 vs −0.9, range off ~20 m, persistent over the whole spawn window) → flipped placement
+  lands off → gate0 pin. DEAD END tried: a post-takeoff hover localize (camera needs the 18°
+  spawn tilt to frame the gate; sees nothing at level hover). Real fix = in-flight re-anchor
+  during the descent (stable attitude + the camera frames the approaching gate) — keep spawn
+  localize for flip-DETECT, re-localize + abort/re-issue the course on a confident anchor shift.
+- **Aligned gate5 margin** — investigated, found mostly fine (3/3 6/6 this session); the
+  baseline's "1/3 grind" was partly misattributed anomalous-spawn flips. No change.
