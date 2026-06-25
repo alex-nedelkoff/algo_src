@@ -37,9 +37,11 @@ import aigp.flight_telemetry as ftm
 IDLE=mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE
 def argf(f,d): return float(sys.argv[sys.argv.index(f)+1]) if f in sys.argv else d
 def args(f,d): return sys.argv[sys.argv.index(f)+1] if f in sys.argv else d
-VMAX=argf("--vmax",6.0); VGATE=argf("--vgate",4.0); NG=int(argf("--ng",6)); THRU=argf("--thru",2.5)
+VMAX=argf("--vmax",2.5); VGATE=argf("--vgate",2.5); NG=int(argf("--ng",6)); THRU=argf("--thru",2.5)  # vgate==vmax = CONSTANT speed (the proven 6/6; vgate brake-to-low grinds the aperture)
 ZR=[float(x) for x in args("--zr","0.8").split(",")]   # per-gate raise: scalar or comma-list
-ANCHOR="--noanchor" not in sys.argv                    # vision Z-anchor of the floating TRACK layout
+ANCHOR="--noframe" not in sys.argv                     # frame flip-detect ON by default: aligned resets fly RAW (6/6), only FLIPPED resets get the vision anchor (safe)
+FFX=argf("--forceflip",0.0)                             # DEBUG: shift all TRACK gate X by this (mimics a real flipped reset to test the flip-detect+anchor deterministically)
+def gp_of(g): return np.asarray(g.pos_ned,float)+np.array([FFX,0.,0.])   # gate pos w/ optional forceflip
 
 # --- vq_gate_wp vision pipeline (copied VERBATIM, frame-critical) for the gate0 Z-anchor ---
 GATE_AP=1.5; CX=320.0; FX=320.0; FY=320.0; CY=180.0; T20=np.radians(20.0)
@@ -66,15 +68,19 @@ def detect_gate(bgr,p):
         if best_hole<=0.0: continue
         cands.append((GateDetection(u_t,v_t,float(w),float(h),area,(x,y,w,h)),hole_wh))
     return max(cands,key=lambda d:d[0].area) if cands else (None,None)   # spawn: biggest red square w/ hole = gate0
-def localize_gate0_z(s,track_g0,secs=3.0):
-    """Camera-localize gate0 at spawn (stationary, looking forward) -> its Z in the drone/odom frame
-    (median over `secs`). Returns (vision_gate0_z, n_dets) or (None,0). Only Z is used (vision range is
-    single-shot biased; x/y come from TRACK). Reuses est.point: gate = pos + Z*(H_DEFAULT @ ray_t)."""
+def localize_front_gate(s,secs=4.0):
+    """Camera-localize the FRONT gate's full position (X,Y,Z) in the drone/odom frame (per-axis median
+    over `secs`). The drone spawns at a STABLE ~18 deg tilt (the 18-deg respawn) -- NOT level -- and R_t
+    (true attitude / IMU) already corrects for it, so we sample regardless of tilt. The DIRECTION is
+    reliable (used to detect the TRACK-frame flip); the RANGE is single-shot biased (the gate the camera
+    sees is whatever's ahead -- the physical first gate). gate = pos + Z*(H_DEFAULT @ ray_t). Returns
+    (median_xyz, n_dets) or (None,0)."""
     p=load_params(); ds0=s.get_drone()
+    if ds0 is None: return (None,0)
     yaw0=float(np.arctan2(quat_to_R(ds0.quat_wxyz)[1,0],quat_to_R(ds0.quat_wxyz)[0,0]))
     cam_live=-np.array([np.cos(yaw0),np.sin(yaw0)]); R_t0=quat_to_R(qfix(ds0.quat_wxyz))
     s_cam=1.0 if float(R_t0[:2,0]@cam_live)>0 else -1.0; R_OPT_T=r_opt_body_true(s_cam)
-    zs=[]; t0=time.time()
+    pts=[]; t0=time.time()
     while time.time()-t0<secs:
         fr,_=s.get_frame(); bgr=fr[0] if fr else None; ds=s.get_drone()
         if bgr is not None and ds is not None:
@@ -82,9 +88,10 @@ def localize_gate0_z(s,track_g0,secs=3.0):
             if det is not None and hole_wh is not None and max(hole_wh)>=6.0:
                 d_opt=np.array([(det.u-CX)/FX,(det.v-CY)/FY,1.0]); d_opt/=np.linalg.norm(d_opt)
                 ray_t=quat_to_R(qfix(ds.quat_wxyz))@(R_OPT_T@d_opt); Z=FX*GATE_AP/max(hole_wh)
-                if Z<60.0: zs.append(float((ds.pos_ned+Z*(H_DEFAULT@ray_t))[2]))
+                if Z<60.0: pts.append(ds.pos_ned+Z*(H_DEFAULT@ray_t))
         time.sleep(0.02)
-    return (float(np.median(zs)),len(zs)) if zs else (None,0)
+    if not pts: return (None,0)
+    return (np.median(np.array(pts),0), len(pts))
 def idle(m,boot):
     m.conn.mav.set_attitude_target_send(int(time.time()*1000)-boot,m.conn.target_system,
                                         m.conn.target_component,IDLE,[1.,0,0,0],0,0,0,0)
@@ -132,24 +139,32 @@ def main():
     ng=min(NG,len(gates))
     print(f"gates={len(gates)} spawn={spawn.round(1)}", flush=True)
 
-    # VISION Z-ANCHOR: pin the floating TRACK_INFO Z origin by localizing gate0 with the camera at
-    # spawn (drone stationary, looking forward). Shift the whole layout so gate0 sits at its seen Z.
+    # FRAME FLIP DETECT + ANCHOR (COR-139): the TRACK absolute ORIGIN jumps per reset -- usually ~aligned
+    # with the drone odom frame (raw poses fly 6/6), but ~half the time TRANSLATED so the drone spawns at
+    # the FAR end -> raw poses go the OPPOSITE way (0/6). Detect via VISION: localize the front gate the
+    # camera sees (its DIRECTION is reliable via R_t/IMU; range noisy). If that direction OPPOSES the
+    # TRACK gate-layout direction -> FLIPPED -> full-anchor id0 to the seen front gate (shift the
+    # consistent layout into odom). If aligned -> fly RAW (no corruption; preserves the proven 6/6).
     anchor=np.zeros(3)
     if ANCHOR:
-        g0z_track=float(np.asarray(gates[0].pos_ned,float)[2])
-        g0z_vis,nd=localize_gate0_z(s,gates[0])
-        if g0z_vis is not None:
-            anchor[2]=g0z_vis-g0z_track
-            print(f"Z-ANCHOR: gate0 track_z={g0z_track:+.2f} vision_z={g0z_vis:+.2f} -> Tz={anchor[2]:+.2f} (n={nd})", flush=True)
+        vis,nd=localize_front_gate(s)
+        if vis is not None:
+            centroid=np.mean([gp_of(g) for g in gates[:ng]],0)
+            aligned=float((vis-spawn)[:2]@(centroid-spawn)[:2])>0   # physical (camera) vs TRACK course dir
+            if aligned:
+                print(f"FRAME: ALIGNED (vision front {vis.round(1)}) -> RAW poses (n={nd})", flush=True)
+            else:
+                anchor=vis-gp_of(gates[0])                          # pin id0 to the seen front gate (full XYZ)
+                print(f"FRAME: FLIPPED (vision front {vis.round(1)} opposes TRACK) -> anchor id0 T={anchor.round(1)} (n={nd})", flush=True)
         else:
-            print("Z-ANCHOR: NO gate0 detection at spawn -> flying RAW track Z (likely offset)", flush=True)
+            print("FRAME: no front-gate detection -> RAW (offset if flipped)", flush=True)
 
-    # per gate: pre/center/post along the gate NORMAL (perpendicular crossing). speeds = anticipatory
-    # gate-slowdown (vgate): brake to VGATE for the pre+center (through the aperture), free-cruise out
-    # (post=None -> accelerate onto the straight). The final post -> follow brakes to 0 (clean finish).
+    # per gate (id0..id5 = race order = active_gate_index order): pre/center/post along the gate NORMAL
+    # (perpendicular crossing). speeds default CONSTANT (VGATE==VMAX) -- brake-to-low grinds the aperture;
+    # constant momentum punches through. After a flip-anchor, id0 is the near front gate -> id-order = near->far.
     wps=[]; speeds=[]; prev=spawn.copy()
     for gi,g in enumerate(gates[:ng]):
-        gp=np.asarray(g.pos_ned,float)+anchor; cdir=gp-prev; cdir=cdir/max(np.linalg.norm(cdir),0.1)
+        gp=gp_of(g)+anchor; cdir=gp-prev; cdir=cdir/max(np.linalg.norm(cdir),0.1)
         nrm=gate_normal(g, cdir)
         zr=ZR[gi] if gi<len(ZR) else ZR[-1]
         up=np.array([0.,0.,-zr])       # NED: -z = higher -> land in the tick zone
@@ -162,7 +177,7 @@ def main():
 
     flog=ftm.from_args(sys.argv, run_name="trpy_gate_fly", store=s)   # streams to the Mac Rerun (hard rule); --no-viz off
     drone=Drone(s, real, plant, config=FlightConfig(vmax=max(VMAX,3.0), vlat_max=min(max(VMAX,2),3.0)), flog=flog, trpy_minv=minv)
-    g=drone.nav.gains; g.KP_Z=argf("--kpz",1.0); g.KD_Z=1.8; g.TILT_MAX_DEG=22.0   # gate0 is LEVEL (vision) -> no climb-saturation, track z harder on the descent
+    g=drone.nav.gains; g.KP_Z=argf("--kpz",0.6); g.KD_Z=1.8; g.TILT_MAX_DEG=22.0   # gentle z (proven 6/6); gate0 is ~LEVEL (vision) so no steep-climb saturation either way
     drone.set_origin(pos_ned=spawn, yaw=yaw0); real.arm()
     drone.takeoff(2.0).wait(timeout=15)
     passes=[gi0]; stop=[False]; mref=[None]; STUCK_S=argf("--stuck",12.0)
@@ -173,6 +188,9 @@ def main():
             if gi>passes[-1]:
                 passes.append(gi); last_prog=now
                 print(f"  *** GATE {gi} PASSED t={now-t0:.1f}s ***", flush=True)
+                if gi-gi0>=ng and mref[0] is not None:    # all gates scored -> clean finish (no tail grind)
+                    print(f"  FINISH: {ng}/{ng} gates in {now-t0:.1f}s -> stop", flush=True)
+                    mref[0].abort(); stop[0]=True; break
             # stuck-abort: pinned (no gate tick + barely moving) for STUCK_S -> preempt so we don't
             # grind the frame for the whole 180 s follow timeout (the navigator only aborts on tilt).
             if ds is not None:
