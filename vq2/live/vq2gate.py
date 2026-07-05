@@ -37,11 +37,14 @@ CAM_TILT = math.radians(20.0)   # VQ2 CONFIRMED ~20 up: hover frame horizon in b
 CAM_YAW = math.radians(0.0)     # VQ1 value; unverified on VQ2 -- servo self-corrects small bias
 
 # camera axes in body frame (FRD; camera looks along -x, pitched up, yawed)
+# VQ2 camera is NOSE-mounted (+body_x, 20 deg up) -- resolved 07-06 from the
+# ticked flight's effective command direction; reproduces the pad observation
+# as [+10.98, ~0, -0.63] with the hard-validated sin(+pitch) rotation, no
+# compensating signs. (VQ1's tail-camera canon does NOT carry to VQ2.)
 ct, st = math.cos(CAM_TILT), math.sin(CAM_TILT)
-cy, sy = math.cos(CAM_YAW), math.sin(CAM_YAW)
-C_Z = np.array([-ct * cy, -ct * sy, -st])   # boresight
-C_Y = np.array([-st * cy, -st * sy, ct])    # image down
-C_X = np.cross(C_Y, C_Z)                    # image right
+C_Z = np.array([ct, 0.0, -st])   # boresight (+x, pitched up)
+C_Y = np.array([st, 0.0, ct])    # image down
+C_X = np.cross(C_Y, C_Z)         # image right (= +y)
 M_BODY_CAM = np.stack([C_X, C_Y, C_Z], axis=1)
 
 ATT_BUF = deque(maxlen=600)   # (wall_t, roll, pitch) at IMU rate ~116 Hz
@@ -196,7 +199,7 @@ def _det_loop():
                 elif tw < f_wall - 0.5:
                     break
             sr, cr = math.sin(r), math.cos(r)
-            sp, cp = math.sin(-p), math.cos(p)   # aero pitch sign vs RH y-rotation
+            sp, cp = math.sin(p), math.cos(p)    # unified: hard-validated sin(+pitch) (rest-gravity test)
             Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
             Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
             g_lvl = Ry @ (Rx @ g_b)
@@ -349,7 +352,7 @@ if STARE:
 
 # AXIS PROBE (dual truth): IMU dv validates the damper; gate-obs delta
 # validates the OBSERVATION frame (VQ1 lesson: mirrors live in sensing chains).
-SX, SY = -1.0, 1.0   # SX=-1 CONFIRMED (vision probe + judge tick 07-05); probe only overrides on strong evidence
+SX, SY = 1.0, 1.0    # physical frame (nose camera); probe remains as a tripwire
 def probe_axis(vx_r, vy_r, dur=1.2):
     v0 = np.array([state['vx_b'], state['vy_b']])
     o0, t_w0 = (None if state['obs'] is None else state['obs'].copy()), state['obs_wall']
@@ -428,7 +431,7 @@ while not aborted:
         globals()['_gates_tried'] = 0
         t0c = time.time()
         while time.time() - t0c < 1.2:   # clearance dash: through the plane, past the frame
-            level_cmd(SX * -1.5, 0, 0, pitch_bias=0.10); time.sleep(1/CMD_HZ)
+            level_cmd(SX * 1.5, 0, 0, pitch_bias=-0.08); time.sleep(1/CMD_HZ)
         phase, phase_t0 = 'reacquire', now
     if state.get('race_finish_ns', -1) >= 0:
         print(f'*** RACE FINISH *** ticks={gate0_idx} time_ns={state["race_finish_ns"]}', flush=True)
@@ -450,18 +453,18 @@ while not aborted:
             # up, which tilts the 20-deg-up camera DOWN onto the gate (motion is
             # the gate-finder; hovering is blindness)
             d = obs / max(1e-6, np.linalg.norm(obs[:2]))
-            level_cmd(SX * 1.2 * d[0], SY * 1.2 * d[1], max(-0.5, min(0.5, -0.4 * (obs[2] + 0.15))), pitch_bias=0.14)
+            level_cmd(SX * 1.2 * d[0], SY * 1.2 * d[1], max(-0.5, min(0.5, -0.4 * (obs[2] + 0.15))), pitch_bias=-0.10)
         else:
-            fwd = -obs[0]           # distance along racing dir (-x body)
+            fwd = obs[0]            # distance along racing dir (+x body, nose camera)
             lat = obs[1]            # +right
             dwn = obs[2]            # +down
-            vx_ref = -min(2.5, max(0.6, 0.4 * (fwd - 1.0)))
+            vx_ref = min(2.5, max(0.6, 0.4 * (fwd - 1.0)))
             lat_gain = 0.6 if fwd < 8.0 else 0.25
             vy_ref = max(-1.0, min(1.0, lat_gain * lat))
             vz_ref = max(-0.8, min(0.8, -0.6 * (dwn + 0.15)))
             # yaw toward the gate: physical yaw-right (+) shrinks +lat (geometry)
             yr_cmd = SZ * max(-0.35, min(0.35, 0.10 * lat))
-            level_cmd(SX * vx_ref, SY * vy_ref, vz_ref, pitch_bias=0.14, yr=yr_cmd)
+            level_cmd(SX * vx_ref, SY * vy_ref, vz_ref, pitch_bias=-0.12, yr=yr_cmd)
             rng = float(np.linalg.norm(obs))
             if fwd < 0.2 and rng < 3.0 and abs(lat) < 2.0:
                 # passed the target plane close-in: treat as crossed
@@ -482,7 +485,7 @@ while not aborted:
                 print(f'PUNCH from {fwd:.1f} m (lat {lat:.2f} dwn {dwn:.2f})', flush=True)
         if now - phase_t0 > 60: aborted = 'approach timeout'
     elif phase == 'punch':
-        level_cmd(SX * -2.0, 0, 0)  # constant-speed through (VQ1 lesson: no braking)
+        level_cmd(SX * 2.0, 0, 0)   # constant-speed through (VQ1 lesson: no braking)
         if now - punch_t0 > punch_dur:
             phase = 'post'
             phase_t0 = now
@@ -504,9 +507,9 @@ while not aborted:
         side = globals().get('snake_side', 1.0)
         weave = side * (0.5 + 0.5 * math.sin(2 * math.pi * 0.12 * (now - phase_t0)))
         yr_scan = SZ * side * (0.15 + 0.15 * math.sin(2 * math.pi * 0.08 * (now - phase_t0)))
-        level_cmd(SX * -0.8, SY * weave, 0, pitch_bias=0.12, yr=yr_scan)
+        level_cmd(SX * 0.8, SY * weave, 0, pitch_bias=-0.10, yr=yr_scan)
         if state['obs'] is not None and now - state['obs_wall'] < 0.8:
-            fwd_chk = -state['obs'][0]
+            fwd_chk = state['obs'][0]
             lat_chk = abs(state['obs'][1])
             if 3.0 < fwd_chk < 30.0 and lat_chk < 0.8 * fwd_chk and abs(state['obs'][2]) < 3.0:
                 print(f'reacquired: {state["obs"].round(2)}', flush=True)
