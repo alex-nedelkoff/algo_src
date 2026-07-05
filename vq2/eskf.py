@@ -82,6 +82,24 @@ class PosVelKF:
         self.P = 0.5 * (self.P + self.P.T)
         return True
 
+    def update_velocity(self, z_v: np.ndarray, sigma: float) -> None:
+        """Soft velocity pseudo-measurement (e.g. z=0, sigma~2 m/s at 1 Hz when
+        vision-starved): bounds IMU-integration drift without the dishonesty of
+        decaying real velocity every tick."""
+        R = np.eye(3) * (sigma ** 2)
+        S = self.P[3:, 3:] + R
+        try:
+            Sinv = np.linalg.inv(S)
+        except np.linalg.LinAlgError:
+            return
+        r = z_v - self.x[3:]
+        K = self.P[:, 3:] @ Sinv
+        self.x += K @ r
+        IKH = np.eye(6)
+        IKH[:, 3:] -= K
+        self.P = IKH @ self.P
+        self.P = 0.5 * (self.P + self.P.T)
+
     def reset_at_rest(self, p0: np.ndarray | None = None) -> None:
         self.x[:3] = 0.0 if p0 is None else p0
         self.x[3:] = 0.0
