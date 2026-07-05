@@ -77,10 +77,19 @@ class Segment:
 
 
 @dataclass
+class DetectionFrame:
+    """GateNet output for one camera frame (raw dicts from detections.jsonl)."""
+
+    sim_ns: int
+    insts: list
+
+
+@dataclass
 class Corpus:
     root: str
     segments: list = field(default_factory=list)
     frames: list = field(default_factory=list)
+    detections: list = field(default_factory=list)
 
     @property
     def flight_segment(self) -> Optional[Segment]:
@@ -131,8 +140,9 @@ def load(root: str) -> Corpus:
         corpus.segments.append(seg)
 
     frames_meta = os.path.join(root, "frames_dedup.jsonl")
+    fdir = os.path.join(root, "frames")
+    seen_paths: set = set()
     if os.path.exists(frames_meta):
-        fdir = os.path.join(root, "frames")
         with open(frames_meta) as f:
             for line in f:
                 d = json.loads(line)
@@ -143,6 +153,26 @@ def load(root: str) -> Corpus:
                         corpus.frames.append(
                             FrameRef(sim_ns=d["sim_ns"], rx_wall=d.get("rx_wall", 0.0), path=p)
                         )
+                        seen_paths.add(p)
                         break
+    # meta-less frames (the recorder's frames/ dir accumulates across runs while
+    # the meta file is truncated per run): index by <sim_ns>.jpg filename,
+    # rx_wall unknown (0.0) — usable for detection joins, not for clock bridging
+    if os.path.isdir(fdir):
+        for fn in os.listdir(fdir):
+            p = os.path.join(fdir, fn)
+            if p in seen_paths or not fn.endswith(".jpg"):
+                continue
+            stem = fn[:-4]
+            if stem.isdigit() and len(stem) > 12:  # epoch-ns stems only
+                corpus.frames.append(FrameRef(sim_ns=int(stem), rx_wall=0.0, path=p))
     corpus.frames.sort(key=lambda fr: fr.sim_ns)
+
+    det_meta = os.path.join(root, "detections.jsonl")
+    if os.path.exists(det_meta):
+        with open(det_meta) as f:
+            for line in f:
+                d = json.loads(line)
+                corpus.detections.append(DetectionFrame(sim_ns=d["sim_ns"], insts=d["insts"]))
+        corpus.detections.sort(key=lambda df: df.sim_ns)
     return corpus

@@ -127,10 +127,35 @@ def replay_corpus(root: str) -> dict:
             "yaw_open_loop_deg": round(est.state.yaw * DEG, 2),
         }
 
+    # GateNet detection stats (when detections.jsonl is present)
+    if c.detections:
+        n = len(c.detections)
+        with_det = [d for d in c.detections if d.insts]
+        solved = [i for d in with_det for i in d.insts if i.get("solved")]
+        good = [i for i in solved if not i.get("low_confidence")]
+        ranges = sorted(
+            math.sqrt(sum(x * x for x in i["t_cam"])) for i in solved if i.get("t_cam")
+        )
+        report["gatenet"] = {
+            "frames_scored": n,
+            "det_rate": round(len(with_det) / n, 3),
+            "insts_per_det_frame": round(
+                sum(len(d.insts) for d in with_det) / max(1, len(with_det)), 2
+            ),
+            "pnp_solved": len(solved),
+            "pnp_confident": len(good),
+            "range_m_p10_p50_p90": [
+                round(ranges[int(q * (len(ranges) - 1))], 1) for q in (0.1, 0.5, 0.9)
+            ]
+            if ranges
+            else None,
+        }
+
     # camera<->IMU clock bridge estimate from rx_wall (coarse: receive jitter)
     if c.frames and seg.imu:
         imu_offsets = [s.rx_wall - s.t_us / 1e6 for s in seg.imu[:: max(1, len(seg.imu) // 500)]]
-        cam_offsets = [fr.rx_wall - fr.sim_ns / 1e9 for fr in c.frames[:: max(1, len(c.frames) // 500)]]
+        stamped = [fr for fr in c.frames if fr.rx_wall > 0]
+        cam_offsets = [fr.rx_wall - fr.sim_ns / 1e9 for fr in stamped[:: max(1, len(stamped) // 500)]]
         report["clock_bridge"] = {
             "imu_boot_to_wall_s": round(statistics.median(imu_offsets), 4),
             "cam_epoch_to_wall_s": round(statistics.median(cam_offsets), 4),
