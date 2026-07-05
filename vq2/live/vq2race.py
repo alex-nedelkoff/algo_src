@@ -24,7 +24,8 @@ K_V = 0.12
 TILT_ABORT = math.radians(55)
 FX, CX, CY = 320.0, 320.0, 180.0
 Z_TARGET = -0.9        # ~1.1 m above floor; tick flights flew ~1.2 and scored
-V_CRUISE = 1.6
+V_CRUISE = 1.2
+V_BEND = 0.6
 MISSION_S = 300.0
 
 KF = PosVelKF()
@@ -199,6 +200,7 @@ time.sleep(0.5)
 print('armed', flush=True)
 
 aborted = None
+SY_RIB = 1.0
 # rotate at low thrust, then climb to line altitude
 t0 = time.time()
 while time.time() - t0 < 0.7:
@@ -208,11 +210,36 @@ while time.time() - t0 < 0.9 and not aborted:
     level_cmd(0, 0, 1.0)
     if tilt() > TILT_ABORT: aborted = 'tilt in climb'
     time.sleep(1/CMD_HZ)
-print('airborne, rolling straight into the race (accel pitches the road into view)', flush=True)
+# RIBBON SIGN PROBE: pure right strafe 1.5 s; if the line shifts LEFT in the
+# image (rib_near decreases), image-right == body-right and SY_RIB=+1.
+rn0 = None
+t0 = time.time()
+while time.time() - t0 < 2.0:
+    level_cmd(0, 0, 0, pitch_bias=-0.12)
+    if state['rib_near'] is not None:
+        rn0 = state['rib_near']; break
+    time.sleep(1/CMD_HZ)
+if rn0 is not None:
+    t0 = time.time()
+    while time.time() - t0 < 1.5:
+        level_cmd(0, 0.8, 0, pitch_bias=-0.12); time.sleep(1/CMD_HZ)
+    t0 = time.time()
+    while time.time() - t0 < 1.0:
+        level_cmd(0, 0, 0, pitch_bias=-0.12); time.sleep(1/CMD_HZ)
+    rn1 = state['rib_near']
+    if rn1 is not None and abs(rn1 - rn0) > 15:
+        SY_RIB = 1.0 if rn1 < rn0 else -1.0
+    print(f'ribbon sign probe: {rn0:.0f} -> {rn1 if rn1 is None else round(rn1)} => SY_RIB {SY_RIB}', flush=True)
+    jlog('rib_probe', rn0=rn0, rn1=rn1, sy=SY_RIB)
+else:
+    print('ribbon sign probe skipped (no line at spawn hover)', flush=True)
+print('racing', flush=True)
 
-SY_RIB = 1.0    # physical: nose camera image-right = +y_body; tripwire DISABLED (flapped on acquisition transients)
 lat_hist = deque(maxlen=60)
 last_side = 1.0     # which side the line was last seen drifting toward
+mode = 'CRUISE'     # CRUISE | BEND (tick-keyed slow-and-yaw)
+bend_t0 = 0.0
+centered_t0 = None
 mission_t0 = time.time()
 ticks0 = gate0
 last_tick_wall = 0.0
@@ -229,6 +256,9 @@ while not aborted:
     if state['gate_idx'] != ticks0:
         ticks0 = state['gate_idx']
         last_tick_wall = now
+        mode, bend_t0, centered_t0 = 'BEND', now, None
+        jlog('mode', mode='BEND', why='tick')
+        print(f'BEND (post-tick {ticks0})', flush=True)
     # guards (grind-suppressed 3 s after a tick)
     if tilt() > TILT_ABORT:
         aborted = f'tilt abort, ticks={state["gate_idx"]}'; break
@@ -240,9 +270,17 @@ while not aborted:
             aborted = f'collision imp {imp:.1f}, ticks={state["gate_idx"]}'; break
     with KF_LOCK:
         pz = KF.p[2]; spd = float(np.linalg.norm(KF.v[:2]))
-    if spd > 6.0:
+    if pz < -2.4:                       # est says >2.4 m up: force back down (truss insurance)
+        level_cmd(0.4, 0, -0.5, pitch_bias=-0.10)
+        time.sleep(1/CMD_HZ)
+        continue
+    if spd > 8.0:
         aborted = f'speed runaway, ticks={state["gate_idx"]}'; break
 
+    if now - state.get('_soft_t', 0) > 0.5:
+        state['_soft_t'] = now
+        with KF_LOCK:
+            KF.update_velocity(np.zeros(3), sigma=1.5)
     vz_ref = max(-0.8, min(0.8, 0.9 * (pz - Z_TARGET)))
     age = now - state['rib_wall']
     rn, rf = state['rib_near'], state['rib_far']
@@ -251,13 +289,27 @@ while not aborted:
         err_far = (guide - CX) / FX
         err_near = ((rn - CX) / FX) if rn is not None else err_far
         lat_hist.append(abs(err_near))
-        vy_ref = SY_RIB * max(-1.2, min(1.2, 1.6 * err_near))
-        yr_cmd = max(-0.5, min(0.5, 1.1 * err_far))
         if abs(err_far) > 0.08:
             last_side = 1.0 if err_far > 0 else -1.0
-        slow = max(0.0, 1.0 - 2.0 * abs(err_far))
-        vmax_now = 1.0 if now - last_tick_wall < 2.0 else V_CRUISE   # bends follow ticks
-        vx_ref = 0.6 + (vmax_now - 0.6) * slow
+        if mode == 'BEND':
+            # slow, yaw aggressively onto the line; exit when centered 1.0 s
+            vy_ref = SY_RIB * max(-1.0, min(1.0, 1.8 * err_near))
+            yr_cmd = SY_RIB * max(-0.45, min(0.45, 0.8 * err_far))
+            vx_ref = V_BEND
+            if abs(err_far) < 0.10 and abs(err_near) < 0.15:
+                centered_t0 = centered_t0 or now
+                if now - centered_t0 > 1.0:
+                    mode = 'CRUISE'; jlog('mode', mode='CRUISE', why='centered')
+                    print('CRUISE', flush=True)
+            else:
+                centered_t0 = None
+            if now - bend_t0 > 8.0:
+                mode = 'CRUISE'; jlog('mode', mode='CRUISE', why='bend timeout')
+        else:
+            vy_ref = SY_RIB * max(-1.2, min(1.2, 1.6 * err_near))
+            yr_cmd = SY_RIB * max(-0.30, min(0.30, 0.5 * err_far))
+            slow = max(0.0, 1.0 - 2.0 * abs(err_far))
+            vx_ref = 0.6 + (V_CRUISE - 0.6) * slow
         level_cmd(vx_ref, vy_ref, vz_ref, pitch_bias=-0.10, yr=yr_cmd)
         # sign tripwire: sustained growth in |lateral error| while servoing => flip once
         if False:
@@ -268,17 +320,18 @@ while not aborted:
                 print('SY_RIB tripwire: flipped lateral servo sign', flush=True)
                 jlog('sy_flip')
     elif age < 8.0:
-        if now - mission_t0 < 5.0:
-            # opening straight: the road is dead ahead -- just roll forward, camera down
-            level_cmd(1.0, 0, max(-0.3, vz_ref - 0.2), pitch_bias=-0.14)
+        if now - mission_t0 < 6.0:
+            # opening: road dead ahead for most spawns; gentle yaw wiggle covers the rest
+            wig = 0.18 * math.sin(2 * math.pi * 0.4 * (now - mission_t0))
+            level_cmd(0.9, 0, max(-0.3, vz_ref - 0.2), pitch_bias=-0.14, yr=wig)
         else:
             # seek: slow arc TOWARD the side the line was last drifting
             level_cmd(0.5, SY_RIB * 0.5 * last_side, max(-0.3, vz_ref - 0.2),
-                      pitch_bias=-0.14, yr=0.35 * last_side)
+                      pitch_bias=-0.14, yr=SY_RIB * 0.35 * last_side)
     elif age < 14.0:
         # widen: reverse scan direction
         level_cmd(0.3, -SY_RIB * 0.4 * last_side, -0.15, pitch_bias=-0.12,
-                  yr=-0.3 * last_side)
+                  yr=SY_RIB * -0.3 * last_side)
     else:
         aborted = f'line lost > 14 s, ticks={state["gate_idx"]}'; break
     time.sleep(1/CMD_HZ)
