@@ -1,0 +1,126 @@
+{
+ "frame": "nose-camera physical, spawn origin, x=downcourse, y=right; flight-anchored",
+ "anchors": [
+  {
+   "id": "G1",
+   "pos": [
+    11.0,
+    0.0,
+    -1.3
+   ],
+   "normal": [
+    -1.0,
+    0.0,
+    0.0
+   ],
+   "source": "judge tick + pad obs (t=3.4s flight)"
+  },
+  {
+   "id": "G2",
+   "pos": [
+    30.5,
+    8.5,
+    -1.5
+   ],
+   "normal": [
+    -0.95,
+    -0.2,
+    0.0
+   ],
+   "source": "tick-flight reacquire measurement"
+  }
+ ],
+ "survey_candidates_compressed_scale": [
+  {
+   "pos": [
+    13.9,
+    -13.6
+   ],
+   "normal": [
+    -0.93,
+    -0.38
+   ],
+   "w": 14,
+   "note": "between G1/G2 band, left \u2014 unverified (neighbor row?)"
+  },
+  {
+   "pos": [
+    18.5,
+    4.4
+   ],
+   "normal": [
+    -0.94,
+    0.34
+   ],
+   "w": 14
+  },
+  {
+   "pos": [
+    19.8,
+    -10.9
+   ],
+   "normal": [
+    -0.96,
+    0.27
+   ],
+   "w": 33
+  },
+  {
+   "pos": [
+    24.1,
+    9.9
+   ],
+   "normal": [
+    -0.99,
+    -0.13
+   ],
+   "w": 43,
+   "note": "likely = G2"
+  },
+  {
+   "pos": [
+    24.7,
+    -3.9
+   ],
+   "normal": [
+    -0.99,
+    -0.15
+   ],
+   "w": 8
+  },
+  {
+   "pos": [
+    25.1,
+    3.3
+   ],
+   "normal": [
+    -0.99,
+    0.14
+   ],
+   "w": 7
+  },
+  {
+   "pos": [
+    32.1,
+    -2.5
+   ],
+   "normal": [
+    -1.0,
+    -0.03
+   ],
+   "w": 8
+  },
+  {
+   "pos": [
+    37.0,
+    5.0
+   ],
+   "normal": [
+    -0.68,
+    0.73
+   ],
+   "w": 6
+  }
+ ],
+ "caveats": "survey x-scale compressed ~1.2-2.5x (bled odometry); count unresolved beyond ~46 m; definitive course = tick-through"
+}
