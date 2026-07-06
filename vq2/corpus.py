@@ -176,3 +176,28 @@ def load(root: str) -> Corpus:
                 corpus.detections.append(DetectionFrame(sim_ns=d["sim_ns"], insts=d["insts"]))
         corpus.detections.sort(key=lambda df: df.sim_ns)
     return corpus
+
+
+def clock_bridge(seg, frames):
+    """Camera-epoch -> IMU-boot clock offset via rx_wall medians.
+
+    frame_t_boot_s = frame.sim_ns / 1e9 + offset_s  lives on the same axis
+    as  imu_sample.t_us / 1e6.  Returns (offset_s, spread_ms) or None.
+    Precision is UDP receive jitter (tens of ms) — good enough to order
+    streams and pick the nearest attitude sample, NOT for sub-frame sync.
+    """
+    import statistics
+
+    if seg is None or not seg.imu:
+        return None
+    stamped = [fr for fr in frames if fr.rx_wall > 0]
+    if not stamped:
+        return None
+    imu_off = statistics.median(
+        s.rx_wall - s.t_us / 1e6 for s in seg.imu[:: max(1, len(seg.imu) // 500)]
+    )
+    cam = [fr.rx_wall - fr.sim_ns / 1e9
+           for fr in stamped[:: max(1, len(stamped) // 500)]]
+    cam_off = statistics.median(cam)
+    spread_ms = 1000.0 * (max(cam) - min(cam))
+    return cam_off - imu_off, spread_ms
