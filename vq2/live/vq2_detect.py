@@ -1,9 +1,14 @@
 """Run the of-record GateNet multi-instance pipeline over recorded VQ2 frames."""
 import sys, os, json, glob, time
 sys.path.insert(0, r'C:\Users\alexj\Documents\algo_src_main')
+sys.path.insert(0, r'C:\Users\alexj')   # patched module copies (same order as vq2wp.py)
 import numpy as np
 import cv2
 import torch
+# fp8 shim for transformers 5.x on torch 2.5.1 (same as vq2wp.py)
+for _fp8 in ('float8_e8m0fnu', 'float8_e4m3fn', 'float8_e5m2'):
+    if not hasattr(torch, _fp8):
+        setattr(torch, _fp8, torch.uint8)
 from scripts.dcl import vq1_detect_overlay as OV
 from perception.training import train_gatenet as TG
 from perception.decode import associate as AS
