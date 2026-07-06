@@ -30,7 +30,9 @@ def pixel_rays_body(uv) -> np.ndarray:
         [(uv[:, 0] - CX) / FX, (uv[:, 1] - CY) / FY, np.ones(len(uv))], axis=1
     )
     rc /= np.linalg.norm(rc, axis=1, keepdims=True)
-    return rc @ M_BODY_CAM.T
+    # einsum, not @: numpy-on-Accelerate emits spurious RuntimeWarnings in
+    # the tall-matmul kernel (outputs verified finite); einsum path is clean
+    return np.einsum("ij,kj->ik", rc, M_BODY_CAM)
 
 
 def R_level_body(roll: float, pitch: float) -> np.ndarray:

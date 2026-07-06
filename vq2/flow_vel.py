@@ -124,7 +124,9 @@ class FlowVelocity:
         self._img_shape = (H, W)
 
     def _floor_mask(self, att) -> np.ndarray:
-        r_w = self._grid_rays_b @ R_world_body(*att).T
+        # einsum, not @: see camera.pixel_rays_body — Accelerate matmul
+        # kernel emits spurious RuntimeWarnings on tall arrays
+        r_w = np.einsum("ij,kj->ik", self._grid_rays_b, R_world_body(*att))
         below = (r_w[:, 2] > math.sin(math.radians(self.min_decl_deg)))
         m = below.reshape(self._grid_shape).astype(np.uint8) * 255
         return cv2.resize(
