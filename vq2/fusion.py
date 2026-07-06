@@ -41,6 +41,17 @@ class FusionConfig:
     use_vision_pos: bool = False
     z_floor: float = Z_FLOOR
     gate_map: tuple = GATES
+    # drag-velocity aiding (playbook 0.4): in free flight thrust is body-z
+    # only, so body-xy specific force = -D * v_body -- the accelerometer is
+    # a scale-free velocity sensor. Dx=Dy=0.1 from sysID. Dz~0: no z info.
+    use_drag: bool = True
+    drag_d: float = 0.1
+    drag_sigma: float = 1.0        # m/s per sample; 144 Hz aggregates hard
+    drag_vmax: float = 15.0        # implied |v| above this = not drag physics
+    # blind-leg holdout: (t_lo, t_hi) on the IMU boot axis. Inside the window
+    # vision POSITION/VELOCITY fixes are withheld (anchors still recorded for
+    # scoring) -- measures dead-reckoning drift against vision truth.
+    deny_vision: tuple | None = None
 
 
 @dataclass
@@ -51,6 +62,26 @@ class FusionResult:
     anchors: list = field(default_factory=list)
     flow_updates: int = 0
     flow_rejects: int = 0
+
+
+def drag_velocity_update(kf, s, R_wb, cfg) -> bool:
+    """One drag-aiding velocity update from an IMU sample. Returns True if
+    applied. Gated OFF at rest: on the ground, contact forces put large
+    non-drag components in body-xy (the 18-deg pad reads as a false
+    ~30 m/s), and the model only holds in free flight."""
+    from .estimators import is_at_rest
+    if is_at_rest(s):
+        return False
+    v_bx = -s.acc[0] / cfg.drag_d
+    v_by = -s.acc[1] / cfg.drag_d
+    if abs(v_bx) > cfg.drag_vmax or abs(v_by) > cfg.drag_vmax:
+        return False
+    # body-z velocity is unobservable through drag (Dz~0): carry the current
+    # estimate so that axis has zero innovation (vq2wp vision-velocity pattern)
+    v_b_est = R_wb.T @ kf.v
+    v_b_meas = np.array([v_bx, v_by, v_b_est[2]])
+    kf.update_velocity(R_wb @ v_b_meas, cfg.drag_sigma)
+    return True
 
 
 def _detection_events(c, bridge_off):
@@ -127,6 +158,9 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                         syw * a_lvl[0] + cyw * a_lvl[1], a_lvl[2]])
         kf.predict(a_w, dt)
 
+        if cfg.use_drag:
+            drag_velocity_update(kf, s, R_world_body(roll, pitch, yaw), cfg)
+
         # frame events up to this IMU stamp
         while cfg.use_flow and fi < len(frames) and frames[fi][0] <= t_boot:
             t_f, path = frames[fi]
@@ -162,7 +196,9 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                 "err_xy": float(np.linalg.norm((p_vis - kf.p)[:2])),
                 "range": rng,
             })
-            if cfg.use_vision_pos:
+            denied = (cfg.deny_vision is not None
+                      and cfg.deny_vision[0] <= t_d <= cfg.deny_vision[1])
+            if cfg.use_vision_pos and not denied:
                 kf.update_position(
                     np.array([p_vis[0], p_vis[1], kf.p[2]]), rng
                 )
