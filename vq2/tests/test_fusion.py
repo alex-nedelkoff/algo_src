@@ -38,7 +38,12 @@ def test_motion_corpus_produces_anchors_and_flow():
     # segment's time span should contribute anchors/flow events. A stale
     # anchor mass-drain at the seed tick blew estimated distance to 280 m
     # in 54 s (should be tens of m) before this bound was added.
-    t_lo, t_hi = res.t_s[0] - 2.0, res.t_s[-1] + 2.0
+    # res.t_s starts at the attitude seed (end of the first rest window);
+    # detections during the pre-seed rest are legitimate anchors and drain
+    # on the first tick with their true earlier stamps — so the lower bound
+    # is loose (a rest prefix, not another session: the bug this guards
+    # against put anchors ~733 s out)
+    t_lo, t_hi = res.t_s[0] - 60.0, res.t_s[-1] + 2.0
     for a in res.anchors:
         assert t_lo <= a["t_boot_s"] <= t_hi, (
             f"anchor t_boot_s={a['t_boot_s']} outside flight window [{t_lo}, {t_hi}]"
