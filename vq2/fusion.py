@@ -44,7 +44,8 @@ class FusionConfig:
     # drag-velocity aiding (playbook 0.4): in free flight thrust is body-z
     # only, so body-xy specific force = -D * v_body -- the accelerometer is
     # a scale-free velocity sensor. Dx=Dy=0.1 from sysID. Dz~0: no z info.
-    use_drag: bool = True
+    use_drag: bool = False   # holdout verdict: hurts at creep speed (SNR~1
+    #                          at 1 m/s); enable for the race-pace speed push
     drag_d: float = 0.1
     drag_sigma: float = 1.0        # m/s per sample; 144 Hz aggregates hard
     drag_vmax: float = 15.0        # implied |v| above this = not drag physics
