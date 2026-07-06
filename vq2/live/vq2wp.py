@@ -339,9 +339,13 @@ def _det_loop():
             Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
             g_lvl = Ry @ (Rx @ g_b)
             state['det_wall'] = time.time()
-            if abs(g_lvl[2]) > 8.0:
-                # gates live within a couple of metres of flight altitude; a
-                # 5m+ vertical offset is a garbage solve (07-05 run: z -17..-30)
+            if abs(g_lvl[2]) > 2.5:
+                # judge apertures live within ~1.2 m of flight altitude. The
+                # STACKED HIGH gate (~[10.4, 0, -4]) passed the old 8.0 guard
+                # and became attempt-2's pad lock (g_lvl z -4.95) -> map fixes
+                # against the wrong anchor seeded the phantom lateral error
+                # that provoked the route-entry violence (07-06 collapse).
+                # Also kills the -17..-30 garbage solves (07-05).
                 jlog('obs_insane', ns=ns, g_lvl=g_lvl.round(3).tolist())
                 cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
                 continue
@@ -422,7 +426,15 @@ def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0
     pitch_ref = max(-0.35, min(0.35, K_V * (state['vx_b'] - vx_ref) + pitch_bias))
     rr = SIGN_R * (KP * (roll_ref - state['roll'])) / RATE_GAIN
     pr = SIGN_P * (KP * (pitch_ref - state['pitch'])) / RATE_GAIN
-    rr = max(-1.5, min(1.5, rr)); pr = max(-1.5, min(1.5, pr))
+    # RATE DISCIPLINE (07-06 collapse root cause): commanded transients hit
+    # 356 deg/s measured; HIGHRES_IMU drops ~24% of samples (14 ms gaps), and
+    # gyro integration across gaps at those rates accrues 1-3 deg PERMANENT
+    # attitude error -> gravity leak -> estimate runaway. The attitude chain
+    # is proven clean below ~1 rad/s actual; RATE_GAIN 1.93 means +-0.6
+    # commanded ~ +-1.2 actual worst case. Do not raise without re-deriving
+    # the gap-error budget.
+    RATE_MAX = float(os.environ.get('RATE_MAX', '0.6'))
+    rr = max(-RATE_MAX, min(RATE_MAX, rr)); pr = max(-RATE_MAX, min(RATE_MAX, pr))
     dthr = max(-0.06, min(0.06, 0.10 * (vz_ref - state['vz_up'])))
     send_rate(rr, pr, yr, max(0.05, min(0.6, thr_base + dthr)))
 

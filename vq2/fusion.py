@@ -53,6 +53,8 @@ class FusionConfig:
     # vision POSITION/VELOCITY fixes are withheld (anchors still recorded for
     # scoring) -- measures dead-reckoning drift against vision truth.
     deny_vision: tuple | None = None
+    # quiescent-gated complementary attitude correction (see AttitudeTracker)
+    att_cf_gain: float = 0.0
 
 
 @dataclass
@@ -63,6 +65,52 @@ class FusionResult:
     anchors: list = field(default_factory=list)
     flow_updates: int = 0
     flow_rejects: int = 0
+    a_w_xy: list = field(default_factory=list)  # gravity-leak diagnostic
+
+
+GRAVITY = 9.81
+
+
+@dataclass
+class AttitudeTracker:
+    """wfix gyro attitude (vq2wp convention) + optional quiescent-gated
+    complementary correction.
+
+    Why: HIGHRES_IMU drops ~24% of samples; integrating across 14 ms gaps
+    during violent transients (route-entry corrections hit 350 deg/s) accrues
+    1-3 deg of PERMANENT tilt error -> ~0.2-0.5 m/s^2 gravity leak -> the
+    estimate runaway seen in every collapsed flight. The CF pulls roll/pitch
+    back toward the accel-implied attitude ONLY when quasi-static (low rates,
+    |f| ~ g) -- the regime where accel direction IS gravity. Yaw untouched
+    (accel carries no yaw)."""
+
+    roll: float = 0.0
+    pitch: float = 0.0
+    yaw: float = 0.0
+    cf_gain: float = 0.0            # per-sample pull toward accel attitude
+    cf_gyro_max: float = 0.3        # rad/s: "quiet" rate gate
+    cf_acc_tol: float = 0.6         # m/s^2: | |f| - g | gate
+    _last_us: int | None = None
+
+    def seed(self, s) -> None:
+        self.roll, self.pitch = accel_implied_attitude(s)
+        self._last_us = s.t_us
+
+    def update(self, s) -> None:
+        if self._last_us is not None and s.t_us > self._last_us:
+            dt = (s.t_us - self._last_us) / 1e6
+            gx, gy, gz = s.gyr
+            self.roll += gx * dt
+            self.pitch += -gy * dt   # wfix (vq2wp.py:203)
+            self.yaw += -gz * dt     # wfix (vq2wp.py:204)
+            if self.cf_gain > 0.0:
+                gn = math.sqrt(gx * gx + gy * gy + gz * gz)
+                an = math.sqrt(sum(a * a for a in s.acc))
+                if gn < self.cf_gyro_max and abs(an - GRAVITY) < self.cf_acc_tol:
+                    r_a, p_a = accel_implied_attitude(s)
+                    self.roll += self.cf_gain * (r_a - self.roll)
+                    self.pitch += self.cf_gain * (p_a - self.pitch)
+        self._last_us = s.t_us
 
 
 def drag_velocity_update(kf, s, R_wb, cfg) -> bool:
@@ -135,8 +183,8 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
     # in which case seeding at its end leaves nothing left to integrate.
     seed_idx = rests[0][1] if rests[0][1] < len(seg.imu) - 1 else rests[0][0]
     s0 = seg.imu[seed_idx]
-    roll, pitch = accel_implied_attitude(s0)
-    yaw = 0.0
+    att = AttitudeTracker(cf_gain=cfg.att_cf_gain)
+    att.seed(s0)
     kf = PosVelKF()
     kf.reset_at_rest()
     flow = FlowVelocity()
@@ -149,15 +197,14 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
         dt = (s.t_us - last_us) / 1e6
         last_us = s.t_us
         t_boot = s.t_us / 1e6
-        gx, gy, gz = s.gyr
-        roll += gx * dt
-        pitch += -gy * dt   # wfix (vq2wp.py:203)
-        yaw += -gz * dt     # wfix (vq2wp.py:204)
+        att.update(s)
+        roll, pitch, yaw = att.roll, att.pitch, att.yaw
         a_lvl = accel_level(s.acc, roll, pitch)
         cyw, syw = math.cos(yaw), math.sin(yaw)
         a_w = np.array([cyw * a_lvl[0] - syw * a_lvl[1],
                         syw * a_lvl[0] + cyw * a_lvl[1], a_lvl[2]])
         kf.predict(a_w, dt)
+        res.a_w_xy.append(a_w[:2].copy())
 
         if cfg.use_drag:
             drag_velocity_update(kf, s, R_world_body(roll, pitch, yaw), cfg)
