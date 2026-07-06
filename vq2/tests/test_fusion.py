@@ -30,3 +30,18 @@ def test_motion_corpus_produces_anchors_and_flow():
     # downcourse of the pad (the flight approached gate 1 at ~11 m)
     rngs = [a["range"] for a in res.anchors]
     assert min(rngs) < 8.0
+
+    # corpus frames/ and detections.jsonl accumulate across recording
+    # sessions (see corpus.py loader comments); only the current flight
+    # segment's time span should contribute anchors/flow events. A stale
+    # anchor mass-drain at the seed tick blew estimated distance to 280 m
+    # in 54 s (should be tens of m) before this bound was added.
+    t_lo, t_hi = res.t_s[0] - 2.0, res.t_s[-1] + 2.0
+    for a in res.anchors:
+        assert t_lo <= a["t_boot_s"] <= t_hi, (
+            f"anchor t_boot_s={a['t_boot_s']} outside flight window [{t_lo}, {t_hi}]"
+        )
+
+    p = np.asarray(res.p)
+    dist = float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)))
+    assert dist < 100.0, f"xy distance traveled {dist} m implausibly large"

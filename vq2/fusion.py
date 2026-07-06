@@ -80,10 +80,23 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
     bridge = corpus_mod.clock_bridge(seg, c.frames)
     off = bridge[0] if bridge else None
 
+    # the recorder's frames/ dir and detections.jsonl accumulate across
+    # recording sessions (see corpus.py loader comments) -- bound both event
+    # streams to the current flight segment's time span, or stale events
+    # mass-drain on the first IMU tick and corrupt the filter
+    t_lo = seg.imu[0].t_us / 1e6 - 1.0
+    t_hi = seg.imu[-1].t_us / 1e6 + 1.0
     frames = sorted(
-        ((fr.sim_ns / 1e9 + off, fr.path) for fr in c.frames), key=lambda e: e[0]
+        (
+            (fr.sim_ns / 1e9 + off, fr.path)
+            for fr in c.frames
+            if t_lo <= fr.sim_ns / 1e9 + off <= t_hi
+        ),
+        key=lambda e: e[0],
     ) if off is not None else []
-    dets = _detection_events(c, off) if off is not None else []
+    dets = [
+        e for e in _detection_events(c, off) if t_lo <= e[0] <= t_hi
+    ] if off is not None else []
 
     # seed at the end of the first rest window -- unless that window runs to
     # the end of the recording (corpus is at-rest throughout, e.g. vq2_rec),
