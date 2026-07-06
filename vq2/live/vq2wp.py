@@ -339,13 +339,14 @@ def _det_loop():
             Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
             g_lvl = Ry @ (Rx @ g_b)
             state['det_wall'] = time.time()
-            if abs(g_lvl[2]) > 2.5:
-                # judge apertures live within ~1.2 m of flight altitude. The
-                # STACKED HIGH gate (~[10.4, 0, -4]) passed the old 8.0 guard
-                # and became attempt-2's pad lock (g_lvl z -4.95) -> map fixes
-                # against the wrong anchor seeded the phantom lateral error
-                # that provoked the route-entry violence (07-06 collapse).
-                # Also kills the -17..-30 garbage solves (07-05).
+            # phase-dependent z sanity: ON THE PAD (at rest, attitude exact,
+            # obs-z bias absent) apertures read z ~ -0.6, so 2.0 rejects the
+            # STACKED HIGH gate (z -4.95 pad-locked attempt 2 and poisoned
+            # every fix after). IN FLIGHT the per-run obs-z bias (-0.6..-4.9)
+            # puts LEGIT gates past any tight bound (a 2.5 guard starved
+            # run 4 to 6 fixes/flight) -> keep the loose 8.0 there.
+            z_lim = 8.0 if state.get('airborne') else 2.0
+            if abs(g_lvl[2]) > z_lim:
                 jlog('obs_insane', ns=ns, g_lvl=g_lvl.round(3).tolist())
                 cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
                 continue
@@ -509,6 +510,7 @@ while time.time() - t0 < 0.7:
 t0 = time.time()
 while time.time() - t0 < 1.6 and not aborted:
     level_cmd(0, 0, 1.0); aborted = guards('climb'); time.sleep(1/CMD_HZ)
+state['airborne'] = True   # loosens the det z-guard (in-flight obs-z bias)
 print(f'airborne tilt {math.degrees(tilt()):.1f} vz {state["vz_up"]:.2f}', flush=True)
 
 # AXIS PROBES (frame tripwires -- physical defaults, flip only on strong evidence).
