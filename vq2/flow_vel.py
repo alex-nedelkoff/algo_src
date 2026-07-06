@@ -74,3 +74,98 @@ def robust_velocity(v_tracks, min_tracks: int = 6):
     spread = float(np.linalg.norm(v_in.std(axis=0)))
     sigma = max(SIGMA_FLOOR, spread / math.sqrt(len(v_in)))
     return v_est, sigma, int(inl.sum())
+
+
+import cv2  # noqa: E402  (kept below the pure-geometry half: geometry tests
+#             must not require cv2; move to top only if a linter forces it)
+
+_GRID_STEP = 8
+
+
+class FlowVelocity:
+    """Sparse-LK floor-flow velocity. One instance per stream; call
+    process() once per decoded frame in timestamp order."""
+
+    def __init__(
+        self,
+        max_corners: int = 80,
+        quality: float = 0.01,
+        min_dist: int = 12,
+        win: int = 21,
+        levels: int = 3,
+        fb_max_px: float = 1.0,
+        min_decl_deg: float = 8.0,
+        max_depth: float = 25.0,
+        min_tracks: int = 6,
+    ):
+        self.max_corners = max_corners
+        self.quality = quality
+        self.min_dist = min_dist
+        self.lk = dict(
+            winSize=(win, win),
+            maxLevel=levels,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+        )
+        self.fb_max_px = fb_max_px
+        self.min_decl_deg = min_decl_deg
+        self.max_depth = max_depth
+        self.min_tracks = min_tracks
+        self._prev = None  # (gray, t_s, att, h)
+        # precompute body rays on a coarse pixel grid for the floor mask
+        try:
+            from .camera import H, W, pixel_rays_body
+        except ImportError:
+            from camera import H, W, pixel_rays_body
+        gy, gx = np.mgrid[0:H:_GRID_STEP, 0:W:_GRID_STEP]
+        self._grid_shape = gy.shape
+        self._grid_rays_b = pixel_rays_body(
+            np.stack([gx.ravel(), gy.ravel()], axis=1).astype(float)
+        )
+        self._img_shape = (H, W)
+
+    def _floor_mask(self, att) -> np.ndarray:
+        r_w = self._grid_rays_b @ R_world_body(*att).T
+        below = (r_w[:, 2] > math.sin(math.radians(self.min_decl_deg)))
+        m = below.reshape(self._grid_shape).astype(np.uint8) * 255
+        return cv2.resize(
+            m, (self._img_shape[1], self._img_shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+    def reset(self) -> None:
+        self._prev = None
+
+    def process(self, gray, t_s: float, att, h: float):
+        prev, self._prev = self._prev, (gray, t_s, att, h)
+        if prev is None:
+            return None
+        pgray, pt, patt, ph = prev
+        dt = t_s - pt
+        if dt < 0.005 or dt > 0.15 or h <= 0.05 or ph <= 0.05:
+            return None
+        p0 = cv2.goodFeaturesToTrack(
+            pgray,
+            maxCorners=self.max_corners,
+            qualityLevel=self.quality,
+            minDistance=self.min_dist,
+            mask=self._floor_mask(patt),
+        )
+        if p0 is None or len(p0) < self.min_tracks:
+            return None
+        p1, st, _ = cv2.calcOpticalFlowPyrLK(pgray, gray, p0, None, **self.lk)
+        p0b, stb, _ = cv2.calcOpticalFlowPyrLK(gray, pgray, p1, None, **self.lk)
+        fb = np.linalg.norm((p0 - p0b).reshape(-1, 2), axis=1)
+        good = (st.ravel() == 1) & (stb.ravel() == 1) & (fb < self.fb_max_px)
+        if good.sum() < self.min_tracks:
+            return None
+        uv0 = p0.reshape(-1, 2)[good]
+        uv1 = p1.reshape(-1, 2)[good]
+        v_tracks, used = velocity_from_tracks(
+            uv0, uv1, patt, att, ph, h, dt,
+            min_decl_deg=self.min_decl_deg, max_depth=self.max_depth,
+        )
+        est = robust_velocity(v_tracks, self.min_tracks)
+        if est is None:
+            return None
+        v_w, sigma, ninl = est
+        return v_w, sigma, ninl, int(good.sum())
