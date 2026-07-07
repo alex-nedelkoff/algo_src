@@ -425,8 +425,16 @@ def _det_loop():
                 is_g1 = n_match >= 2
                 if is_g1:
                     ident_full = True   # content-confirmed: full-weight fix below
-                bad = ((match_g is G1_W and not is_g1) or
-                       (match_g is G2_W and not is_g1 and rng_meas < 18.0))
+                # pre-first-tick: identity-or-nothing. Run-11 wreck: junk
+                # obs at rng 15-28 sailed through the far_ok>18 loophole and
+                # repeated soft pulls (rs to 19) dragged y to 21 m. Nothing
+                # legitimate exists on this leg except identified G1; the
+                # blind dropout zone rides DR (holdout: 0.3-0.5 m / 3-8 s).
+                if ticks == 0:
+                    bad = not is_g1
+                else:
+                    bad = ((match_g is G1_W and not is_g1) or
+                           (match_g is G2_W and not is_g1 and rng_meas < 18.0))
                 if bad:
                     dists_ = []
                     for k_ in range(min(len(best[2]), len(G1C))):
