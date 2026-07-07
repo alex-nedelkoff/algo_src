@@ -100,3 +100,20 @@ residual. Chi2 gate per corner at 5.99 (2 dof, 95%).
 - Next: gates3d loads the .npy model + per-gate R_wg; ground-truth test
   should then pass (median px err target <12). Then dedupe head pairs
   (average or pick lower sigma), identity match on 4 physical corners.
+
+## Validation + chain landmine (07-06 latest)
+- END-TO-END PASS: recovered model + pad-solve pose -> project from origin
+  -> median 7.1 px vs detected corners (same-index, no matching needed:
+  head order is stable). Corner measurement chain PROVEN on real data.
+  Artifacts: vq2_data/gate_model_corners.npy, g1_corners_world.npy (pad-
+  derived, see caveat), g1_R_wg.npy.
+- CAVEAT: camera.py chain vs vq2wp detection chain diverge at 18-deg pad
+  tilt (origin [10.58,-1.47,-2.5] vs [10.96,0.05,-0.63] -- the known
+  "sin(-pitch) compensating sign" landmine, eskf.py comment). They agree
+  at level attitude. FIX: derive R_wg + world anchor from a LEVEL early-
+  flight solve; validate on both a level frame (expect ~7 px) and the pad
+  frame (measures residual tilt divergence). Keep ONE chain (camera.py)
+  throughout fusion corner updates.
+- Then: gates3d.GATE_CORNERS['G1'] = level-derived world corners (8 pts,
+  use head pairs individually w/ their own sigmas); ground-truth test
+  un-xfail; eskf.update_pixel; fusion corner path; bench.
