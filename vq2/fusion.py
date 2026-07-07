@@ -22,7 +22,7 @@ import numpy as np
 from . import corpus as corpus_mod
 from .camera import M_BODY_CAM, R_world_body
 from .eskf import PosVelKF, accel_level
-from .estimators import accel_implied_attitude
+from .estimators import accel_implied_attitude, is_at_rest
 from .flow_vel import FlowVelocity, Z_FLOOR
 from .replay import find_rest_windows
 
@@ -63,6 +63,13 @@ class FusionConfig:
     # range-ratio identity gate before candidate selection (see
     # range_identity_ok). 'huber' + range_gate=True == the ADR-VINS pair.
     range_gate: bool = False
+    # flare veto (EXPERIMENTAL, REFUTED on vq2_accept5: in-flight junk obs
+    # occur at LEVEL pitch p50 -0.2deg -- truss/fixture solves in the upper
+    # frame at normal attitude, not flare-only; image row overlaps too,
+    # junk p50 234 vs good 249. Content-level identity -- corner descriptors
+    # / tight corner updates, playbook 0.3 -- is the real fix. Kept as an
+    # off-by-default bench knob.) Nose-up beyond this (rad) vetoes obs.
+    pitch_veto: float = 0.0
 
 
 @dataclass
@@ -274,6 +281,16 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
         while di < len(dets) and dets[di][0] <= t_boot:
             t_d, g_cam = dets[di]
             di += 1
+            # at-rest exemption: the 18-deg spawn tilt would otherwise veto
+            # the pad-lock obs -- the best anchors we get. Flare veto is an
+            # airborne concept.
+            if (cfg.pitch_veto > 0.0 and pitch < -cfg.pitch_veto
+                    and not is_at_rest(s)):
+                res.obs_events.append({
+                    "t_boot_s": t_d, "rng": float(np.linalg.norm(g_cam)),
+                    "miss": float("nan"), "gate": -1, "r_scale": 0.0,
+                    "stage": "flare_veto"})
+                continue
             g_w = R_world_body(roll, pitch, yaw) @ (M_BODY_CAM @ g_cam)
             rng = float(np.linalg.norm(g_cam))
             p_vis_cands = [np.asarray(g) - g_w for g in cfg.gate_map]
