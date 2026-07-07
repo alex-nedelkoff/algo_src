@@ -60,6 +60,9 @@ class FusionConfig:
     # (ADR-VINS/MonoRace pattern -- keeps the filter correctable at any drift)
     accept_policy: str = "radius"
     huber_delta: float = 1.5   # m: miss below this gets full weight
+    # range-ratio identity gate before candidate selection (see
+    # range_identity_ok). 'huber' + range_gate=True == the ADR-VINS pair.
+    range_gate: bool = False
 
 
 @dataclass
@@ -137,6 +140,22 @@ def huber_policy(miss: float, rng: float, delta: float = 1.5):
 
 
 POLICIES = {"radius": radius_policy, "huber": huber_policy}
+
+RANGE_RATIO_MIN = 0.55   # min(rng_m/rng_e, rng_e/rng_m) below this = not that gate
+
+
+def range_identity_ok(rng_meas: float, rng_expected: float) -> bool:
+    """Area-consistency association, in range form (ADR-VINS rho_m): GateNet
+    PnP range is size-derived and verified TRUE, so the measured range IS the
+    apparent-size cue. A candidate whose expected range disagrees by more
+    than ~2x in ratio is a different gate (or a hallucination), regardless
+    of how the xy proximity looks. Estimate-LIGHT: G1 vs G2 expected ranges
+    differ by ~20 m, so this survives ~10 m of estimator drift where the
+    3 m xy proximity gate has long since gone blind."""
+    if rng_expected <= 0.1 or rng_meas <= 0.1:
+        return False
+    ratio = min(rng_meas / rng_expected, rng_expected / rng_meas)
+    return ratio >= RANGE_RATIO_MIN
 
 
 def drag_velocity_update(kf, s, R_wb, cfg) -> bool:
@@ -259,7 +278,22 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
             rng = float(np.linalg.norm(g_cam))
             p_vis_cands = [np.asarray(g) - g_w for g in cfg.gate_map]
             errs = [np.linalg.norm((pv - kf.p)[:2]) for pv in p_vis_cands]
-            j = int(np.argmin(errs))
+            if cfg.range_gate:
+                feasible = [
+                    k for k, g in enumerate(cfg.gate_map)
+                    if range_identity_ok(
+                        rng, float(np.linalg.norm(
+                            np.asarray(g)[:2] - kf.p[:2])))
+                ]
+                if not feasible:
+                    res.obs_events.append({
+                        "t_boot_s": t_d, "rng": rng,
+                        "miss": float(min(errs)), "gate": -1,
+                        "r_scale": 0.0, "stage": "identity_reject"})
+                    continue
+            else:
+                feasible = list(range(len(cfg.gate_map)))
+            j = min(feasible, key=lambda k: errs[k])
             miss = float(errs[j])
             if cfg.accept_policy == "huber":
                 ok_pol, r_scale = huber_policy(miss, rng, cfg.huber_delta)

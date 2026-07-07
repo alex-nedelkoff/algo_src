@@ -50,3 +50,25 @@ def test_bench_compares_policies_on_corpus():
             assert k in row, (name, k)
     # huber never discards matched obs -> accepts at least as many
     assert out["huber"]["accepted"] >= out["radius"]["accepted"]
+
+
+def test_range_identity_gate_rejects_infeasible_candidates():
+    from vq2.fusion import range_identity_ok
+    # measured 11 m, candidate expected 30 m away -> not this gate
+    assert not range_identity_ok(rng_meas=11.0, rng_expected=30.0)
+    # measured 11 m, candidate expected 13 m -> feasible under drift
+    assert range_identity_ok(rng_meas=11.0, rng_expected=13.0)
+    # degenerate expected range never crashes
+    assert range_identity_ok(rng_meas=11.0, rng_expected=0.0) is False
+
+
+@pytest.mark.skipif(not os.path.isdir(ACC), reason="vq2_accept corpus absent")
+def test_huber_area_filters_junk_but_keeps_soft_accepts():
+    out = run_bench(ACC, policies=("huber", "huber_area"))
+    ha, hu = out["huber_area"], out["huber"]
+    # identity gate kills the hallucinated far gates the plain huber chases
+    assert ha["anchor_p90"] < hu["anchor_p90"]
+    # but still no hard starvation: accepts more than the binary radius did (642)
+    assert ha["accepted"] > 642 * 0.8
+    # identity rejections show up as their own waterfall stage
+    assert "identity_reject" in ha["reject_stages"]
