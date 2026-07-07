@@ -166,7 +166,10 @@ def viz_tick(p, ref_pos=None):
         pass
 LEAD = 2.5                      # carrot lead (m); drone-locked s_ref cannot run away
 V_ROUTE_MAX = float(os.environ.get('VMAX', '1.0'))  # slow everywhere: keep the detector locked to punch range
-ACCEPT_R = 3.0                  # obs accepted iff within this xy radius of the MAP-expected gate
+ACCEPT_R = 3.0                  # legacy radius gate (POLICY=radius rollback + hysteresis bound)
+OBS_POLICY = os.environ.get('POLICY', 'huber_area')  # 'huber_area' | 'radius'
+HUBER_DELTA = 1.5               # m: miss below this = full-weight fix
+RANGE_RATIO_MIN = 0.55          # identity gate (see det_loop comment)
 RANGE_SCALE = 1.00              # gates are VQ1-size (Alex): PnP ranges are TRUE; the KF under-integrates instead
 
 # camera axes in body frame (nose camera, 20 deg up -- flight-validated 07-06)
@@ -351,17 +354,29 @@ def _det_loop():
                 jlog('obs_insane', ns=ns, g_lvl=g_lvl.round(3).tolist())
                 cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
                 continue
-            # MAP-anchored acceptance (no DR ghost): match the obs against the
-            # GateNet-visible red gates (G1/G2 -- the arch is not a GateNet
-            # gate); accept iff within ACCEPT_R (xy) of one of them. Every
-            # accepted obs is an xy-only KF fix against that map gate.
+            # MAP-anchored acceptance, huber_area policy (VQ2-POLICY-01,
+            # bench-proven on both corpora): (1) range-ratio identity gate --
+            # PnP range is size-derived and TRUE, so a candidate whose
+            # expected range disagrees >~2x is a different gate or a
+            # hallucination, robust to ~10 m of drift; (2) huber soft
+            # acceptance -- far misses inflate R instead of being discarded,
+            # so the filter can ALWAYS be walked back (run-5 starvation mode
+            # structurally gone). POLICY=radius reverts to the legacy gate.
             cyw, syw = math.cos(state['yaw']), math.sin(state['yaw'])
             g_w = np.array([cyw * g_lvl[0] - syw * g_lvl[1],
                             syw * g_lvl[0] + cyw * g_lvl[1], g_lvl[2]])
             with KF_LOCK:
                 p_kf = KF.p.copy()
+            rng_meas = float(np.linalg.norm(g_lvl))
             miss, match_g = 1e9, None
             for gw_map in (G1_W, G2_W):
+                if OBS_POLICY == 'huber_area':
+                    rng_exp = float(np.linalg.norm((gw_map - p_kf)[:2]))
+                    ratio = (min(rng_meas / max(rng_exp, 0.1),
+                                 max(rng_exp, 0.1) / rng_meas)
+                             if rng_meas > 0.1 else 0.0)
+                    if ratio < RANGE_RATIO_MIN:
+                        continue
                 m_ = float(np.linalg.norm((g_w - (gw_map - p_kf))[:2]))
                 if m_ < miss:
                     miss, match_g = m_, gw_map
@@ -369,14 +384,22 @@ def _det_loop():
             # it -- alternating matches whipsawed the position fixes between
             # two anchors and exploded the velocity (flights #38/#39)
             prev_m = state.get('_match_prev')
-            if prev_m is not None and time.time() - prev_m[1] < 2.0 and match_g is not prev_m[0]:
+            if (match_g is not None and prev_m is not None
+                    and time.time() - prev_m[1] < 2.0 and match_g is not prev_m[0]):
                 m_prev = float(np.linalg.norm((g_w - (prev_m[0] - p_kf))[:2]))
                 if m_prev < ACCEPT_R + 1.5:
                     miss, match_g = m_prev, prev_m[0]
-            if miss <= ACCEPT_R:
+            if OBS_POLICY == 'huber_area':
+                accepted = match_g is not None
+                r_scale = 1.0 if miss <= HUBER_DELTA else miss / HUBER_DELTA
+            else:  # legacy radius gate
+                accepted = miss <= ACCEPT_R
+                r_scale = 1.0
+            if accepted:
                 state['_match_prev'] = (match_g, time.time())
-            if miss > ACCEPT_R:
-                jlog('obs_offmap', ns=ns, g_w=g_w.round(3).tolist(), miss=round(miss, 2))
+            if not accepted:
+                jlog('obs_ident' if match_g is None else 'obs_offmap',
+                     ns=ns, g_w=g_w.round(3).tolist(), miss=round(miss, 2))
             else:
                 # xy-only fix: zero the z innovation (obs z carries a per-run
                 # spawn-tilt bias of -0.6..-4 m; the map owns z)
@@ -384,9 +407,13 @@ def _det_loop():
                 with KF_LOCK:
                     g_w_upd[2] = float(match_g[2]) - KF.p[2]
                     ok = KF.update_position(match_g - g_w_upd,
-                                            rng=float(np.linalg.norm(g_lvl)))
+                                            rng=rng_meas, r_scale=r_scale)
+                    nis = getattr(KF, 'last_nis', None)
                     p_now = KF.p.round(2).tolist(); v_now = KF.v.round(2).tolist()
-                jlog('kf_upd', ok=ok, miss=round(miss, 2), p=p_now, v=v_now)
+                jlog('kf_upd', ok=ok, miss=round(miss, 2),
+                     r_scale=round(r_scale, 2),
+                     nis=round(nis, 2) if nis is not None else None,
+                     p=p_now, v=v_now)
                 # VISION VELOCITY: the gate is static, so drone velocity =
                 # -d(gate offset)/dt between consecutive detections. This is
                 # the only absolute velocity source (no ODOMETRY, no ZUPT) --

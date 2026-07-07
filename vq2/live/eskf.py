@@ -58,11 +58,14 @@ class PosVelKF:
         self.P[3:, 3:] = Pvv + np.eye(3) * (self.q_vel ** 2) * dt
         self.P[:3, :3] += np.eye(3) * (self.q_pos ** 2) * dt
 
-    def update_position(self, z: np.ndarray, rng: float) -> bool:
+    def update_position(self, z: np.ndarray, rng: float,
+                        r_scale: float = 1.0) -> bool:
         """Direct drone-position measurement (map gate minus gate-relative obs).
 
+        r_scale inflates sigma (huber_area soft acceptance, VQ2-POLICY-01).
+        last_nis / last_innovation exposed for diagnostics after any call.
         Returns True if accepted (passed the Mahalanobis gate)."""
-        sig = self.sigma_meas_base + self.sigma_meas_per_m * rng
+        sig = (self.sigma_meas_base + self.sigma_meas_per_m * rng) * r_scale
         R = np.eye(3) * (sig ** 2)
         # H = [I 0]
         S = self.P[:3, :3] + R
@@ -72,6 +75,8 @@ class PosVelKF:
             return False
         r = z - self.x[:3]
         d2 = float(r @ Sinv @ r)
+        self.last_innovation = r.copy()
+        self.last_nis = d2
         if d2 > self.maha_gate:
             return False
         K = self.P[:, :3] @ Sinv            # (6,3)
