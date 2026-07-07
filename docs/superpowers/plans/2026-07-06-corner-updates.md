@@ -82,3 +82,21 @@ residual. Chi2 gate per corner at 5.99 (2 dof, 95%).
 - Tools: vq2/bench.py, vq2/flight_report.py, vq2/rrd_emit.py (rerun venv).
 - Laptop: vq2wp.py + eskf.py deployed at C:\Users\alexj\; detect pass =
   vq2_detect.py <frames_dir>; flights via RECORD/VMAX/NOVIZ/POLICY envs.
+
+## Empirical findings (07-06 late, supersede assumptions above)
+- corner_xy = **8 keypoints for ALL instances**: 4 physical corners x 2
+  duplicate detection heads (pairs 0/4,1/5,2/6,3/7 within ~2 cm). NOT
+  front/back faces, NOT merged G1+HIGH (earlier xfail note wrong on cause).
+- Recovered gate-frame model (least-squares over 1842 PnP solves,
+  residual 0.27-0.5 m; saved vq2_data/gate_model_corners.npy):
+  corners span x +-1.65 (3.33 m wide), y -0.38..+2.77 (3.15 m tall),
+  z ~ -1.8..-2.2 (single plane ~2 m from gate-frame origin along -z).
+  => keypoints = OUTER structure corners; gate-frame origin is NOT the
+  structure center (offset ~+1.2 y-up, ~-2 z).
+- Map positions (G1_W etc.) were derived from t_cam obs = gate-frame
+  ORIGIN in world. So world corners = R_wg @ X_gate + G1_W, with R_wg
+  derived empirically from a pad-rest solve: R_wg = R_wb(rest att) @
+  M_BODY_CAM @ R_cam_gate(pad inst).
+- Next: gates3d loads the .npy model + per-gate R_wg; ground-truth test
+  should then pass (median px err target <12). Then dedupe head pairs
+  (average or pick lower sigma), identity match on 4 physical corners.
