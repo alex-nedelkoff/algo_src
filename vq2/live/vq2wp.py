@@ -70,8 +70,15 @@ TARGET_TICKS = 2                # qualifier: red gate + G2 = through the second 
 # course ribbon drops vertically from it into the red gate (gate 1) at x=11,
 # then runs to G2. The pad-z "artifact" was the detector alternating between
 # the stacked high + red gates.
-HIGH_W = np.array([11.0, 0.0, -1.3])  # true gate (ranges correct; KF x-compression was the bug)
-G1_W = np.array([11.0, 0.0, -1.3])
+# THE 2-METRE BUG (07-07, run-13 frames): PnP range measures to the gate-
+# frame ORIGIN, which sits ~2 m BEHIND the visible structure (recovered
+# 8-kp model: corners at z_gate -1.8..-2.2). G1_W [11,0] is therefore a
+# point in EMPTY SPACE behind the gate -- every "crossing" transited the
+# real aperture plane (x ~ 9.1, triangulated corner map) un-aimed.
+# Fly at G1_AP; keep G1_W for obs-derived map matching.
+G1_AP = np.array([9.1, 0.0, -1.3])
+HIGH_W = G1_AP.copy()                 # route/punch aim point
+G1_W = np.array([11.0, 0.0, -1.3])    # obs anchor (gate-frame origin)
 G2_W = np.array([30.5, 8.5, -1.5])
 GATES_W = [HIGH_W, G2_W, G2_W]
 N2 = np.array([0.95, 0.2, 0.0]); N2 /= np.linalg.norm(N2)   # G2 through-direction
