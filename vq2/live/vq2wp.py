@@ -168,6 +168,12 @@ LEAD = 2.5                      # carrot lead (m); drone-locked s_ref cannot run
 V_ROUTE_MAX = float(os.environ.get('VMAX', '1.0'))  # slow everywhere: keep the detector locked to punch range
 ACCEPT_R = 3.0                  # legacy radius gate (POLICY=radius rollback + hysteresis bound)
 OBS_POLICY = os.environ.get('POLICY', 'huber_area')  # 'huber_area' | 'radius'
+try:
+    G1C = np.load(r'C:\Users\alexj\g1_corners_world.npy')
+except Exception:
+    G1C = None
+IDENT_ON = OBS_POLICY == 'huber_area' and G1C is not None and \
+    os.environ.get('NOIDENT', '0') != '1'
 HUBER_DELTA = 1.5               # m: miss below this = full-weight fix
 RANGE_RATIO_MIN = 0.55          # identity gate (see det_loop comment)
 RANGE_SCALE = 1.00              # gates are VQ1-size (Alex): PnP ranges are TRUE; the KF under-integrates instead
@@ -319,9 +325,12 @@ def _det_loop():
             tx = float(ip.t[0])
             key = ((z + 2.0 * abs(tx)) if z < 22.0 else 100.0 + z, -float(dec.center_score))
             if best is None or key < best[0]:
-                best = (key, np.asarray(ip.t, float))
+                best = (key, np.asarray(ip.t, float),
+                        np.asarray(dec.corner_xy, float),
+                        np.asarray(dec.visibility, float)
+                        if dec.visibility is not None else None)
         if best is not None:
-            best = (best[0], best[1] * RANGE_SCALE)   # GateNet range bias: PnP assumes VQ1 gate size;
+            best = (best[0], best[1] * RANGE_SCALE, best[2], best[3])   # GateNet range bias: PnP assumes VQ1 gate size;
                                                       # qualifier gates are smaller (Alex free-cam 07-05)
         if best is not None and state['nav_ready']:
             # nav_ready gates the whole chain: frames rendered DURING the sim
@@ -389,6 +398,37 @@ def _det_loop():
                 m_prev = float(np.linalg.norm((g_w - (prev_m[0] - p_kf))[:2]))
                 if m_prev < ACCEPT_R + 1.5:
                     miss, match_g = m_prev, prev_m[0]
+            # constellation identity (VQ2-POLICY: 5c0a230 bench): obs
+            # matched to G1 must positively fit the G1 corner map; in
+            # strict course-context, non-G1-identified obs are junk unless
+            # a genuinely far G2 sighting. Kills truss/fixture solves the
+            # range gate can't (run-6 poison).
+            if IDENT_ON and match_g is not None and best[3] is not None:
+                r_, p_, y_ = state['roll'], state['pitch'], state['yaw']
+                sr_, cr_ = math.sin(r_), math.cos(r_)
+                sp_, cp_ = math.sin(p_), math.cos(p_)
+                cy_, sy_ = math.cos(y_), math.sin(y_)
+                Ry_ = np.array([[cp_, 0, sp_], [0, 1, 0], [-sp_, 0, cp_]])
+                Rx_ = np.array([[1, 0, 0], [0, cr_, -sr_], [0, sr_, cr_]])
+                Rz_ = np.array([[cy_, -sy_, 0], [sy_, cy_, 0], [0, 0, 1]])
+                R_wc_ = (Rz_ @ Ry_ @ Rx_) @ M_BODY_CAM
+                rel_ = (G1C - p_kf) @ R_wc_
+                n_match = 0
+                for k_ in range(min(len(best[2]), len(G1C))):
+                    if best[3][k_] < 0.5 or rel_[k_, 2] <= 0.2:
+                        continue
+                    uv_ = np.array([rel_[k_, 0] / rel_[k_, 2] * 226.0 + 319.5,
+                                    rel_[k_, 1] / rel_[k_, 2] * 226.0 + 179.5])
+                    if np.linalg.norm(uv_ - best[2][k_]) < 60.0:
+                        n_match += 1
+                is_g1 = n_match >= 2
+                bad = ((match_g is G1_W and not is_g1) or
+                       (match_g is G2_W and not is_g1 and rng_meas < 18.0))
+                if bad:
+                    jlog('obs_ident_fail', ns=ns, n_match=n_match,
+                         miss=round(miss, 2), rng=round(rng_meas, 1))
+                    cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
+                    continue
             if OBS_POLICY == 'huber_area':
                 accepted = match_g is not None
                 r_scale = 1.0 if miss <= HUBER_DELTA else miss / HUBER_DELTA
