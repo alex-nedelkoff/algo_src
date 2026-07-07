@@ -90,6 +90,7 @@ class FusionConfig:
     # "G2 matches" while flying the G1 leg are hallucination escapes.
     ident_strict: bool = False
     ident_far_ok: float = 18.0
+    ident_full_weight: bool = True
 
 
 @dataclass
@@ -359,6 +360,13 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                     if np.linalg.norm(uv - d_corners[k]) < cfg.ident_px:
                         n_match += 1
                 is_g1 = n_match >= cfg.ident_min_corners
+                if is_g1 and cfg.ident_full_weight:
+                    # content-confirmed obs: huber's miss-based distrust is
+                    # estimate-referenced and soft-pedals exactly the fixes
+                    # that rescue a drifted filter (run-6/8 approach misses).
+                    # Identity replaces it: full weight.
+                    r_scale = 1.0
+                    ev["r_scale"] = 1.0
                 if j == 0 and not is_g1:
                     ev["stage"] = "corner_ident_reject"
                     res.obs_events.append(ev)

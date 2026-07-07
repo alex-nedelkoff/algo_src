@@ -377,6 +377,7 @@ def _det_loop():
             with KF_LOCK:
                 p_kf = KF.p.copy()
             rng_meas = float(np.linalg.norm(g_lvl))
+            ident_full = False
             miss, match_g = 1e9, None
             for gw_map in (G1_W, G2_W):
                 if OBS_POLICY == 'huber_area':
@@ -422,6 +423,8 @@ def _det_loop():
                     if np.linalg.norm(uv_ - best[2][k_]) < 60.0:
                         n_match += 1
                 is_g1 = n_match >= 2
+                if is_g1:
+                    ident_full = True   # content-confirmed: full-weight fix below
                 bad = ((match_g is G1_W and not is_g1) or
                        (match_g is G2_W and not is_g1 and rng_meas < 18.0))
                 if bad:
@@ -432,6 +435,12 @@ def _det_loop():
             if OBS_POLICY == 'huber_area':
                 accepted = match_g is not None
                 r_scale = 1.0 if miss <= HUBER_DELTA else miss / HUBER_DELTA
+                if ident_full:
+                    # identity-confirmed G1: huber's miss-based distrust is
+                    # estimate-referenced and soft-pedals the very fixes that
+                    # rescue a drifted filter (run-6/8 lateral miss). Content
+                    # beats miss: full weight.
+                    r_scale = 1.0
             else:  # legacy radius gate
                 accepted = miss <= ACCEPT_R
                 r_scale = 1.0
