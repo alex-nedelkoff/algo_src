@@ -428,8 +428,20 @@ def _det_loop():
                 bad = ((match_g is G1_W and not is_g1) or
                        (match_g is G2_W and not is_g1 and rng_meas < 18.0))
                 if bad:
+                    dists_ = []
+                    for k_ in range(min(len(best[2]), len(G1C))):
+                        if rel_[k_, 2] <= 0.2:
+                            dists_.append(None); continue
+                        uv_ = np.array([rel_[k_, 0] / rel_[k_, 2] * 226.0 + 319.5,
+                                        rel_[k_, 1] / rel_[k_, 2] * 226.0 + 179.5])
+                        dists_.append(round(float(np.linalg.norm(uv_ - best[2][k_])), 1))
                     jlog('obs_ident_fail', ns=ns, n_match=n_match,
-                         miss=round(miss, 2), rng=round(rng_meas, 1))
+                         miss=round(miss, 2), rng=round(rng_meas, 1),
+                         p=p_kf.round(2).tolist(),
+                         rpy=[round(math.degrees(r_), 1), round(math.degrees(p_), 1),
+                              round(math.degrees(y_), 1)],
+                         vis=[round(float(v), 2) for v in best[3]],
+                         dists=dists_)
                     cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
                     continue
             if OBS_POLICY == 'huber_area':
