@@ -357,7 +357,8 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                         continue
                     uv = np.array([rel[k, 0] / rel[k, 2] * 226.0 + 319.5,
                                    rel[k, 1] / rel[k, 2] * 226.0 + 179.5])
-                    if np.linalg.norm(uv - d_corners[k]) < cfg.ident_px:
+                    tol = cfg.ident_px * 11.0 / max(rng, 3.0)  # angular-constant
+                    if np.linalg.norm(uv - d_corners[k]) < tol:
                         n_match += 1
                 is_g1 = n_match >= cfg.ident_min_corners
                 if is_g1 and cfg.ident_full_weight:

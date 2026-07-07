@@ -427,7 +427,8 @@ def _det_loop():
                         continue
                     uv_ = np.array([rel_[k_, 0] / rel_[k_, 2] * 226.0 + 319.5,
                                     rel_[k_, 1] / rel_[k_, 2] * 226.0 + 179.5])
-                    if np.linalg.norm(uv_ - best[2][k_]) < 60.0:
+                    tol_ = 60.0 * 11.0 / max(rng_meas, 3.0)  # angular-constant
+                    if np.linalg.norm(uv_ - best[2][k_]) < tol_:
                         n_match += 1
                 is_g1 = n_match >= 2
                 if is_g1:
