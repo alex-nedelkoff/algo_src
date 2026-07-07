@@ -34,6 +34,10 @@ GATES = (
 )
 ACCEPT_R = 3.0  # xy radius for matching an obs to a map gate (as in vq2wp)
 
+import os as _os
+_G1C = _os.path.join(_os.path.dirname(__file__), "g1_corners_world.npy")
+G1_CORNERS_W = np.load(_G1C) if _os.path.exists(_G1C) else None
+
 
 @dataclass
 class FusionConfig:
@@ -70,6 +74,22 @@ class FusionConfig:
     # / tight corner updates, playbook 0.3 -- is the real fix. Kept as an
     # off-by-default bench knob.) Nose-up beyond this (rad) vetoes obs.
     pitch_veto: float = 0.0
+    # constellation identity veto (corner map): an obs matched to G1 must
+    # have >=2 high-visibility detected corners landing within ident_px of
+    # the projected corner map, else it cannot be G1 (truss/fixture solves
+    # fail this regardless of range/miss). Pose fixes stay the update;
+    # corners are the ID check (07-06 decision: detector corner noise
+    # ~24 px ~= pose-fix accuracy, so identity is the win, not accuracy).
+    corner_ident: bool = False
+    ident_px: float = 60.0
+    ident_min_corners: int = 2
+    ident_min_vis: float = 0.5
+    # strict mode: pre-G1-tick course context -- any obs that is NOT
+    # positively identified as G1 (and is not a genuinely far G2 sighting,
+    # rng > ident_far_ok) is vetoed. G2 has no corner map yet; near-range
+    # "G2 matches" while flying the G1 leg are hallucination escapes.
+    ident_strict: bool = False
+    ident_far_ok: float = 18.0
 
 
 @dataclass
@@ -186,7 +206,7 @@ def drag_velocity_update(kf, s, R_wb, cfg) -> bool:
 
 
 def _detection_events(c, bridge_off):
-    """[(t_boot_s, g_cam (3,)) ...] for solved, confident, usable insts."""
+    """[(t_boot_s, g_cam (3,), corners (8,2)|None, vis (8,)|None) ...]."""
     ev = []
     for d in c.detections:
         for inst in d.insts:
@@ -195,7 +215,11 @@ def _detection_events(c, bridge_off):
             t_cam = inst.get("t_cam")
             if not t_cam:
                 continue
-            ev.append((d.sim_ns / 1e9 + bridge_off, np.asarray(t_cam, float)))
+            cx = inst.get("corner_xy")
+            vis = inst.get("visibility")
+            ev.append((d.sim_ns / 1e9 + bridge_off, np.asarray(t_cam, float),
+                       np.asarray(cx, float) if cx else None,
+                       np.asarray(vis, float) if vis else None))
     ev.sort(key=lambda e: e[0])
     return ev
 
@@ -279,7 +303,7 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
 
         # detection events -> anchors (and optional position updates)
         while di < len(dets) and dets[di][0] <= t_boot:
-            t_d, g_cam = dets[di]
+            t_d, g_cam, d_corners, d_vis = dets[di]
             di += 1
             # at-rest exemption: the 18-deg spawn tilt would otherwise veto
             # the pad-lock obs -- the best anchors we get. Flare veto is an
@@ -321,6 +345,29 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
             if not ok_pol:
                 res.obs_events.append(ev)
                 continue
+            if (cfg.corner_ident and G1_CORNERS_W is not None
+                    and d_corners is not None and d_vis is not None):
+                R_wc = R_world_body(roll, pitch, yaw) @ M_BODY_CAM
+                rel = (G1_CORNERS_W - kf.p) @ R_wc
+                zok = rel[:, 2] > 0.2
+                n_match = 0
+                for k in range(min(len(d_corners), len(G1_CORNERS_W))):
+                    if d_vis[k] < cfg.ident_min_vis or not zok[k]:
+                        continue
+                    uv = np.array([rel[k, 0] / rel[k, 2] * 226.0 + 319.5,
+                                   rel[k, 1] / rel[k, 2] * 226.0 + 179.5])
+                    if np.linalg.norm(uv - d_corners[k]) < cfg.ident_px:
+                        n_match += 1
+                is_g1 = n_match >= cfg.ident_min_corners
+                if j == 0 and not is_g1:
+                    ev["stage"] = "corner_ident_reject"
+                    res.obs_events.append(ev)
+                    continue
+                if (cfg.ident_strict and not is_g1
+                        and not (j == 2 and rng > cfg.ident_far_ok)):
+                    ev["stage"] = "corner_ident_reject"
+                    res.obs_events.append(ev)
+                    continue
             p_vis = p_vis_cands[j]
             res.anchors.append({
                 "t_boot_s": t_d,
