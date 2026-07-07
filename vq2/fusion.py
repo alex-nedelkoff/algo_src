@@ -55,6 +55,11 @@ class FusionConfig:
     deny_vision: tuple | None = None
     # quiescent-gated complementary attitude correction (see AttitudeTracker)
     att_cf_gain: float = 0.0
+    # obs acceptance policy: 'radius' = legacy binary ACCEPT_R gate;
+    # 'huber' = never discard a matched obs, inflate R with miss instead
+    # (ADR-VINS/MonoRace pattern -- keeps the filter correctable at any drift)
+    accept_policy: str = "radius"
+    huber_delta: float = 1.5   # m: miss below this gets full weight
 
 
 @dataclass
@@ -66,6 +71,9 @@ class FusionResult:
     flow_updates: int = 0
     flow_rejects: int = 0
     a_w_xy: list = field(default_factory=list)  # gravity-leak diagnostic
+    # obs waterfall: one event per detection, stage in
+    # {policy_reject, maha_reject, accepted} (+ nis/innovation when updated)
+    obs_events: list = field(default_factory=list)
 
 
 GRAVITY = 9.81
@@ -111,6 +119,24 @@ class AttitudeTracker:
                     self.roll += self.cf_gain * (r_a - self.roll)
                     self.pitch += self.cf_gain * (p_a - self.pitch)
         self._last_us = s.t_us
+
+
+def radius_policy(miss: float, rng: float):
+    """Legacy binary gate: accept iff within ACCEPT_R of the estimate.
+    THE documented failure mode: >3 m drift = uncorrectable filter."""
+    return miss <= ACCEPT_R, 1.0
+
+
+def huber_policy(miss: float, rng: float, delta: float = 1.5):
+    """Never discard a matched obs; inflate measurement sigma linearly with
+    miss beyond delta. Far-off vision becomes a soft pull instead of noise --
+    the filter can always be walked back (ADR-VINS/MonoRace)."""
+    if miss <= delta:
+        return True, 1.0
+    return True, miss / delta
+
+
+POLICIES = {"radius": radius_policy, "huber": huber_policy}
 
 
 def drag_velocity_update(kf, s, R_wb, cfg) -> bool:
@@ -234,22 +260,40 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
             p_vis_cands = [np.asarray(g) - g_w for g in cfg.gate_map]
             errs = [np.linalg.norm((pv - kf.p)[:2]) for pv in p_vis_cands]
             j = int(np.argmin(errs))
-            if errs[j] > ACCEPT_R:
+            miss = float(errs[j])
+            if cfg.accept_policy == "huber":
+                ok_pol, r_scale = huber_policy(miss, rng, cfg.huber_delta)
+            else:
+                ok_pol, r_scale = radius_policy(miss, rng)
+            ev = {"t_boot_s": t_d, "rng": rng, "miss": miss, "gate": j,
+                  "r_scale": r_scale, "stage": "policy_reject"}
+            if not ok_pol:
+                res.obs_events.append(ev)
                 continue
             p_vis = p_vis_cands[j]
             res.anchors.append({
                 "t_boot_s": t_d,
                 "p_vision": p_vis.copy(),
                 "p_est": kf.p.copy(),
-                "err_xy": float(np.linalg.norm((p_vis - kf.p)[:2])),
+                "err_xy": miss,
                 "range": rng,
             })
             denied = (cfg.deny_vision is not None
                       and cfg.deny_vision[0] <= t_d <= cfg.deny_vision[1])
             if cfg.use_vision_pos and not denied:
-                kf.update_position(
-                    np.array([p_vis[0], p_vis[1], kf.p[2]]), rng
+                ok = kf.update_position(
+                    np.array([p_vis[0], p_vis[1], kf.p[2]]), rng,
+                    r_scale=r_scale,
                 )
+                ev["stage"] = "accepted" if ok else "maha_reject"
+                if getattr(kf, "last_nis", None) is not None:
+                    ev["nis"] = float(kf.last_nis)
+                    ev["innovation_xy"] = [float(kf.last_innovation[0]),
+                                           float(kf.last_innovation[1])]
+            else:
+                ev["stage"] = "accepted"  # scored as anchor; no update path
+                ev["nis"] = float("nan")
+            res.obs_events.append(ev)
 
         res.t_s.append(t_boot)
         res.p.append(kf.p.copy())

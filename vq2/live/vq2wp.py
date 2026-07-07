@@ -48,6 +48,7 @@ if REC_DIR:
     os.makedirs(REC_DIR + '/frames', exist_ok=True)
     rec_mav = open(REC_DIR + '/mavlink.jsonl', 'w')
     rec_frames = open(REC_DIR + '/frames_dedup.jsonl', 'w')
+    rec_cmd = open(REC_DIR + '/cmds.jsonl', 'w')
 CKPT = r'C:\Users\alexj\gatenet_b2_cov.pt'
 CFG = r'C:\Users\alexj\Documents\algo_src_main\configs\perception\gatenet_b2_multi_pb_cov.yaml'
 
@@ -421,6 +422,12 @@ def send_rate(rr, pr, yr, thr):
         int(time.time()*1000) & 0xFFFFFFFF, m.target_system, m.target_component,
         mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE,
         [1.0, 0, 0, 0], rr, pr, yr, thr)
+    if REC_DIR:
+        # command log for flight_report control metrics (saturation duty,
+        # hover balance, cmd-vs-achieved rate transfer). ~40 B x 50 Hz.
+        rec_cmd.write(json.dumps({'t': time.time(), 'rr': round(rr, 4),
+                                  'pr': round(pr, 4), 'yr': round(yr, 4),
+                                  'thr': round(thr, 4)}) + '\n')
 
 def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0, yr=0.0):
     roll_ref = max(-0.25, min(0.25, -K_V * (state['vy_b'] - vy_ref)))
