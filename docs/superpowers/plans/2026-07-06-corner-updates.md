@@ -117,3 +117,22 @@ residual. Chi2 gate per corner at 5.99 (2 dof, 95%).
 - Then: gates3d.GATE_CORNERS['G1'] = level-derived world corners (8 pts,
   use head pairs individually w/ their own sigmas); ground-truth test
   un-xfail; eskf.update_pixel; fusion corner path; bench.
+
+## Anchor-construction findings (07-06 last probes)
+- Single-solve anchors don't generalize (per-solve PnP wobble 0.3-0.7 m ->
+  42 px). Cross-frame triangulation fails without identity (mixes gates).
+  Pad-window constructions bottom out at the DATA noise floor: pad corner
+  detections scatter 10 px; bottom corners low-visibility (0.02-0.77) and
+  bias below floor; cross-validated reprojection ~24 px p50 ~= 1 m at
+  10 m == solved-pose fix accuracy (sigma 0.35+0.06r).
+- DECISION INPUT: corner updates will NOT beat pose fixes on accuracy with
+  this detector. Their value = (1) constellation IDENTITY (veto truss
+  solves + wrong-gate matches -- the actual blocker), (2) partial-view
+  updates inside the <6 m blind zone (2-3 corners visible), (3) per-corner
+  visibility weighting. Build the IDENTITY layer first (project pad-ray
+  corner map, match constellation, veto non-fitting instances) and keep
+  POSE fixes as the update -- corner-innovation updates only if identity
+  alone doesn't unlock G1.
+- Current best corner map: g1_corners_world.npy (pad-ray, x-plane 9.1;
+  top corners solid, bottom corners weak). Use visibility-weighted match:
+  require >=2 corners with vis>0.5 matching within 60 px.
