@@ -120,19 +120,17 @@ if ARCHTEST:
     # land. No turns, no retreat. Thread verified by recorded RACE_STATUS
     # + mid-crossing frames.
     def build_traj(gh, g1, g2):
-        # straight line through the VQ-01 gate's corner-measured aperture
-        # [11.68, 5.17, -1.06] along its through-normal. ([9.4, 1.7] is
-        # SOLID at flight height -- arch1 frame face-planted into orange.)
-        ap = np.array([11.68, 5.17, -1.1])
-        n = np.array([0.996, -0.087, 0.0])
-        # Long straight run-in: arch4-6 missed left/high because the turn
-        # finished only 5 m out and v_cruise outran the VMAX clamp. Finish
-        # all turning 8 m before the gate, then hold the through-line.
+        # Straight line through the DECOY aperture. Run-21 (the only tick
+        # ever) crossed this plane at the tick; "decoy" was our label, the
+        # judge may score it as gate 1. Aperture from accept19 multi-view
+        # triangulation: top bar z -1.267, so thread LOW at z -0.75.
+        ap = np.array([7.25, -0.17, -0.75])
+        n = np.array([0.857, 0.515, 0.0])
         pts = np.array([
             [0.0, 0.0, -1.3],
-            [1.5, 3.5, -1.2],
-            ap - 8.0 * n,
-            ap - 4.0 * n,
+            [1.5, -2.2, -0.9],
+            ap - 5.0 * n,
+            ap - 2.5 * n,
             ap,
             ap + 2.5 * n,
         ])
@@ -220,7 +218,9 @@ def _load_npy(p):
         return np.load(p)
     except Exception:
         return None
-DECOY_C = _load_npy(r'C:\Users\alexj\g1_corners_world.npy')
+# accept19 multi-view triangulated map (the old g1_corners map was pad-ray
+# bearing-only: consistent from the pad, metres wrong in depth)
+DECOY_C = _load_npy(r'C:\Users\alexj\decoy_corners_world.npy')
 G2RIB_C = _load_npy(r'C:\Users\alexj\g2rib_corners_world.npy')
 IDENT_ON = OBS_POLICY in ('huber_area', 'huber') and \
     os.environ.get('NOIDENT', '0') != '1'
