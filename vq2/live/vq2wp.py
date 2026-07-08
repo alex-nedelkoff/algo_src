@@ -137,11 +137,13 @@ if ARCHTEST:
         arch = np.array([7.25, -0.17, -0.75])
         na = np.array([0.857, 0.515, 0.0])
         gate = np.array([11.68, 5.17, -1.06])
+        # approach on accept19's LEFT-side line: the right-side approach
+        # (y -2 .. -2.7) is outside the start-light corridor and clipped
+        # furniture at x 4-6 on 2/3 runs (arch20/21, imp 2.6/3.1)
         pts = np.array([
             [0.0, 0.0, -1.3],
-            [1.5, -2.2, -0.9],
-            arch - 5.0 * na,
-            arch - 2.5 * na,
+            [3.5, 0.6, -0.9],
+            [5.5, 0.2, -0.8],
             arch,
             arch + 2.5 * na,
             [10.5, 3.0, -1.0],
@@ -479,6 +481,14 @@ def _det_loop():
             with KF_LOCK:
                 p_kf = KF.p.copy()
             rng_meas = float(np.linalg.norm(g_lvl))
+            if ARCHTEST and rng_meas > 14.0:
+                # the verification course is <= 14 m end to end; far solves
+                # are hangar junk, and huber's inflate-don't-discard walked
+                # the KF into a pillar on them (arch19: miss 8-21 accepted
+                # at ranges 22-39 m)
+                jlog('obs_far_archtest', ns=ns, rng=round(rng_meas, 1))
+                cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
+                continue
             ident_full = False
             miss, match_g = 1e9, None
             for gw_map in (G1_W, RIB_W, G2_W, DECOY_W):
