@@ -155,13 +155,28 @@ class AttitudeTracker:
     trim_err_max: float = 0.12      # rad sanity clamp
     _win: list = field(default_factory=list)
 
+    euler_coupled: bool = False   # full Euler-rate transform (turning flight)
+
     def update(self, s) -> None:
         if self._last_us is not None and s.t_us > self._last_us:
             dt = (s.t_us - self._last_us) / 1e6
             gx, gy, gz = s.gyr
-            self.roll += gx * dt
-            self.pitch += -gy * dt   # wfix (vq2wp.py:203)
-            self.yaw += -gz * dt     # wfix (vq2wp.py:204)
+            if self.euler_coupled:
+                # naive per-axis integration is only valid when rates don't
+                # couple; a sustained TURN (yaw rate x nonzero roll/pitch)
+                # needs the Euler kinematic transform. wfix body rates:
+                # p=gx, q=-gy, r=-gz.
+                p_, q_, r_ = gx, -gy, -gz
+                sr, cr = math.sin(self.roll), math.cos(self.roll)
+                tp = math.tan(self.pitch)
+                cp = max(0.2, math.cos(self.pitch))
+                self.roll += (p_ + sr * tp * q_ + cr * tp * r_) * dt
+                self.pitch += (cr * q_ - sr * r_) * dt
+                self.yaw += ((sr * q_ + cr * r_) / cp) * dt
+            else:
+                self.roll += gx * dt
+                self.pitch += -gy * dt   # wfix (vq2wp.py:203)
+                self.yaw += -gz * dt     # wfix (vq2wp.py:204)
             if self.trim_gain > 0.0:
                 gm = max(abs(gx), abs(gy), abs(gz))
                 an = math.sqrt(sum(a * a for a in s.acc))
