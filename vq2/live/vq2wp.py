@@ -76,7 +76,8 @@ TARGET_TICKS = int(os.environ.get('TICKS', '1'))  # prove ONE tick first; TICKS=
 # point in EMPTY SPACE behind the gate -- every "crossing" transited the
 # real aperture plane (x ~ 9.1, triangulated corner map) un-aimed.
 # Fly at G1_AP; keep G1_W for obs-derived map matching.
-ORIGIN_OFFSET = 1.9   # gate-frame origin sits this far behind the aperture plane
+ORIGIN_OFFSET = 0.0   # affine range correction (RANGE_AFF_*) already
+                      # references ranges to the APERTURE plane
 # QUALIFIER COURSE RE-MAP (07-07, VQ2-COURSE-01): the ribbon's gate 1 is at
 # [26.9, 8.6] (191 georeferenced obs, dominant cluster; confirmed visually --
 # the ribbon threads it). The [11, 0] object is a DECOY the ribbon bypasses;
@@ -85,20 +86,21 @@ ORIGIN_OFFSET = 1.9   # gate-frame origin sits this far behind the aperture plan
 # PHYSICAL structure is at [11.7, 5.2] -- the [26.9,8.6] cluster was the
 # PnP origin's far-projection (origin-offset illusion at range). Aperture
 # centroid [11.68, 5.17, -1.06], face along y => through-normal ~ +x.
-N1 = np.array([0.996, -0.087, 0.0]); N1 /= np.linalg.norm(N1)
-G1_W = np.array([26.9, 8.6, -1.3])    # obs-ORIGIN anchor (matching only)
-G1_AP = np.array([11.68, 5.17, -1.1]) # measured aperture centroid
-# close-range obs-origin anchor for the SAME gate: PnP measures the gate
-# frame origin ~1.9 m behind the visible aperture, and at 5-7 m out the
-# far-projected G1_W cluster fails the range-ratio gate (0.33 < 0.55), so
-# a dead-ahead ribbon-gate obs matched NOTHING (arch13-15: gate in view at
-# arch exit, state['obs'] never set, approach handoff never fired)
-RIB_W = G1_AP + 1.9 * N1
+# COURSE MAP v2 (07-08, VQ2-SCALE-01): the old map ([11.68,5.17] gate,
+# [26.9,8.6] cluster, [7.25,-0.17] arch) was built from UNCORRECTED PnP
+# ranges (4/3 scale + ~2.7 m origin offset baked in) -- inflated ~2x and
+# bent. Raw-IMU truth, replicated on arch33 + accept19: gate 1 sits
+# straight down the start chute, ~5.9 m from the pad. Frames: glowing
+# start corridor, green lights, gate dead ahead.
+N1 = np.array([1.0, 0.0, 0.0])
+G1_AP = np.array([5.9, 0.9, -1.1])    # official inner aperture 1.5 m sq,
+                                      # center ~1.35 m up; fly z -1.1
+G1_W = G1_AP.copy()                   # corrected ranges are aperture-referenced
+RIB_W = G1_AP.copy()
 HIGH_W = G1_AP.copy()                 # route/punch aim point
-G2_W = np.array([44.8, 1.9, -1.5])    # provisional downstream cluster
-DECOY_W = np.array([10.97, -0.11, -1.3])  # non-course gate: NAV LANDMARK ONLY
-#                     (122-obs cluster; reliable close-range position fixes
-#                      on the way out -- never a target, never sets tgt/lock)
+G2_W = np.array([31.6, 1.4, -1.5])    # old [44.8,1.9] descaled (provisional)
+DECOY_W = np.array([100.0, 100.0, -1.3])  # RETIRED: old arch anchor, scale-stale;
+                                          # parked far away so nothing matches it
 N2 = N1.copy()
 GATES_W = [HIGH_W, G2_W, G2_W]
 THRU = [N1, N2, N2]
@@ -126,39 +128,27 @@ if ARCHTEST:
     # land. No turns, no retreat. Thread verified by recorded RACE_STATUS
     # + mid-crossing frames.
     def build_traj(gh, g1, g2):
-        # accept19's tick geometry, deliberately: through the START ARCH
-        # (aperture [7.25, -0.17], top bar z -1.267 -- thread low), then
-        # curve left into the RIBBON GATE at [11.68, 5.17, -1.06]. Frame
-        # forensics at the exact judge tick (race clock 19.16 s) show the
-        # drone passing THIS gate; the arch alone scored nothing (3/3
-        # clean passes, gate_idx frozen). Arch passage keeps the decoy
-        # corner map in view; after the arch the ribbon gate fills the
-        # frame, so vision holds through the crossing.
-        arch = np.array([7.25, -0.17, -0.75])
-        na = np.array([0.857, 0.515, 0.0])
-        gate = np.array([11.68, 5.17, -1.06])
-        # approach on accept19's LEFT-side line: the right-side approach
-        # (y -2 .. -2.7) is outside the start-light corridor and clipped
-        # furniture at x 4-6 on 2/3 runs (arch20/21, imp 2.6/3.1)
+        # COURSE MAP v2: straight down the start chute through gate 1's
+        # aperture (raw-IMU truth [5.9, 0.9], official 1.5 m sq inner,
+        # crossing z -1.1), carry 2 m, land. The chute frames (arch33
+        # -10 s) show exactly this line: green start lights both sides,
+        # gate dead ahead.
+        gate = G1_AP
         pts = np.array([
             [0.0, 0.0, -1.3],
-            [3.5, 0.6, -0.9],
-            [5.5, 0.2, -0.8],
-            arch,
-            arch + 2.5 * na,
-            [10.5, 3.0, -1.0],
+            [2.0, 0.3, -1.2],
+            gate - 2.0 * N1,
             gate,
-            gate + 2.0 * np.array([0.996, -0.087, 0.0]),
+            gate + 2.0 * N1,
         ])
         tr = GateTrajectory(pts, v_cruise=0.6, phi_max_deg=15.0,
                             tilt_budget_deg=12.0, vz_max=0.55)
         return tr, [tr.nearest_s(gate), tr.s_max, tr.s_max]
 
 TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
-# ARCHTEST acquisition zone: past the start arch the ribbon gate must be
-# found VISUALLY before the map+DR carrot walks the true path out of the
-# gate corridor (yaw drift rotates the commanded velocity; 9 straight misses)
-ARCH_SWEEP_S = TRAJ.nearest_s(np.array([9.39, 1.12, -0.9])) if ARCHTEST else 1e9
+# ARCHTEST perception-aware zone: whole chute (straight course, gate in
+# view from early on with corrected ranges)
+ARCH_SWEEP_S = TRAJ.nearest_s(np.array([1.5, 0.2, -1.2])) if ARCHTEST else 1e9
 
 # ---- Rerun live dashboard (best-effort: never raises into the control loop) ----
 MAC_VIEWER = 'rerun+http://100.101.13.126:9876/proxy'   # Mac over Tailscale (VQ1 convention)
@@ -246,7 +236,16 @@ IDENT_ON = OBS_POLICY in ('huber_area', 'huber') and \
     os.environ.get('NOIDENT', '0') != '1'
 HUBER_DELTA = 1.5               # m: miss below this = full-weight fix
 RANGE_RATIO_MIN = 0.55          # identity gate (see det_loop comment)
-RANGE_SCALE = 1.00              # gates are VQ1-size (Alex): PnP ranges are TRUE; the KF under-integrates instead
+# AFFINE RANGE CORRECTION (07-08, VQ2-SCALE-01): the 07-05 "ranges are
+# TRUE / KF under-integrates" call was backwards. Official qualifier gate
+# inner aperture = 1.5 m; the PnP solver assumes the VQ1 2.0 m aperture,
+# so ranges read 4/3 too long, plus the solver's gate-frame origin sits
+# ~2.7 m (assumed-scale) behind the aperture. Regressed on arch33
+# (straight chute, raw-IMU truth: pnp = 1.30*true + 2.9) and accept19
+# (129 tracked pairs: 1.40*true + 3.41), k pinned to the exact 4/3:
+#     true_aperture_range = (pnp_range - 2.7) * 0.75
+RANGE_AFF_B = 2.7
+RANGE_AFF_K = 0.75
 
 # camera axes in body frame (nose camera, 20 deg up -- flight-validated 07-06)
 ct, st = math.cos(CAM_TILT), math.sin(CAM_TILT)
@@ -430,8 +429,9 @@ def _det_loop():
                         np.asarray(dec.visibility, float)
                         if dec.visibility is not None else None)
         if best is not None:
-            best = (best[0], best[1] * RANGE_SCALE, best[2], best[3])   # GateNet range bias: PnP assumes VQ1 gate size;
-                                                      # qualifier gates are smaller (Alex free-cam 07-05)
+            rng_pnp = float(np.linalg.norm(best[1]))
+            rng_true = max(0.3, (rng_pnp - RANGE_AFF_B) * RANGE_AFF_K)
+            best = (best[0], best[1] * (rng_true / rng_pnp), best[2], best[3])
         if best is not None and state['nav_ready']:
             # nav_ready gates the whole chain: frames rendered DURING the sim
             # reset produced a false pin (flight #8, [7.95,-1.77]) that blew up
