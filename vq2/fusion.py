@@ -91,6 +91,13 @@ class FusionConfig:
     ident_strict: bool = False
     ident_far_ok: float = 18.0
     ident_full_weight: bool = True
+    # constellation-attitude correction: identity-confirmed corner pairs
+    # observe roll (constellation rotation) and pitch (vertical offset)
+    # directly -- the absolute attitude reference the IMU chain lacks
+    # (gap-error random walk ~degrees/flight; 1 deg = 0.17 m/s^2 phantom
+    # lateral force that both causes the drift and hides it from DR).
+    att_vision_gain: float = 0.0
+    att_vision_min_corners: int = 3
 
 
 @dataclass
@@ -102,6 +109,7 @@ class FusionResult:
     flow_updates: int = 0
     flow_rejects: int = 0
     a_w_xy: list = field(default_factory=list)  # gravity-leak diagnostic
+    att_rpy: list = field(default_factory=list)  # attitude timeline (bench)
     # obs waterfall: one event per detection, stage in
     # {policy_reject, maha_reject, accepted} (+ nis/innovation when updated)
     obs_events: list = field(default_factory=list)
@@ -170,6 +178,8 @@ def huber_policy(miss: float, rng: float, delta: float = 1.5):
 POLICIES = {"radius": radius_policy, "huber": huber_policy}
 
 RANGE_RATIO_MIN = 0.55   # min(rng_m/rng_e, rng_e/rng_m) below this = not that gate
+ATT_VIS_SIGN_R = 1.0   # calibrated by bench bias-injection (see test)
+ATT_VIS_SIGN_P = 1.0
 
 
 def range_identity_ok(rng_meas: float, rng_expected: float) -> bool:
@@ -282,6 +292,7 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                         syw * a_lvl[0] + cyw * a_lvl[1], a_lvl[2]])
         kf.predict(a_w, dt)
         res.a_w_xy.append(a_w[:2].copy())
+        res.att_rpy.append((roll, pitch, yaw))
 
         if cfg.use_drag:
             drag_velocity_update(kf, s, R_world_body(roll, pitch, yaw), cfg)
@@ -360,6 +371,34 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                     tol = cfg.ident_px * 11.0 / max(rng, 3.0)  # angular-constant
                     if np.linalg.norm(uv - d_corners[k]) < tol:
                         n_match += 1
+                # constellation-attitude residual from matched pairs
+                if cfg.att_vision_gain > 0.0:
+                    P_uv = []; D_uv = []
+                    for k in range(min(len(d_corners), len(G1_CORNERS_W))):
+                        if d_vis[k] < cfg.ident_min_vis or not zok[k]:
+                            continue
+                        uvp = np.array([rel[k, 0] / rel[k, 2] * 226.0 + 319.5,
+                                        rel[k, 1] / rel[k, 2] * 226.0 + 179.5])
+                        tol = cfg.ident_px * 11.0 / max(rng, 3.0)
+                        if np.linalg.norm(d_corners[k] - uvp) >= tol:
+                            continue
+                        P_uv.append(uvp); D_uv.append(d_corners[k])
+                    if len(P_uv) >= cfg.att_vision_min_corners:
+                        P_uv = np.asarray(P_uv); D_uv = np.asarray(D_uv)
+                        # joint translation+rotation fit (translation absorbs
+                        # position error so it cannot alias into roll): after
+                        # centroid removal, rotation angle = atan2 of cross/dot
+                        Pc = P_uv - P_uv.mean(axis=0)
+                        Dc = D_uv - D_uv.mean(axis=0)
+                        cross = float(np.sum(Pc[:, 0] * Dc[:, 1] - Pc[:, 1] * Dc[:, 0]))
+                        dot = float(np.sum(Pc[:, 0] * Dc[:, 0] + Pc[:, 1] * Dc[:, 1]))
+                        if dot > 1.0:
+                            droll_img = math.atan2(cross, dot)
+                            dpitch_img = float((D_uv - P_uv).mean(axis=0)[1]) / 226.0
+                            if abs(droll_img) < 0.06 and abs(dpitch_img) < 0.06:
+                                att.roll += cfg.att_vision_gain * ATT_VIS_SIGN_R * droll_img
+                                att.pitch += cfg.att_vision_gain * ATT_VIS_SIGN_P * dpitch_img
+                                roll, pitch = att.roll, att.pitch
                 is_g1 = n_match >= cfg.ident_min_corners
                 if is_g1 and cfg.ident_full_weight:
                     # content-confirmed obs: huber's miss-based distrust is
