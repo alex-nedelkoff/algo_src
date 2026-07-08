@@ -97,10 +97,11 @@ def build_traj(gh, g1, g2):
     """Spline: climb to the high gate, controlled-sink dive to the red gate,
     then level run to G2. vz_max caps the descent rate (VQ1 controlled-sink)."""
     pts = np.array([
-        [0.0, 0.0, -1.3],           # straight through the start-pole gap first
-        [6.2, 0.1, -1.3],           # JUDGE GATE 1 (run-21 tick position) --
-        [8.0, 0.6, -1.3],           #   thread it deliberately, exit straight
-        [12.0, 3.5, -1.35],         # veer right toward the ribbon's gate
+        [0.0, 0.0, -1.3],
+        [3.0, 1.2, -1.3],           # bear right off the pad
+        [6.5, 2.85, -1.3],          # JUDGE GATE 1 = THE START ARCH (tick-run
+        [9.0, 3.9, -1.3],           #   frames + tick fix at [6.46, 2.85])
+        [13.0, 5.3, -1.35],         # follow the ribbon's right-hand curve
         gh - 4.0 * N1,              # line up along the gate normal
         gh,                         # aperture aim point
         gh + 2.5 * N1,              # carry through the plane
