@@ -86,6 +86,9 @@ G1_W = np.array([26.9, 8.6, -1.3])    # obs anchor (gate-frame origin)
 G1_AP = G1_W - ORIGIN_OFFSET * N1     # aperture plane aim point
 HIGH_W = G1_AP.copy()                 # route/punch aim point
 G2_W = np.array([44.8, 1.9, -1.5])    # next dominant cluster downstream
+DECOY_W = np.array([10.97, -0.11, -1.3])  # non-course gate: NAV LANDMARK ONLY
+#                     (122-obs cluster; reliable close-range position fixes
+#                      on the way out -- never a target, never sets tgt/lock)
 N2 = N1.copy()
 GATES_W = [HIGH_W, G2_W, G2_W]
 THRU = [N1, N2, N2]
@@ -399,7 +402,11 @@ def _det_loop():
             # every fix after). IN FLIGHT the per-run obs-z bias (-0.6..-4.9)
             # puts LEGIT gates past any tight bound (a 2.5 guard starved
             # run 4 to 6 fixes/flight) -> keep the loose 8.0 there.
-            z_lim = 8.0 if state.get('airborne') else 2.0
+            _rng0 = float(np.linalg.norm(g_lvl))
+            # pad guard scales with range: the course gate at ~28 m carries a
+            # range-scaled obs-z bias the flat 2.0 (tuned on the 11 m decoy)
+            # would reject
+            z_lim = 8.0 if state.get('airborne') else max(2.0, 0.12 * _rng0)
             if abs(g_lvl[2]) > z_lim:
                 jlog('obs_insane', ns=ns, g_lvl=g_lvl.round(3).tolist())
                 cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
@@ -420,7 +427,7 @@ def _det_loop():
             rng_meas = float(np.linalg.norm(g_lvl))
             ident_full = False
             miss, match_g = 1e9, None
-            for gw_map in (G1_W, G2_W):
+            for gw_map in (G1_W, G2_W, DECOY_W):
                 if OBS_POLICY == 'huber_area':
                     rng_exp = float(np.linalg.norm((gw_map - p_kf)[:2]))
                     ratio = (min(rng_meas / max(rng_exp, 0.1),
@@ -521,6 +528,7 @@ def _det_loop():
                                             rng=rng_meas, r_scale=r_scale)
                     nis = getattr(KF, 'last_nis', None)
                     p_now = KF.p.round(2).tolist(); v_now = KF.v.round(2).tolist()
+                state['fix_count'] = state.get('fix_count', 0) + 1
                 jlog('kf_upd', ok=ok, miss=round(miss, 2),
                      r_scale=round(r_scale, 2),
                      nis=round(nis, 2) if nis is not None else None,
@@ -545,6 +553,10 @@ def _det_loop():
                             KF.update_velocity(np.array([v_meas[0], v_meas[1], KF.v[2]]),
                                                sigma=0.7)
                 state['_vv_prev'] = (g_w.copy(), t_now, match_g)
+                if match_g is DECOY_W:
+                    # landmark fix only: never target the decoy
+                    cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
+                    continue
                 state['obs'] = g_lvl
                 state['obs_wall'] = time.time()
                 state['tgt'] = g_lvl.copy()
@@ -625,20 +637,25 @@ print(f'post-reset pitch {math.degrees(state["pitch"]):.1f} gate_idx {gate0_idx}
 
 # PAD ACQUISITION: lock gate 1 from the spawn tilt before takeoff
 pad_t0 = time.time()
-while state['obs'] is None and time.time() - pad_t0 < 15.0:
+while (state['obs'] is None and state.get('fix_count', 0) < 3
+       and time.time() - pad_t0 < 15.0):
     time.sleep(0.1)
-if state['obs'] is None:
+if state['obs'] is None and state.get('fix_count', 0) < 3:
     print('NO PAD ACQUISITION -- aborting before takeoff', flush=True)
     sys.exit(1)
-print(f'pad lock: g_lvl {state["obs"].round(2)} range {np.linalg.norm(state["obs"]):.1f} m', flush=True)
+if state['obs'] is not None:
+    print(f'pad lock: g_lvl {state["obs"].round(2)} range {np.linalg.norm(state["obs"]):.1f} m', flush=True)
+else:
+    print(f'pad vision alive via landmark fixes (n={state.get("fix_count",0)}) -- course gate not visible from pad', flush=True)
 
 # PER-FLIGHT ANCHOR (07-07): the pad measurement is bias-free (at rest,
 # attitude exact) -- anchor the spline aim AND the obs-matching anchor to
 # it instead of canned constants. Aperture = measured origin minus the
 # ORIGIN_OFFSET along the course axis; z stays map-verified -1.3.
-_pad = state['obs'].copy()
-_pad_w = np.array([float(_pad[0]), float(_pad[1]), -1.3])
-if np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
+_pad = state['obs'].copy() if state['obs'] is not None else None
+_pad_w = (np.array([float(_pad[0]), float(_pad[1]), -1.3])
+          if _pad is not None else None)
+if _pad_w is not None and np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
     # pad measurement confirms the mapped course gate: anchor to it
     G1_W = _pad_w
     G1_AP = G1_W - ORIGIN_OFFSET * N1
@@ -648,7 +665,7 @@ if np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
     state['next_gate_w'] = HIGH_W.copy()
     print(f'spline anchored to pad lock: aperture {G1_AP.round(2)} origin {G1_W.round(2)}', flush=True)
 else:
-    print(f'pad obs {_pad_w.round(2)} does not match course gate {G1_W.round(2)} -- flying the map', flush=True)
+    print('no course-gate pad obs -- flying the map', flush=True)
 
 m.mav.command_long_send(m.target_system, m.target_component,
     mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
