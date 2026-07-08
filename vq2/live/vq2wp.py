@@ -61,7 +61,7 @@ KP = 1.8
 K_V = 0.12
 CAM_TILT = math.radians(20.0)
 MISSION_S = 240.0
-TARGET_TICKS = 2                # qualifier: red gate + G2 = through the second gate
+TARGET_TICKS = int(os.environ.get('TICKS', '1'))  # prove ONE tick first; TICKS=2 chains to the next gate
 
 # ---- course map (frame = KF world: spawn origin, x downcourse, z down) ----
 # COURSE GEOMETRY (flight #21 frames + #5 pad detections): the judge counts
@@ -77,25 +77,31 @@ TARGET_TICKS = 2                # qualifier: red gate + G2 = through the second 
 # real aperture plane (x ~ 9.1, triangulated corner map) un-aimed.
 # Fly at G1_AP; keep G1_W for obs-derived map matching.
 ORIGIN_OFFSET = 1.9   # gate-frame origin sits this far behind the aperture plane
-G1_AP = np.array([9.1, 0.0, -1.3])
+# QUALIFIER COURSE RE-MAP (07-07, VQ2-COURSE-01): the ribbon's gate 1 is at
+# [26.9, 8.6] (191 georeferenced obs, dominant cluster; confirmed visually --
+# the ribbon threads it). The [11, 0] object is a DECOY the ribbon bypasses;
+# every prior 'crossing' threaded it perfectly for zero points.
+N1 = np.array([0.95, 0.2, 0.0]); N1 /= np.linalg.norm(N1)   # gate-1 through-normal
+G1_W = np.array([26.9, 8.6, -1.3])    # obs anchor (gate-frame origin)
+G1_AP = G1_W - ORIGIN_OFFSET * N1     # aperture plane aim point
 HIGH_W = G1_AP.copy()                 # route/punch aim point
-G1_W = np.array([11.0, 0.0, -1.3])    # obs anchor (gate-frame origin)
-G2_W = np.array([30.5, 8.5, -1.5])
+G2_W = np.array([44.8, 1.9, -1.5])    # next dominant cluster downstream
+N2 = N1.copy()
 GATES_W = [HIGH_W, G2_W, G2_W]
-N2 = np.array([0.95, 0.2, 0.0]); N2 /= np.linalg.norm(N2)   # G2 through-direction
-THRU = [np.array([1.0, 0, 0]), N2, N2]
+THRU = [N1, N2, N2]
 
 def build_traj(gh, g1, g2):
     """Spline: climb to the high gate, controlled-sink dive to the red gate,
     then level run to G2. vz_max caps the descent rate (VQ1 controlled-sink)."""
     pts = np.array([
-        [0.0, 0.0, -1.3],           # straight, level, slow: vision-velocity keeps the KF honest
-        [5.5, 0.0, -1.3],
-        gh,                         # gate 0 at true x~11
-        [13.5, 0.4, -1.35],
+        [0.0, 0.0, -1.3],           # straight through the start-pole gap first
+        [5.0, 0.0, -1.3],
+        [12.0, 3.5, -1.35],         # veer right toward the ribbon's gate
+        gh - 4.0 * N1,              # line up along the gate normal
+        gh,                         # aperture aim point
+        gh + 2.5 * N1,              # carry through the plane
         g2 - 3.0 * N2,
         g2,
-        g2 + 2.0 * N2,
     ])
     tr = GateTrajectory(pts, v_cruise=2.6, phi_max_deg=15.0, tilt_budget_deg=12.0,
                         vz_max=0.55)
@@ -631,13 +637,18 @@ print(f'pad lock: g_lvl {state["obs"].round(2)} range {np.linalg.norm(state["obs
 # it instead of canned constants. Aperture = measured origin minus the
 # ORIGIN_OFFSET along the course axis; z stays map-verified -1.3.
 _pad = state['obs'].copy()
-G1_W = np.array([float(_pad[0]), float(_pad[1]), -1.3])
-G1_AP = np.array([float(_pad[0]) - ORIGIN_OFFSET, float(_pad[1]), -1.3])
-HIGH_W = G1_AP.copy()
-GATES_W[0] = HIGH_W
-TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
-state['next_gate_w'] = HIGH_W.copy()
-print(f'spline anchored to pad lock: aperture {G1_AP.round(2)} origin {G1_W.round(2)}', flush=True)
+_pad_w = np.array([float(_pad[0]), float(_pad[1]), -1.3])
+if np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
+    # pad measurement confirms the mapped course gate: anchor to it
+    G1_W = _pad_w
+    G1_AP = G1_W - ORIGIN_OFFSET * N1
+    HIGH_W = G1_AP.copy()
+    GATES_W[0] = HIGH_W
+    TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
+    state['next_gate_w'] = HIGH_W.copy()
+    print(f'spline anchored to pad lock: aperture {G1_AP.round(2)} origin {G1_W.round(2)}', flush=True)
+else:
+    print(f'pad obs {_pad_w.round(2)} does not match course gate {G1_W.round(2)} -- flying the map', flush=True)
 
 m.mav.command_long_send(m.target_system, m.target_component,
     mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
