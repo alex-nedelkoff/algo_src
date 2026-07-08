@@ -102,15 +102,15 @@ def build_traj(gh, g1, g2):
     then level run to G2. vz_max caps the descent rate (VQ1 controlled-sink)."""
     pts = np.array([
         [0.0, 0.0, -1.3],
-        [3.0, 1.2, -1.3],           # bear right off the pad
-        [6.5, 2.85, -1.3],          # JUDGE GATE 1 = THE START ARCH (tick-run
-        gh - 3.0 * N1,              #   frames); then line up on gate 2
-        gh,                         # gate-2 aperture (corner-measured)
-        gh + 2.5 * N1,              # carry through the plane
+        [4.0, 0.8, -1.3],           # bear gently right off the pad
+        [9.4, 1.7, -1.3],           # JUDGE GATE 1 = START ARCH (replay pose
+        [10.4, 2.9, -1.2],          #   at inside-arch frame); tight right turn
+        gh,                         # gate-2 aperture (corner-measured, 3.5 m on)
+        gh + 2.0 * N1,              # carry through
         g2 - 3.0 * N2,
         g2,
     ])
-    tr = GateTrajectory(pts, v_cruise=2.6, phi_max_deg=15.0, tilt_budget_deg=12.0,
+    tr = GateTrajectory(pts, v_cruise=1.6, phi_max_deg=15.0, tilt_budget_deg=12.0,
                         vz_max=0.55)
     return tr, [tr.nearest_s(gh), tr.nearest_s(g2), tr.s_max]
 
