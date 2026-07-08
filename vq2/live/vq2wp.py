@@ -1025,15 +1025,20 @@ while not aborted:
         # up behind (flight #14's spin into structure); tangent is stable and
         # keeps the camera downcourse for re-acquisition
         yaw_ref_t = math.atan2(float(ref['tang'][1]), float(ref['tang'][0]))
-        if ARCHTEST and ARCH_SWEEP_S < s_here < s_stop - 1.0 and (
-                state['obs'] is None or now - state['obs_wall'] > 1.5):
-            # acquisition sweep: crawl and scan the nose about the tangent
-            # until the detector locks the ribbon gate (handoff at obs fwd
-            # < 7.5 m takes over); without a lock this leg has missed 9/9
-            if state.get('_sweep_t0') is None:
-                state['_sweep_t0'] = now
-            yaw_ref_t += 0.7 * math.sin(0.9 * (now - state['_sweep_t0']))
-            vx_b_ref *= 0.3; vy_b_ref *= 0.3
+        if ARCHTEST and ARCH_SWEEP_S < s_here < s_stop - 1.0:
+            # perception-aware yaw (bench, arch15 corridor: nose a median
+            # 72 deg off the est-expected gate under tangent yaw -- the
+            # detector starves because the camera never faces the target).
+            # Aim the camera at the KF-expected gate; the residual bearing
+            # error is estimate drift only (~10-20 deg at 5 m, in FOV).
+            rel_g = HIGH_W - p
+            yaw_ref_t = math.atan2(float(rel_g[1]), float(rel_g[0]))
+            if state['obs'] is None or now - state['obs_wall'] > 1.5:
+                # narrow scan about the expected bearing until a lock
+                if state.get('_sweep_t0') is None:
+                    state['_sweep_t0'] = now
+                yaw_ref_t += 0.3 * math.sin(0.9 * (now - state['_sweep_t0']))
+                vx_b_ref *= 0.3; vy_b_ref *= 0.3
         yr_cmd = SZ * max(-0.5, min(0.5, 1.2 * wrap(yaw_ref_t - state['yaw'])))
         level_cmd(SX * vx_b_ref, SY * vy_b_ref, vz_ref, pitch_bias=-0.08, yr=yr_cmd)
         state['_viz_ref'] = ref['pos']
