@@ -665,6 +665,16 @@ def land(reason):
         send_rate(0, 0, 0, 0.10); time.sleep(1/CMD_HZ)
     m.mav.command_long_send(m.target_system, m.target_component,
         mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 0, 0, 0, 0, 0, 0, 0)
+    if REC_DIR:
+        # OUT/log.jsonl is shared across runs and each launch truncates it;
+        # snapshot into the per-run corpus (arch17's tick-run route log was
+        # lost to the next launch)
+        try:
+            log_f.flush()
+            import shutil as _sh
+            _sh.copy(OUT + '/log.jsonl', REC_DIR + '/livelog.jsonl')
+        except Exception as e:
+            print('livelog snapshot failed:', e, flush=True)
 
 for th in (rx_loop, cam_loop, det_loop):
     threading.Thread(target=th, daemon=True).start()
