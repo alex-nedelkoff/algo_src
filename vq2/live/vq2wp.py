@@ -76,6 +76,7 @@ TARGET_TICKS = 2                # qualifier: red gate + G2 = through the second 
 # point in EMPTY SPACE behind the gate -- every "crossing" transited the
 # real aperture plane (x ~ 9.1, triangulated corner map) un-aimed.
 # Fly at G1_AP; keep G1_W for obs-derived map matching.
+ORIGIN_OFFSET = 1.9   # gate-frame origin sits this far behind the aperture plane
 G1_AP = np.array([9.1, 0.0, -1.3])
 HIGH_W = G1_AP.copy()                 # route/punch aim point
 G1_W = np.array([11.0, 0.0, -1.3])    # obs anchor (gate-frame origin)
@@ -625,6 +626,19 @@ if state['obs'] is None:
     sys.exit(1)
 print(f'pad lock: g_lvl {state["obs"].round(2)} range {np.linalg.norm(state["obs"]):.1f} m', flush=True)
 
+# PER-FLIGHT ANCHOR (07-07): the pad measurement is bias-free (at rest,
+# attitude exact) -- anchor the spline aim AND the obs-matching anchor to
+# it instead of canned constants. Aperture = measured origin minus the
+# ORIGIN_OFFSET along the course axis; z stays map-verified -1.3.
+_pad = state['obs'].copy()
+G1_W = np.array([float(_pad[0]), float(_pad[1]), -1.3])
+G1_AP = np.array([float(_pad[0]) - ORIGIN_OFFSET, float(_pad[1]), -1.3])
+HIGH_W = G1_AP.copy()
+GATES_W[0] = HIGH_W
+TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
+state['next_gate_w'] = HIGH_W.copy()
+print(f'spline anchored to pad lock: aperture {G1_AP.round(2)} origin {G1_W.round(2)}', flush=True)
+
 m.mav.command_long_send(m.target_system, m.target_component,
     mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
 time.sleep(0.5)
@@ -809,7 +823,7 @@ while not aborted:
             yr_cmd = SZ * max(-0.35, min(0.35, 0.10 * lat))
             level_cmd(SX * vx_ref, SY * vy_ref, vz_ref, pitch_bias=-0.12, yr=yr_cmd)
             rng = float(np.linalg.norm(obs))
-            if fwd < 0.2 and rng < 3.0 and abs(lat) < 2.0:
+            if fwd < ORIGIN_OFFSET + 0.2 and rng < 4.5 and abs(lat) < 2.0:
                 print(f'passed target plane (DR, rng {rng:.1f}); braking', flush=True)
                 phase, phase_t0 = 'post', now
                 continue
@@ -820,10 +834,11 @@ while not aborted:
                 phase, phase_t0, route_end_t0 = 'route', now, None
                 continue
             fresh = age < 2.5
-            if fresh and fwd < 2.6 and abs(lat) < 0.35 and abs(dz_err) < 0.6:
-                punch_t0, punch_dur = now, fwd / 2.0 + 1.2
+            fwd_ap = fwd - ORIGIN_OFFSET   # distance to the APERTURE plane
+            if fresh and fwd_ap < 2.6 and abs(lat) < 0.35 and abs(dz_err) < 0.6:
+                punch_t0, punch_dur = now, max(0.8, fwd_ap / 2.0 + 1.2)
                 phase = 'punch'
-                print(f'PUNCH from {fwd:.1f} m (lat {lat:.2f} dwn {dwn:.2f})', flush=True)
+                print(f'PUNCH from {fwd_ap:.1f} m to aperture (lat {lat:.2f} dwn {dwn:.2f})', flush=True)
         # PUNCH-ON-RECENT-OBS: the detector reliably dies ~6 m out (gate slides
         # under the 20-deg-up camera), so a fresh-obs-at-2.6m trigger never
         # fires (#41/#42). Short-horizon DR from the last fresh obs is
@@ -833,7 +848,7 @@ while not aborted:
             with KF_LOCK:
                 dp = KF.p - lk[3]
             fwd_est = lk[0] - float(np.hypot(dp[0], dp[1]))
-            if fwd_est < 2.8 and abs(lk[1]) < 0.4:
+            if fwd_est < 2.8 + ORIGIN_OFFSET and abs(lk[1]) < 0.4:
                 punch_t0, punch_dur = now, max(0.6, fwd_est) / 2.0 + 1.2
                 phase = 'punch'
                 print(f'PUNCH (obs-DR) est {fwd_est:.1f} m (last lat {lk[1]:.2f}, obs age {now-lk[4]:.1f}s)', flush=True)
@@ -917,7 +932,7 @@ while not aborted:
                     aborted = f'gate not ticked after {retries - 1} height retries, ticks={ticks}'
                 else:
                     gidx = min(ticks, 2)
-                    gate_z_off[gidx] -= 0.4
+                    gate_z_off[gidx] = +0.35 if retries == 1 else -0.35
                     gh = HIGH_W + np.array([0, 0, gate_z_off[0]])
                     g1 = G1_W + np.array([0, 0, gate_z_off[1]])
                     g2 = G2_W + np.array([0, 0, gate_z_off[2]])
