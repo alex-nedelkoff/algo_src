@@ -240,7 +240,13 @@ def rx_loop():
                 # miss, invisible to DR). Over a 1 s contiguous-quiet window,
                 # mean a_y = -g*sin(roll_true); pull est roll to it. Benched
                 # on 4 corpora: bias to within +-0.4 deg (was up to 3.7).
-                if state.get('airborne'):
+                # trim ONLY in steady route cruise (run-16 lesson: the
+                # approach maneuver's REAL lateral accel satisfied the quiet
+                # gates and was read as +5 deg of roll error -> crash). Route
+                # loop sets trim_ok; approach/punch/retreat clear it. Per-
+                # window correction clamped to 2 deg (bias converges over
+                # 2-3 windows; a false window can no longer wreck attitude).
+                if state.get('airborne') and state.get('trim_ok'):
                     gm = max(abs(gyr[0]), abs(gyr[1]), abs(gyr[2]))
                     an = math.sqrt(acc[0]**2 + acc[1]**2 + acc[2]**2)
                     if gm < 0.4 and abs(an - 9.81) < 1.0:
@@ -251,9 +257,9 @@ def rx_loop():
                         ay = sum(w[1] for w in TRIM_WIN) / len(TRIM_WIN)
                         roll_true = math.asin(max(-1.0, min(1.0, -ay / 9.81)))
                         err = roll_true - state['roll']
-                        if abs(err) < 0.12:
-                            state['roll'] += err          # gain 1.0 (benched)
-                            jlog('roll_trim', err_deg=round(math.degrees(err), 2))
+                        err = max(-0.035, min(0.035, err))
+                        state['roll'] += err
+                        jlog('roll_trim', err_deg=round(math.degrees(err), 2))
                         TRIM_WIN.clear()
                 a_lvl = accel_level(acc, state['roll'], state['pitch'])
                 cyw, syw = math.cos(state['yaw']), math.sin(state['yaw'])
@@ -761,6 +767,7 @@ while not aborted:
         phase, phase_t0 = 'approach', now
         continue
     elif phase == 'approach':
+        state['trim_ok'] = False    # maneuvering: real a_y breaks the trim
         det_age = now - state.get('det_wall', 0.0)
         if det_age > 20.0:
             aborted = 'no detections > 20 s'
@@ -850,6 +857,7 @@ while not aborted:
             state['landmark_w'] = None
             phase, phase_t0, route_end_t0 = 'route', now, None
     elif phase == 'route':
+        state['trim_ok'] = True     # steady cruise: force-balance trim valid
         # map-spline carrot on KF dead reckoning, nose along the carrot
         with KF_LOCK:
             p = KF.p.copy()
