@@ -259,7 +259,10 @@ def rx_loop():
                 if state.get('airborne') and state.get('trim_ok'):
                     gm = max(abs(gyr[0]), abs(gyr[1]), abs(gyr[2]))
                     an = math.sqrt(acc[0]**2 + acc[1]**2 + acc[2]**2)
-                    if gm < 0.4 and abs(an - 9.81) < 1.0:
+                    if gm < 0.4 and abs(an - 9.81) < 1.0 and abs(gyr[2]) < 0.03:
+                        # |gz| gate: on an ARC the bank is real lateral accel
+                        # (run-20: trims clamped +-2 deg oscillating on the
+                        # curved route) -- only trim on straight segments
                         TRIM_WIN.append((us / 1e6, acc[1]))
                     else:
                         TRIM_WIN.clear()
@@ -428,7 +431,7 @@ def _det_loop():
             ident_full = False
             miss, match_g = 1e9, None
             for gw_map in (G1_W, G2_W, DECOY_W):
-                if OBS_POLICY == 'huber_area':
+                if OBS_POLICY in ('huber_area', 'huber'):
                     rng_exp = float(np.linalg.norm((gw_map - p_kf)[:2]))
                     ratio = (min(rng_meas / max(rng_exp, 0.1),
                                  max(rng_exp, 0.1) / rng_meas)
@@ -501,7 +504,7 @@ def _det_loop():
                          dists=dists_)
                     cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
                     continue
-            if OBS_POLICY == 'huber_area':
+            if OBS_POLICY in ('huber_area', 'huber'):
                 accepted = match_g is not None
                 r_scale = 1.0 if miss <= HUBER_DELTA else miss / HUBER_DELTA
                 if ident_full:
