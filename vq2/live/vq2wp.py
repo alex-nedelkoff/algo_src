@@ -125,14 +125,18 @@ if ARCHTEST:
         # SOLID at flight height -- arch1 frame face-planted into orange.)
         ap = np.array([11.68, 5.17, -1.1])
         n = np.array([0.996, -0.087, 0.0])
+        # Long straight run-in: arch4-6 missed left/high because the turn
+        # finished only 5 m out and v_cruise outran the VMAX clamp. Finish
+        # all turning 8 m before the gate, then hold the through-line.
         pts = np.array([
             [0.0, 0.0, -1.3],
-            [2.5, 3.0, -1.2],
-            ap - 5.0 * n,
+            [1.5, 3.5, -1.2],
+            ap - 8.0 * n,
+            ap - 4.0 * n,
             ap,
             ap + 2.5 * n,
         ])
-        tr = GateTrajectory(pts, v_cruise=1.2, phi_max_deg=15.0,
+        tr = GateTrajectory(pts, v_cruise=0.6, phi_max_deg=15.0,
                             tilt_budget_deg=12.0, vz_max=0.55)
         return tr, [tr.nearest_s(ap), tr.s_max, tr.s_max]
 
@@ -953,6 +957,10 @@ while not aborted:
         s_ref = min(s_here + LEAD, s_stop, TRAJ.s_max)
         ref = TRAJ.sample(s_ref)
         d = ref['pos'] - p
+        # route-phase forensics: live KF estimate vs spline carrot, so a
+        # missed gate can be diagnosed as estimate drift vs tracking error
+        jlog('route', p=np.round(p, 3).tolist(), s=round(float(s_here), 2),
+             ref=np.round(ref['pos'], 3).tolist())
         dh = float(np.hypot(d[0], d[1]))
         v_ref = min(ref['v'], V_ROUTE_MAX)
         if s_here > s_stop:
