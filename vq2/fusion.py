@@ -37,6 +37,11 @@ ACCEPT_R = 3.0  # xy radius for matching an obs to a map gate (as in vq2wp)
 import os as _os
 _G1C = _os.path.join(_os.path.dirname(__file__), "g1_corners_world.npy")
 G1_CORNERS_W = np.load(_G1C) if _os.path.exists(_G1C) else None
+_G2R = _os.path.join(_os.path.dirname(__file__), "g2rib_corners_world.npy")
+G2RIB_CORNERS_W = np.load(_G2R) if _os.path.exists(_G2R) else None
+# per-candidate-index corner maps for cfg.gate_map = GATES (G1, HIGH, G2):
+# index 0 (old G1 pos) -> decoy corners; extendable per course
+CORNER_MAPS = {0: G1_CORNERS_W}
 
 
 @dataclass
@@ -398,13 +403,14 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
             if not ok_pol:
                 res.obs_events.append(ev)
                 continue
-            if (cfg.corner_ident and G1_CORNERS_W is not None
+            _cmap = CORNER_MAPS.get(j)
+            if (cfg.corner_ident and _cmap is not None
                     and d_corners is not None and d_vis is not None):
                 R_wc = R_world_body(roll, pitch, yaw) @ M_BODY_CAM
-                rel = (G1_CORNERS_W - kf.p) @ R_wc
+                rel = (_cmap - kf.p) @ R_wc
                 zok = rel[:, 2] > 0.2
                 n_match = 0
-                for k in range(min(len(d_corners), len(G1_CORNERS_W))):
+                for k in range(min(len(d_corners), len(_cmap))):
                     if d_vis[k] < cfg.ident_min_vis or not zok[k]:
                         continue
                     uv = np.array([rel[k, 0] / rel[k, 2] * 226.0 + 319.5,
@@ -415,7 +421,7 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                 # constellation-attitude residual from matched pairs
                 if cfg.att_vision_gain > 0.0:
                     P_uv = []; D_uv = []
-                    for k in range(min(len(d_corners), len(G1_CORNERS_W))):
+                    for k in range(min(len(d_corners), len(_cmap))):
                         if d_vis[k] < cfg.ident_min_vis or not zok[k]:
                             continue
                         uvp = np.array([rel[k, 0] / rel[k, 2] * 226.0 + 319.5,
