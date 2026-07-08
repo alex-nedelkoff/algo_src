@@ -81,11 +81,15 @@ ORIGIN_OFFSET = 1.9   # gate-frame origin sits this far behind the aperture plan
 # [26.9, 8.6] (191 georeferenced obs, dominant cluster; confirmed visually --
 # the ribbon threads it). The [11, 0] object is a DECOY the ribbon bypasses;
 # every prior 'crossing' threaded it perfectly for zero points.
-N1 = np.array([0.95, 0.2, 0.0]); N1 /= np.linalg.norm(N1)   # gate-1 through-normal
-G1_W = np.array([26.9, 8.6, -1.3])    # obs anchor (gate-frame origin)
-G1_AP = G1_W - ORIGIN_OFFSET * N1     # aperture plane aim point
+# CORNER-TRIANGULATED (tick corpus, 79 obs, 8.2 px): the ribbon gate's
+# PHYSICAL structure is at [11.7, 5.2] -- the [26.9,8.6] cluster was the
+# PnP origin's far-projection (origin-offset illusion at range). Aperture
+# centroid [11.68, 5.17, -1.06], face along y => through-normal ~ +x.
+N1 = np.array([0.996, -0.087, 0.0]); N1 /= np.linalg.norm(N1)
+G1_W = np.array([26.9, 8.6, -1.3])    # obs-ORIGIN anchor (matching only)
+G1_AP = np.array([11.68, 5.17, -1.1]) # measured aperture centroid
 HIGH_W = G1_AP.copy()                 # route/punch aim point
-G2_W = np.array([44.8, 1.9, -1.5])    # next dominant cluster downstream
+G2_W = np.array([44.8, 1.9, -1.5])    # provisional downstream cluster
 DECOY_W = np.array([10.97, -0.11, -1.3])  # non-course gate: NAV LANDMARK ONLY
 #                     (122-obs cluster; reliable close-range position fixes
 #                      on the way out -- never a target, never sets tgt/lock)
@@ -100,10 +104,8 @@ def build_traj(gh, g1, g2):
         [0.0, 0.0, -1.3],
         [3.0, 1.2, -1.3],           # bear right off the pad
         [6.5, 2.85, -1.3],          # JUDGE GATE 1 = THE START ARCH (tick-run
-        [9.0, 3.9, -1.3],           #   frames + tick fix at [6.46, 2.85])
-        [13.0, 5.3, -1.35],         # follow the ribbon's right-hand curve
-        gh - 4.0 * N1,              # line up along the gate normal
-        gh,                         # aperture aim point
+        gh - 3.0 * N1,              #   frames); then line up on gate 2
+        gh,                         # gate-2 aperture (corner-measured)
         gh + 2.5 * N1,              # carry through the plane
         g2 - 3.0 * N2,
         g2,
