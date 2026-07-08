@@ -143,6 +143,18 @@ class AttitudeTracker:
         self.roll, self.pitch = accel_implied_attitude(s)
         self._last_us = s.t_us
 
+    # windowed force-balance roll trim (NOT the refuted instantaneous CF):
+    # over a quiet-cruise window, mean body a_y = -g*sin(roll_true) + drag_y
+    # (drag_y ~ 0.1*vy ~ negligible at cruise). The window mean is immune to
+    # thrust transients that killed the CF. This measures and removes the
+    # per-flight roll bias (the campaign root cause: VQ2-DRIFT-01).
+    trim_gain: float = 0.0          # fraction of window error applied/window
+    trim_window_s: float = 3.0
+    trim_gyro_max: float = 0.4      # rad/s: sample quiet gate
+    trim_acc_tol: float = 1.0       # | |f|-g |
+    trim_err_max: float = 0.12      # rad sanity clamp
+    _win: list = field(default_factory=list)
+
     def update(self, s) -> None:
         if self._last_us is not None and s.t_us > self._last_us:
             dt = (s.t_us - self._last_us) / 1e6
@@ -150,6 +162,20 @@ class AttitudeTracker:
             self.roll += gx * dt
             self.pitch += -gy * dt   # wfix (vq2wp.py:203)
             self.yaw += -gz * dt     # wfix (vq2wp.py:204)
+            if self.trim_gain > 0.0:
+                gm = max(abs(gx), abs(gy), abs(gz))
+                an = math.sqrt(sum(a * a for a in s.acc))
+                if gm < self.trim_gyro_max and abs(an - GRAVITY) < self.trim_acc_tol:
+                    self._win.append((s.t_us / 1e6, s.acc[1]))
+                else:
+                    self._win.clear()   # window must be contiguous-quiet
+                if self._win and self._win[-1][0] - self._win[0][0] >= self.trim_window_s:
+                    ay = sum(w[1] for w in self._win) / len(self._win)
+                    roll_true = math.asin(max(-1.0, min(1.0, -ay / GRAVITY)))
+                    err = roll_true - self.roll
+                    if abs(err) < self.trim_err_max:
+                        self.roll += self.trim_gain * err
+                    self._win.clear()
             if self.cf_gain > 0.0:
                 gn = math.sqrt(gx * gx + gy * gy + gz * gz)
                 an = math.sqrt(sum(a * a for a in s.acc))

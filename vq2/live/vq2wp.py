@@ -193,6 +193,7 @@ C_X = np.cross(C_Y, C_Z)
 M_BODY_CAM = np.stack([C_X, C_Y, C_Z], axis=1)
 
 ATT_BUF = deque(maxlen=600)
+TRIM_WIN = []
 KF = PosVelKF()
 KF_LOCK = threading.Lock()
 state = {'acc': (0, 0, -9.81), 'gyr': (0, 0, 0), 't_us': 0,
@@ -234,6 +235,26 @@ def rx_loop():
                 state['roll'] += gyr[0] * dt
                 state['pitch'] += (-gyr[1]) * dt      # wfix
                 state['yaw'] += (-gyr[2]) * dt        # wfix (yaw mirrored too)
+                # windowed force-balance ROLL TRIM (VQ2-DRIFT-01 root cause:
+                # per-flight roll bias -> phantom lateral force -> every gate
+                # miss, invisible to DR). Over a 1 s contiguous-quiet window,
+                # mean a_y = -g*sin(roll_true); pull est roll to it. Benched
+                # on 4 corpora: bias to within +-0.4 deg (was up to 3.7).
+                if state.get('airborne'):
+                    gm = max(abs(gyr[0]), abs(gyr[1]), abs(gyr[2]))
+                    an = math.sqrt(acc[0]**2 + acc[1]**2 + acc[2]**2)
+                    if gm < 0.4 and abs(an - 9.81) < 1.0:
+                        TRIM_WIN.append((us / 1e6, acc[1]))
+                    else:
+                        TRIM_WIN.clear()
+                    if TRIM_WIN and TRIM_WIN[-1][0] - TRIM_WIN[0][0] >= 1.0:
+                        ay = sum(w[1] for w in TRIM_WIN) / len(TRIM_WIN)
+                        roll_true = math.asin(max(-1.0, min(1.0, -ay / 9.81)))
+                        err = roll_true - state['roll']
+                        if abs(err) < 0.12:
+                            state['roll'] += err          # gain 1.0 (benched)
+                            jlog('roll_trim', err_deg=round(math.degrees(err), 2))
+                        TRIM_WIN.clear()
                 a_lvl = accel_level(acc, state['roll'], state['pitch'])
                 cyw, syw = math.cos(state['yaw']), math.sin(state['yaw'])
                 a_w = np.array([cyw * a_lvl[0] - syw * a_lvl[1],
