@@ -550,7 +550,7 @@ def _det_loop():
                 else:
                     bad = ((match_g is G1_W and not is_g1) or
                            (match_g is G2_W and not is_g1 and rng_meas < 18.0))
-                if bad and ARCHTEST and rng_meas < 7.5:
+                if bad and ARCHTEST and rng_meas < 7.5 and abs(float(g_lvl[1])) < 2.5:
                     # post-arch corridor: the only detectable gate inside
                     # 7.5 m forward IS the target (gate 2 sits ~8.5 m out).
                     # arch22/24 missed because identity kept failing here
@@ -1046,9 +1046,12 @@ while not aborted:
         # speed (+3 m by the gate, flight #31 dashboard), so the terminal leg
         # must servo on RELATIVE obs -- the only recipe that ever ticked
         if (state['obs'] is not None and now - state['obs_wall'] < 0.8
-                and float(state['obs'][0]) < 7.5):
+                and float(state['obs'][0]) < 7.5
+                and abs(float(state['obs'][1])) < 2.5):
             # handoff only INSIDE the furniture radius: an early lock pulls the
-            # drone off the dogleg straight into the x~5-7 structure (flight #36)
+            # drone off the dogleg straight into the x~5-7 structure (flight #36).
+            # |lat| bound: arch26 locked a junk solve 4.3 m off-axis and the
+            # approach chased it into a wall -- the route target is AHEAD
             print(f'vision lock on route: {state["obs"].round(2)}', flush=True)
             phase, phase_t0 = 'approach', now
         if s_here > s_stop - 2.6:
