@@ -952,7 +952,17 @@ while not aborted:
                 continue
             fresh = age < 2.5
             fwd_ap = fwd - ORIGIN_OFFSET   # distance to the APERTURE plane
-            if fresh and fwd_ap < 2.6 and abs(lat) < 0.35 and abs(dz_err) < 0.6:
+            if ARCHTEST:
+                # COAST, not punch: with corrected ranges the blind zone is
+                # only the last ~1.5 m -- servo all the way in, then cross
+                # straight at approach speed. The 2 m/s blind lunge from
+                # 2.8 m (pursuit-oblique + stale-lat steering) missed the
+                # 1.5 m aperture left on arch34-36.
+                if fresh and fwd_ap < 1.5 and abs(lat) < 0.25 and abs(dz_err) < 0.5:
+                    punch_t0, punch_dur = now, (fwd_ap + 1.5) / 0.6
+                    phase = 'punch'
+                    print(f'COAST from {fwd_ap:.1f} m (lat {lat:.2f} dwn {dwn:.2f})', flush=True)
+            elif fresh and fwd_ap < 2.6 and abs(lat) < 0.35 and abs(dz_err) < 0.6:
                 punch_t0, punch_dur = now, max(0.8, fwd_ap / 2.0 + 1.2)
                 phase = 'punch'
                 print(f'PUNCH from {fwd_ap:.1f} m to aperture (lat {lat:.2f} dwn {dwn:.2f})', flush=True)
@@ -965,19 +975,30 @@ while not aborted:
             with KF_LOCK:
                 dp = KF.p - lk[3]
             fwd_est = lk[0] - float(np.hypot(dp[0], dp[1]))
-            if fwd_est < 2.8 + ORIGIN_OFFSET and abs(lk[1]) < 0.4:
-                punch_t0, punch_dur = now, max(0.6, fwd_est) / 2.0 + 1.2
+            trig = 1.5 if ARCHTEST else 2.8 + ORIGIN_OFFSET
+            lat_ok = 0.25 if ARCHTEST else 0.4
+            if fwd_est < trig and abs(lk[1]) < lat_ok:
+                if ARCHTEST:
+                    punch_t0, punch_dur = now, (max(0.3, fwd_est) + 1.5) / 0.6
+                    print(f'COAST (obs-DR) est {fwd_est:.1f} m (last lat {lk[1]:.2f}, obs age {now-lk[4]:.1f}s)', flush=True)
+                else:
+                    punch_t0, punch_dur = now, max(0.6, fwd_est) / 2.0 + 1.2
+                    print(f'PUNCH (obs-DR) est {fwd_est:.1f} m (last lat {lk[1]:.2f}, obs age {now-lk[4]:.1f}s)', flush=True)
                 phase = 'punch'
-                print(f'PUNCH (obs-DR) est {fwd_est:.1f} m (last lat {lk[1]:.2f}, obs age {now-lk[4]:.1f}s)', flush=True)
         if now - phase_t0 > 60:
             print('approach timeout -- dropping lock, back to route', flush=True)
             state['obs'] = None; state['tgt'] = None; state['obs_wall'] = 0.0
             state['landmark_w'] = None
             phase, phase_t0, route_end_t0 = 'route', now, None
     elif phase == 'punch':
-        # hold the lateral line through the blind drive (#32 crossed drifting)
-        lat_p = float(obs[1]) if obs is not None else 0.0
-        level_cmd(SX * 2.0, SY * max(-0.5, min(0.5, 0.5 * lat_p)), 0)
+        if ARCHTEST:
+            # coast: straight through at approach speed, no steering on a
+            # stale observation
+            level_cmd(SX * 0.6, 0.0, 0)
+        else:
+            # hold the lateral line through the blind drive (#32 crossed drifting)
+            lat_p = float(obs[1]) if obs is not None else 0.0
+            level_cmd(SX * 2.0, SY * max(-0.5, min(0.5, 0.5 * lat_p)), 0)
         if now - punch_t0 > punch_dur:
             phase, phase_t0 = 'post', now
             print('punch window over, braking', flush=True)
