@@ -550,6 +550,12 @@ def _det_loop():
                 else:
                     bad = ((match_g is G1_W and not is_g1) or
                            (match_g is G2_W and not is_g1 and rng_meas < 18.0))
+                if bad and ARCHTEST and rng_meas < 7.5:
+                    # post-arch corridor: the only detectable gate inside
+                    # 7.5 m forward IS the target (gate 2 sits ~8.5 m out).
+                    # arch22/24 missed because identity kept failing here
+                    # and the handoff starved; take the obs soft-weighted
+                    bad = False
                 if bad:
                     dists_ = []
                     for k_ in range(min(len(best[2]), len(_cmap))):
