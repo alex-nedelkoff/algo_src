@@ -144,7 +144,7 @@ if ARCHTEST:
         ])
         tr = GateTrajectory(pts, v_cruise=0.6, phi_max_deg=15.0,
                             tilt_budget_deg=12.0, vz_max=0.55)
-        return tr, [tr.nearest_s(ap), tr.s_max, tr.s_max]
+        return tr, [tr.nearest_s(gate), tr.s_max, tr.s_max]
 
 TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
 
