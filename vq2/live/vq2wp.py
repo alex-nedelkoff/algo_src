@@ -114,6 +114,22 @@ def build_traj(gh, g1, g2):
                         vz_max=0.55)
     return tr, [tr.nearest_s(gh), tr.nearest_s(g2), tr.s_max]
 
+ARCHTEST = os.environ.get('ARCHTEST', '0') == '1'
+if ARCHTEST:
+    # verification mission: straight through the arch center, carry 3 m,
+    # land. No turns, no retreat. Thread verified by recorded RACE_STATUS
+    # + mid-crossing frames.
+    def build_traj(gh, g1, g2):
+        pts = np.array([
+            [0.0, 0.0, -1.3],
+            [4.0, 0.7, -1.3],
+            [9.4, 1.7, -1.3],       # arch center (replay-measured)
+            [12.5, 2.3, -1.3],
+        ])
+        tr = GateTrajectory(pts, v_cruise=1.2, phi_max_deg=15.0,
+                            tilt_budget_deg=12.0, vz_max=0.55)
+        return tr, [tr.nearest_s(np.array([9.4, 1.7, -1.3])), tr.s_max, tr.s_max]
+
 TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
 
 # ---- Rerun live dashboard (best-effort: never raises into the control loop) ----
@@ -990,6 +1006,8 @@ while not aborted:
                     if gidx == 0:
                         retreat_pt[1] -= 2.2   # retreat via the dogleg lane, not through the x~5-7 furniture (flight #37)
                     retreat_pt[2] = gate_w[2]
+                    if ARCHTEST:
+                        land('archtest pass complete (no tick)'); break
                     print(f'no tick -- retry {retries}: gate {gidx} aperture z {gate_w[2]:.2f}, retreating', flush=True)
                     jlog('retry', n=retries, gate=gidx, gate_z=float(gate_w[2]))
                     _viz_static()          # spline changed: re-log the reference path
