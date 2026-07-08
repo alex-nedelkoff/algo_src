@@ -781,10 +781,17 @@ while not aborted:
         # a tick IS a position fix: the judge says we are in the ticked gate's
         # plane, so re-anchor the KF at the map gate (flight #4: the soft-ZUPT
         # had frozen KF.p ~8 m behind truth, stranding the route carrot)
-        with KF_LOCK:
-            KF.x[:3] = state['next_gate_w']
-            KF.P[:3, :3] = np.eye(3) * 0.5
-        jlog('tick_fix', p=state['next_gate_w'].round(2).tolist())
+        # tick-as-fix was bled-DR-era logic: it assumes the ticked gate is
+        # our aim point. Run-21 proved otherwise (judge gate 1 is at ~[6,0],
+        # ticked en route) -- teleporting the KF to the aim point would wreck
+        # navigation. Re-anchor ONLY if vision has been stale for 3 s+.
+        if time.time() - state.get('obs_wall', 0.0) > 3.0 and                 state.get('fix_count', 0) < 1:
+            with KF_LOCK:
+                KF.x[:3] = state['next_gate_w']
+                KF.P[:3, :3] = np.eye(3) * 0.5
+            jlog('tick_fix', p=state['next_gate_w'].round(2).tolist())
+        else:
+            jlog('tick_fix_skipped', reason='vision healthy')
         state['obs'] = None; state['tgt'] = None; state['obs_wall'] = 0.0
         state['landmark_w'] = None
         t0c = time.time()
