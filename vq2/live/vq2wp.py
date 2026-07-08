@@ -88,6 +88,12 @@ ORIGIN_OFFSET = 1.9   # gate-frame origin sits this far behind the aperture plan
 N1 = np.array([0.996, -0.087, 0.0]); N1 /= np.linalg.norm(N1)
 G1_W = np.array([26.9, 8.6, -1.3])    # obs-ORIGIN anchor (matching only)
 G1_AP = np.array([11.68, 5.17, -1.1]) # measured aperture centroid
+# close-range obs-origin anchor for the SAME gate: PnP measures the gate
+# frame origin ~1.9 m behind the visible aperture, and at 5-7 m out the
+# far-projected G1_W cluster fails the range-ratio gate (0.33 < 0.55), so
+# a dead-ahead ribbon-gate obs matched NOTHING (arch13-15: gate in view at
+# arch exit, state['obs'] never set, approach handoff never fired)
+RIB_W = G1_AP + 1.9 * N1
 HIGH_W = G1_AP.copy()                 # route/punch aim point
 G2_W = np.array([44.8, 1.9, -1.5])    # provisional downstream cluster
 DECOY_W = np.array([10.97, -0.11, -1.3])  # non-course gate: NAV LANDMARK ONLY
@@ -147,6 +153,10 @@ if ARCHTEST:
         return tr, [tr.nearest_s(gate), tr.s_max, tr.s_max]
 
 TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
+# ARCHTEST acquisition zone: past the start arch the ribbon gate must be
+# found VISUALLY before the map+DR carrot walks the true path out of the
+# gate corridor (yaw drift rotates the commanded velocity; 9 straight misses)
+ARCH_SWEEP_S = TRAJ.nearest_s(np.array([9.39, 1.12, -0.9])) if ARCHTEST else 1e9
 
 # ---- Rerun live dashboard (best-effort: never raises into the control loop) ----
 MAC_VIEWER = 'rerun+http://100.101.13.126:9876/proxy'   # Mac over Tailscale (VQ1 convention)
@@ -471,7 +481,7 @@ def _det_loop():
             rng_meas = float(np.linalg.norm(g_lvl))
             ident_full = False
             miss, match_g = 1e9, None
-            for gw_map in (G1_W, G2_W, DECOY_W):
+            for gw_map in (G1_W, RIB_W, G2_W, DECOY_W):
                 if OBS_POLICY in ('huber_area', 'huber'):
                     rng_exp = float(np.linalg.norm((gw_map - p_kf)[:2]))
                     ratio = (min(rng_meas / max(rng_exp, 0.1),
@@ -496,7 +506,7 @@ def _det_loop():
             # strict course-context, non-G1-identified obs are junk unless
             # a genuinely far G2 sighting. Kills truss/fixture solves the
             # range gate can't (run-6 poison).
-            _cmap = (G2RIB_C if match_g is G1_W else
+            _cmap = (G2RIB_C if (match_g is G1_W or match_g is RIB_W) else
                      DECOY_C if match_g is DECOY_W else None)
             if IDENT_ON and _cmap is not None and best[3] is not None:
                 r_, p_, y_ = state['roll'], state['pitch'], state['yaw']
@@ -989,6 +999,15 @@ while not aborted:
         # up behind (flight #14's spin into structure); tangent is stable and
         # keeps the camera downcourse for re-acquisition
         yaw_ref_t = math.atan2(float(ref['tang'][1]), float(ref['tang'][0]))
+        if ARCHTEST and ARCH_SWEEP_S < s_here < s_stop - 1.0 and (
+                state['obs'] is None or now - state['obs_wall'] > 1.5):
+            # acquisition sweep: crawl and scan the nose about the tangent
+            # until the detector locks the ribbon gate (handoff at obs fwd
+            # < 7.5 m takes over); without a lock this leg has missed 9/9
+            if state.get('_sweep_t0') is None:
+                state['_sweep_t0'] = now
+            yaw_ref_t += 0.7 * math.sin(0.9 * (now - state['_sweep_t0']))
+            vx_b_ref *= 0.3; vy_b_ref *= 0.3
         yr_cmd = SZ * max(-0.5, min(0.5, 1.2 * wrap(yaw_ref_t - state['yaw'])))
         level_cmd(SX * vx_b_ref, SY * vy_b_ref, vz_ref, pitch_bias=-0.08, yr=yr_cmd)
         state['_viz_ref'] = ref['pos']
