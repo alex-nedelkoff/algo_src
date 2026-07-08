@@ -120,15 +120,21 @@ if ARCHTEST:
     # land. No turns, no retreat. Thread verified by recorded RACE_STATUS
     # + mid-crossing frames.
     def build_traj(gh, g1, g2):
+        # straight line through the VQ-01 gate's corner-measured aperture
+        # [11.68, 5.17, -1.06] along its through-normal. ([9.4, 1.7] is
+        # SOLID at flight height -- arch1 frame face-planted into orange.)
+        ap = np.array([11.68, 5.17, -1.1])
+        n = np.array([0.996, -0.087, 0.0])
         pts = np.array([
             [0.0, 0.0, -1.3],
-            [4.0, 0.7, -1.3],
-            [9.4, 1.7, -1.3],       # arch center (replay-measured)
-            [12.5, 2.3, -1.3],
+            [2.5, 3.0, -1.2],
+            ap - 5.0 * n,
+            ap,
+            ap + 2.5 * n,
         ])
         tr = GateTrajectory(pts, v_cruise=1.2, phi_max_deg=15.0,
                             tilt_budget_deg=12.0, vz_max=0.55)
-        return tr, [tr.nearest_s(np.array([9.4, 1.7, -1.3])), tr.s_max, tr.s_max]
+        return tr, [tr.nearest_s(ap), tr.s_max, tr.s_max]
 
 TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
 
