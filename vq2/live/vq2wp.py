@@ -821,6 +821,9 @@ if os.environ.get('VELPROBE') == '1':
         time.sleep(0.05)
     jlog('velprobe', seg='go', race_ms=state.get('race_ms'))
     print('race GO (clock %.1f s) -- probing' % (state.get('race_ms', 0) / 1e3), flush=True)
+    # spool window: the controller engages ~6 s after the first setpoint
+    # (constant across three probes); prime with zero-velocity setpoints
+    jlog('velprobe', seg='prime'); _vhold(7.0, 0.0, 0.0, 0.0)
     jlog('velprobe', seg='up');    _vhold(5.0, 0.0, 0.0, -0.4)
     jlog('velprobe', seg='hold');  _vhold(3.0, 0.0, 0.0, 0.0)
     jlog('velprobe', seg='px');    _vhold(3.0, 0.5, 0.0, 0.0)
