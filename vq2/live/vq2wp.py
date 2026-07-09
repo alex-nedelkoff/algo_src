@@ -52,11 +52,11 @@ if REC_DIR:
 CKPT = r'C:\Users\alexj\gatenet_b2_cov.pt'
 CFG = r'C:\Users\alexj\Documents\algo_src_main\configs\perception\gatenet_b2_multi_pb_cov.yaml'
 
-HOVER = 0.11    # sim update 07-09: thrust ~2.2x (THRPROBE: liftoff
+HOVER = 0.13    # sim update 07-09: thrust ~2.2x (THRPROBE: liftoff
                 # ~0.12, 0.16 -> 2.3 g, 0.24 -> 8 g); was 0.2675
 CMD_HZ = 50.0
 TILT_ABORT = math.radians(55)
-RATE_GAIN = 1.93
+RATE_GAIN = 1.62
 SIGN_R, SIGN_P = -1.0, +1.0
 KP = 1.8
 K_V = 0.12
@@ -675,7 +675,7 @@ def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0
     RATE_MAX = float(os.environ.get('RATE_MAX', '0.6'))
     rr = max(-RATE_MAX, min(RATE_MAX, rr)); pr = max(-RATE_MAX, min(RATE_MAX, pr))
     # halved gain + clamp for the 2.2x thrust authority (THRPROBE 07-09)
-    dthr = max(-0.03, min(0.03, 0.05 * (vz_ref - state['vz_up'])))
+    dthr = max(-0.05, min(0.05, 0.08 * (vz_ref - state['vz_up'])))
     send_rate(rr, pr, yr, max(0.04, min(0.30, thr_base + dthr)))
 
 def tilt(): return math.sqrt(state['roll']**2 + state['pitch']**2)
