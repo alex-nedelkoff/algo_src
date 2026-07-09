@@ -257,6 +257,7 @@ M_BODY_CAM = np.stack([C_X, C_Y, C_Z], axis=1)
 
 ATT_BUF = deque(maxlen=600)
 TRIM_WIN = []
+ACC_WIN = []
 KF = PosVelKF()
 KF_LOCK = threading.Lock()
 state = {'acc': (0, 0, -9.81), 'gyr': (0, 0, 0), 't_us': 0,
@@ -309,6 +310,25 @@ def rx_loop():
                 # loop sets trim_ok; approach/punch/retreat clear it. Per-
                 # window correction clamped to 2 deg (bias converges over
                 # 2-3 windows; a false window can no longer wreck attitude).
+                if state.get('airborne'):
+                    # ACCEL-SCALE window, loose gates: gyro-quiet +
+                    # hover-band throttle. Cannot gate on |f|~g -- the
+                    # under-read is the signal (112 s flight: est z fell
+                    # 472 m while the drone hovered; the strict window
+                    # never formed).
+                    gm0 = max(abs(gyr[0]), abs(gyr[1]), abs(gyr[2]))
+                    if gm0 < 0.4 and 0.08 < state.get('last_thr', 0) < 0.18:
+                        an0 = math.sqrt(acc[0]**2 + acc[1]**2 + acc[2]**2)
+                        ACC_WIN.append((us / 1e6, an0))
+                    else:
+                        ACC_WIN.clear()
+                    if ACC_WIN and ACC_WIN[-1][0] - ACC_WIN[0][0] >= 1.0:
+                        fn0 = sum(w[1] for w in ACC_WIN) / len(ACC_WIN)
+                        sc0 = max(0.97, min(1.08, 9.81 / max(fn0, 1.0)))
+                        state['acc_scale'] = 0.6 * state.get('acc_scale', 1.0) + 0.4 * sc0
+                        jlog('acc_scale', scale=round(state['acc_scale'], 4),
+                             f_mean=round(fn0, 3))
+                        ACC_WIN.clear()
                 if state.get('airborne') and state.get('trim_ok'):
                     gm = max(abs(gyr[0]), abs(gyr[1]), abs(gyr[2]))
                     an = math.sqrt(acc[0]**2 + acc[1]**2 + acc[2]**2)
@@ -679,6 +699,7 @@ def _det_loop():
         cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
 
 def send_rate(rr, pr, yr, thr):
+    state['last_thr'] = thr
     m.mav.set_attitude_target_send(
         int(time.time()*1000) & 0xFFFFFFFF, m.target_system, m.target_component,
         mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE,
