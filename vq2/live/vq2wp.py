@@ -824,13 +824,10 @@ if os.environ.get('VELPROBE') == '1':
     # spool window: the controller engages ~6 s after the first setpoint
     # (constant across three probes); prime with zero-velocity setpoints
     jlog('velprobe', seg='prime'); _vhold(7.0, 0.0, 0.0, 0.0)
-    jlog('velprobe', seg='up');    _vhold(5.0, 0.0, 0.0, -0.4)
-    jlog('velprobe', seg='hold');  _vhold(3.0, 0.0, 0.0, 0.0)
-    jlog('velprobe', seg='px');    _vhold(3.0, 0.5, 0.0, 0.0)
-    jlog('velprobe', seg='hold2'); _vhold(2.0, 0.0, 0.0, 0.0)
-    jlog('velprobe', seg='py');    _vhold(3.0, 0.0, 0.5, 0.0)
-    jlog('velprobe', seg='hold3'); _vhold(2.0, 0.0, 0.0, 0.0)
-    jlog('velprobe', seg='down');  _vhold(3.0, 0.0, 0.0, 0.4)
+    jlog('velprobe', seg='up');    _vhold(2.0, 0.0, 0.0, -0.4)
+    jlog('velprobe', seg='hold');  _vhold(1.0, 0.0, 0.0, 0.0)
+    jlog('velprobe', seg='px');    _vhold(4.0, 0.5, 0.0, 0.0)
+    jlog('velprobe', seg='hold2'); _vhold(1.0, 0.0, 0.0, 0.0)
     land('velocity probe complete')
     sys.exit(0)
 
