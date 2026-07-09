@@ -355,6 +355,7 @@ def rx_loop():
                         jlog('gate_tick', idx=rs[4])
                     state['gate_idx'] = rs[4]
                     state['race_finish_ns'] = rs[3]
+                    state['race_ms'] = rs[1]   # race clock (resets on hard reset)
                 except Exception:
                     pass
 
@@ -813,6 +814,13 @@ if os.environ.get('VELPROBE') == '1':
         while time.time() - t0 < dur:
             send_vel(vx, vy, vz)
             time.sleep(1/CMD_HZ)
+    # actuation is FROZEN until race GO (~8 s race clock): both v1/v2
+    # probes sat inert through their first segments, then executed the
+    # in-flight command violently at GO. Wait for the green.
+    while state.get('race_ms', 0) < 8500:
+        time.sleep(0.05)
+    jlog('velprobe', seg='go', race_ms=state.get('race_ms'))
+    print('race GO (clock %.1f s) -- probing' % (state.get('race_ms', 0) / 1e3), flush=True)
     jlog('velprobe', seg='up');    _vhold(5.0, 0.0, 0.0, -0.4)
     jlog('velprobe', seg='hold');  _vhold(3.0, 0.0, 0.0, 0.0)
     jlog('velprobe', seg='px');    _vhold(3.0, 0.5, 0.0, 0.0)
