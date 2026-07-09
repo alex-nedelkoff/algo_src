@@ -52,7 +52,8 @@ if REC_DIR:
 CKPT = r'C:\Users\alexj\gatenet_b2_cov.pt'
 CFG = r'C:\Users\alexj\Documents\algo_src_main\configs\perception\gatenet_b2_multi_pb_cov.yaml'
 
-HOVER = 0.2675
+HOVER = 0.11    # sim update 07-09: thrust ~2.2x (THRPROBE: liftoff
+                # ~0.12, 0.16 -> 2.3 g, 0.24 -> 8 g); was 0.2675
 CMD_HZ = 50.0
 TILT_ABORT = math.radians(55)
 RATE_GAIN = 1.93
@@ -673,8 +674,9 @@ def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0
     # the gap-error budget.
     RATE_MAX = float(os.environ.get('RATE_MAX', '0.6'))
     rr = max(-RATE_MAX, min(RATE_MAX, rr)); pr = max(-RATE_MAX, min(RATE_MAX, pr))
-    dthr = max(-0.06, min(0.06, 0.10 * (vz_ref - state['vz_up'])))
-    send_rate(rr, pr, yr, max(0.05, min(0.6, thr_base + dthr)))
+    # halved gain + clamp for the 2.2x thrust authority (THRPROBE 07-09)
+    dthr = max(-0.03, min(0.03, 0.05 * (vz_ref - state['vz_up'])))
+    send_rate(rr, pr, yr, max(0.04, min(0.30, thr_base + dthr)))
 
 def tilt(): return math.sqrt(state['roll']**2 + state['pitch']**2)
 
@@ -795,7 +797,7 @@ aborted = None
 # rotate level at LOW thrust, then climb gently
 t0 = time.time()
 while time.time() - t0 < 0.7:
-    level_cmd(0, 0, 0, thr_base=0.22); time.sleep(1/CMD_HZ)
+    level_cmd(0, 0, 0, thr_base=0.09); time.sleep(1/CMD_HZ)   # sub-hover settle (new curve)
 t0 = time.time()
 while time.time() - t0 < 1.6 and not aborted:
     level_cmd(0, 0, 1.0); aborted = guards('climb'); time.sleep(1/CMD_HZ)
