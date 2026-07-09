@@ -789,6 +789,39 @@ if os.environ.get('THRPROBE') == '1':
     land('thrust probe complete')
     sys.exit(0)
 
+VEL_MASK = (mavutil.mavlink.POSITION_TARGET_TYPEMASK_X_IGNORE |
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_Y_IGNORE |
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_Z_IGNORE |
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_AX_IGNORE |
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE |
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_AZ_IGNORE |
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_IGNORE |
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE)
+
+def send_vel(vx, vy, vz):
+    # sim-internal velocity controller (PyAIPilotExample-v2 documented mode)
+    m.mav.set_position_target_local_ned_send(
+        int(time.time() * 1000) & 0xFFFFFFFF, m.target_system,
+        m.target_component, mavutil.mavlink.MAV_FRAME_LOCAL_NED, VEL_MASK,
+        0, 0, 0, vx, vy, vz, 0, 0, 0, 0, 0)
+
+if os.environ.get('VELPROBE') == '1':
+    # velocity-mode probe: does the sim's internal controller fly clean
+    # velocity commands, and how does its NED map to the spawn frame?
+    def _vhold(dur, vx, vy, vz):
+        t0 = time.time()
+        while time.time() - t0 < dur:
+            send_vel(vx, vy, vz)
+            time.sleep(1/CMD_HZ)
+    jlog('velprobe', seg='up');    _vhold(2.5, 0.0, 0.0, -0.6)
+    jlog('velprobe', seg='hold');  _vhold(2.0, 0.0, 0.0, 0.0)
+    jlog('velprobe', seg='px');    _vhold(2.0, 0.5, 0.0, 0.0)
+    jlog('velprobe', seg='hold2'); _vhold(1.5, 0.0, 0.0, 0.0)
+    jlog('velprobe', seg='py');    _vhold(2.0, 0.0, 0.5, 0.0)
+    jlog('velprobe', seg='hold3'); _vhold(1.5, 0.0, 0.0, 0.0)
+    land('velocity probe complete')
+    sys.exit(0)
+
 if os.environ.get('EXCITE') == '1':
     # SysID excitation flight for the post-update vehicle (VQ1 playbook:
     # excite from steady state; fit offline, never in-air). Fine throttle
