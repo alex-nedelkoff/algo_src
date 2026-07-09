@@ -762,6 +762,25 @@ m.mav.command_long_send(m.target_system, m.target_component,
 time.sleep(0.5)
 print('armed', flush=True)
 
+if os.environ.get('THRPROBE') == '1':
+    # Thrust-curve probe (post sim-update the old HOVER=0.2675 produces
+    # ~2-4x the expected climb): step throttle at/near ground, log the
+    # accel response per step via jlog + the RECORD stream, then disarm.
+    for thr_step in (0.08, 0.12, 0.16, 0.20, 0.24):
+        t0 = time.time()
+        while time.time() - t0 < 2.0:
+            send_rate(0, 0, 0, thr_step)
+            time.sleep(1/CMD_HZ)
+        jlog('thrprobe', thr=thr_step,
+             az=round(float(state['acc'][2]), 3),
+             vz=round(float(state['vz_up']), 3))
+        print(f'THRPROBE thr={thr_step:.2f} az={state["acc"][2]:.2f} vz={state["vz_up"]:.2f}',
+              flush=True)
+    for _ in range(int(2.0 * CMD_HZ)):   # settle down before disarm
+        send_rate(0, 0, 0, 0.05); time.sleep(1/CMD_HZ)
+    land('thrust probe complete')
+    sys.exit(0)
+
 def guards(phase):
     if tilt() > TILT_ABORT: return f'tilt abort ({phase})'
     c = state['collision']
