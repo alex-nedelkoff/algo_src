@@ -52,14 +52,13 @@ if REC_DIR:
 CKPT = r'C:\Users\alexj\gatenet_b2_cov.pt'
 CFG = r'C:\Users\alexj\Documents\algo_src_main\configs\perception\gatenet_b2_multi_pb_cov.yaml'
 
-HOVER = 0.13    # sim update 07-09: thrust ~2.2x (THRPROBE: liftoff
-                # ~0.12, 0.16 -> 2.3 g, 0.24 -> 8 g); was 0.2675
+HOVER = 0.2675
 CMD_HZ = 50.0
 TILT_ABORT = math.radians(55)
-RATE_GAIN = 1.62
+RATE_GAIN = 1.93
 SIGN_R, SIGN_P = -1.0, +1.0
-KP = 0.9    # halved for the 2.2x thrust authority (sim update 07-09)
-K_V = 0.06  # halved for the 2.2x thrust authority (sim update 07-09)
+KP = 1.8
+K_V = 0.12
 CAM_TILT = math.radians(20.0)
 MISSION_S = 240.0
 TARGET_TICKS = int(os.environ.get('TICKS', '1'))  # prove ONE tick first; TICKS=2 chains to the next gate
@@ -681,9 +680,8 @@ def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0
     # the gap-error budget.
     RATE_MAX = float(os.environ.get('RATE_MAX', '0.6'))
     rr = max(-RATE_MAX, min(RATE_MAX, rr)); pr = max(-RATE_MAX, min(RATE_MAX, pr))
-    # halved gain + clamp for the 2.2x thrust authority (THRPROBE 07-09)
-    dthr = max(-0.05, min(0.05, 0.08 * (vz_ref - state['vz_up'])))
-    send_rate(rr, pr, yr, max(0.04, min(0.30, thr_base + dthr)))
+    dthr = max(-0.06, min(0.06, 0.10 * (vz_ref - state['vz_up'])))
+    send_rate(rr, pr, yr, max(0.05, min(0.6, thr_base + dthr)))
 
 def tilt(): return math.sqrt(state['roll']**2 + state['pitch']**2)
 
@@ -766,6 +764,13 @@ if _pad_w is not None and np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
 else:
     print('no course-gate pad obs -- flying the map', flush=True)
 
+# ACTUATION IS FROZEN UNTIL RACE GO (~8 s race clock): commands sent
+# pre-GO are clamped and release violently at the green. The 4-tick-era
+# runs cleared GO by lucky timing; post-07-08 relaunch timing shifted
+# and every takeoff hit the clamp (misdiagnosed as a vehicle update).
+while state.get('race_ms', 0) < 8500:
+    time.sleep(0.05)
+print('race GO (clock %.1f s)' % (state.get('race_ms', 0) / 1e3), flush=True)
 m.mav.command_long_send(m.target_system, m.target_component,
     mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
 time.sleep(0.5)
@@ -878,7 +883,7 @@ aborted = None
 # rotate level at LOW thrust, then climb gently
 t0 = time.time()
 while time.time() - t0 < 0.7:
-    level_cmd(0, 0, 0, thr_base=0.09); time.sleep(1/CMD_HZ)   # sub-hover settle (new curve)
+    level_cmd(0, 0, 0, thr_base=0.22); time.sleep(1/CMD_HZ)
 t0 = time.time()
 while time.time() - t0 < 1.6 and not aborted:
     level_cmd(0, 0, 1.0); aborted = guards('climb'); time.sleep(1/CMD_HZ)
