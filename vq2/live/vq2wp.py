@@ -789,6 +789,39 @@ if os.environ.get('THRPROBE') == '1':
     land('thrust probe complete')
     sys.exit(0)
 
+if os.environ.get('EXCITE') == '1':
+    # SysID excitation flight for the post-update vehicle (VQ1 playbook:
+    # excite from steady state; fit offline, never in-air). Fine throttle
+    # ladder around hover, then per-axis rate pulses with level
+    # recoveries; everything lands in the RECORD stream for the fit.
+    def _hold(dur, thr, rr=0.0, pr=0.0, yr=0.0):
+        t0 = time.time()
+        while time.time() - t0 < dur:
+            send_rate(rr, pr, yr, thr)
+            time.sleep(1/CMD_HZ)
+
+    def _recover(dur=1.2):
+        t0 = time.time()
+        while time.time() - t0 < dur:
+            level_cmd(0, 0, 0)
+            time.sleep(1/CMD_HZ)
+
+    _hold(1.2, 0.16)          # lift to ~1 m
+    _recover(2.0)
+    for thr in (0.11, 0.13, 0.15, 0.12, 0.14, 0.10):
+        jlog('excite', kind='thr', val=thr)
+        _hold(1.2, thr)
+        _recover(1.0)
+    for kw in ('rr', 'pr', 'yr'):
+        for amp in (0.25, -0.25, 0.45, -0.45):
+            if tilt() > 0.5:
+                break
+            jlog('excite', kind=kw, val=amp)
+            _hold(0.4, HOVER, **{kw: amp})
+            _recover(1.4)
+    land('excitation complete')
+    sys.exit(0)
+
 def guards(phase):
     if tilt() > TILT_ABORT: return f'tilt abort ({phase})'
     c = state['collision']
