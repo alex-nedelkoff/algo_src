@@ -257,7 +257,6 @@ M_BODY_CAM = np.stack([C_X, C_Y, C_Z], axis=1)
 
 ATT_BUF = deque(maxlen=600)
 TRIM_WIN = []
-ACC_WIN = []
 KF = PosVelKF()
 KF_LOCK = threading.Lock()
 state = {'acc': (0, 0, -9.81), 'gyr': (0, 0, 0), 't_us': 0,
@@ -310,25 +309,6 @@ def rx_loop():
                 # loop sets trim_ok; approach/punch/retreat clear it. Per-
                 # window correction clamped to 2 deg (bias converges over
                 # 2-3 windows; a false window can no longer wreck attitude).
-                if state.get('airborne'):
-                    # ACCEL-SCALE window, loose gates: gyro-quiet +
-                    # hover-band throttle. Cannot gate on |f|~g -- the
-                    # under-read is the signal (112 s flight: est z fell
-                    # 472 m while the drone hovered; the strict window
-                    # never formed).
-                    gm0 = max(abs(gyr[0]), abs(gyr[1]), abs(gyr[2]))
-                    if gm0 < 0.4 and 0.08 < state.get('last_thr', 0) < 0.18:
-                        an0 = math.sqrt(acc[0]**2 + acc[1]**2 + acc[2]**2)
-                        ACC_WIN.append((us / 1e6, an0))
-                    else:
-                        ACC_WIN.clear()
-                    if ACC_WIN and ACC_WIN[-1][0] - ACC_WIN[0][0] >= 1.0:
-                        fn0 = sum(w[1] for w in ACC_WIN) / len(ACC_WIN)
-                        sc0 = max(0.97, min(1.08, 9.81 / max(fn0, 1.0)))
-                        state['acc_scale'] = 0.6 * state.get('acc_scale', 1.0) + 0.4 * sc0
-                        jlog('acc_scale', scale=round(state['acc_scale'], 4),
-                             f_mean=round(fn0, 3))
-                        ACC_WIN.clear()
                 if state.get('airborne') and state.get('trim_ok'):
                     gm = max(abs(gyr[0]), abs(gyr[1]), abs(gyr[2]))
                     an = math.sqrt(acc[0]**2 + acc[1]**2 + acc[2]**2)
@@ -356,21 +336,10 @@ def rx_loop():
                         perr = pitch_true - state['pitch']
                         perr = max(-0.035, min(0.035, perr))
                         state['pitch'] += perr
-                        # ACCEL SCALE TRIM (07-09): this session's vehicle
-                        # under-reads |f| by ~2% in steady hover (canary:
-                        # mean 9.6, THRPROBE 9.43) -> est sinks 0.2 m/s^2
-                        # forever. In the same quiet window, |f| should
-                        # equal g: EMA the scale, clamped.
-                        fn = sum(w[2] for w in TRIM_WIN) / len(TRIM_WIN)
-                        sc = max(0.97, min(1.06, 9.81 / max(fn, 1.0)))
-                        state['acc_scale'] = 0.7 * state.get('acc_scale', 1.0) + 0.3 * sc
                         jlog('roll_trim', err_deg=round(math.degrees(err), 2),
-                             pitch_err_deg=round(math.degrees(perr), 2),
-                             acc_scale=round(state['acc_scale'], 4))
+                             pitch_err_deg=round(math.degrees(perr), 2))
                         TRIM_WIN.clear()
-                _sc = state.get('acc_scale', 1.0)
-                a_lvl = accel_level((acc[0] * _sc, acc[1] * _sc, acc[2] * _sc),
-                                    state['roll'], state['pitch'])
+                a_lvl = accel_level(acc, state['roll'], state['pitch'])
                 cyw, syw = math.cos(state['yaw']), math.sin(state['yaw'])
                 a_w = np.array([cyw * a_lvl[0] - syw * a_lvl[1],
                                 syw * a_lvl[0] + cyw * a_lvl[1], a_lvl[2]])
@@ -650,6 +619,12 @@ def _det_loop():
                         # legacy xy-only quarantine (OLD sim's -0.6..-4.9
                         # per-run obs-z bias): zero the z innovation
                         g_w_upd[2] = float(match_g[2]) - KF.p[2]
+                    else:
+                        # SOFT z: full-weight z fixes sawtooth against the
+                        # z DR drift; damp the innovation instead -- bounds
+                        # the drift without the fight
+                        z_full = float(match_g[2]) - KF.p[2]
+                        g_w_upd[2] = z_full + 0.4 * (g_w_upd[2] - z_full)
                     # updated sim (07-09): obs-z reads sane (canary implied
                     # pad-hover height 0.3 m) AND its accelerometer
                     # under-reads specific force under thrust ~4%, so z
