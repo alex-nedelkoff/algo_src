@@ -316,7 +316,7 @@ def rx_loop():
                         # |gz| gate: on an ARC the bank is real lateral accel
                         # (run-20: trims clamped +-2 deg oscillating on the
                         # curved route) -- only trim on straight segments
-                        TRIM_WIN.append((us / 1e6, acc[1]))
+                        TRIM_WIN.append((us / 1e6, acc[1], an))
                     else:
                         TRIM_WIN.clear()
                     if TRIM_WIN and TRIM_WIN[-1][0] - TRIM_WIN[0][0] >= 1.0:
@@ -325,9 +325,20 @@ def rx_loop():
                         err = roll_true - state['roll']
                         err = max(-0.035, min(0.035, err))
                         state['roll'] += err
-                        jlog('roll_trim', err_deg=round(math.degrees(err), 2))
+                        # ACCEL SCALE TRIM (07-09): this session's vehicle
+                        # under-reads |f| by ~2% in steady hover (canary:
+                        # mean 9.6, THRPROBE 9.43) -> est sinks 0.2 m/s^2
+                        # forever. In the same quiet window, |f| should
+                        # equal g: EMA the scale, clamped.
+                        fn = sum(w[2] for w in TRIM_WIN) / len(TRIM_WIN)
+                        sc = max(0.97, min(1.06, 9.81 / max(fn, 1.0)))
+                        state['acc_scale'] = 0.7 * state.get('acc_scale', 1.0) + 0.3 * sc
+                        jlog('roll_trim', err_deg=round(math.degrees(err), 2),
+                             acc_scale=round(state['acc_scale'], 4))
                         TRIM_WIN.clear()
-                a_lvl = accel_level(acc, state['roll'], state['pitch'])
+                _sc = state.get('acc_scale', 1.0)
+                a_lvl = accel_level((acc[0] * _sc, acc[1] * _sc, acc[2] * _sc),
+                                    state['roll'], state['pitch'])
                 cyw, syw = math.cos(state['yaw']), math.sin(state['yaw'])
                 a_w = np.array([cyw * a_lvl[0] - syw * a_lvl[1],
                                 syw * a_lvl[0] + cyw * a_lvl[1], a_lvl[2]])
