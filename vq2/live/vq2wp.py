@@ -629,7 +629,7 @@ def _det_loop():
                 prev = state.get('_vv_prev')
                 t_now = time.time()
                 if (prev is not None and 0.05 < t_now - prev[1] < 1.2 and prev[2] is match_g
-                        and np.linalg.norm((g_w - prev[0])[:2]) < 1.5):
+                        and np.linalg.norm((g_w - prev[0])[:2]) < 0.7):
                     # consistency gate: consecutive obs must be the SAME physical
                     # gate (two neighbors matched to one map slot injected an
                     # 8 m/s phantom velocity, flight #38 runaway)
@@ -638,7 +638,7 @@ def _det_loop():
                     if np.linalg.norm(v_meas[:2]) < 4.0:
                         with KF_LOCK:
                             KF.update_velocity(np.array([v_meas[0], v_meas[1], KF.v[2]]),
-                                               sigma=0.7)
+                                               sigma=1.5)
                 state['_vv_prev'] = (g_w.copy(), t_now, match_g)
                 if match_g is DECOY_W:
                     # landmark fix only: never target the decoy
