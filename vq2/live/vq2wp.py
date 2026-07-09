@@ -893,7 +893,7 @@ while time.time() - t0 < 1.6 and not aborted:
     yr_c = 0.0
     if state['obs'] is not None and time.time() - state['obs_wall'] < 1.0:
         brg = math.atan2(float(state['obs'][1]), float(state['obs'][0]))
-        yr_c = SZ * max(-0.3, min(0.3, 1.0 * brg))
+        yr_c = max(-0.3, min(0.3, 1.0 * brg))   # SZ=+1 (flight-measured default; defined later)
     level_cmd(0, 0, 1.0, yr=yr_c); aborted = guards('climb'); time.sleep(1/CMD_HZ)
 state['airborne'] = True   # loosens the det z-guard (in-flight obs-z bias)
 print(f'airborne tilt {math.degrees(tilt()):.1f} vz {state["vz_up"]:.2f}', flush=True)
