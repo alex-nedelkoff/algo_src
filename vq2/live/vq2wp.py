@@ -316,7 +316,7 @@ def rx_loop():
                         # |gz| gate: on an ARC the bank is real lateral accel
                         # (run-20: trims clamped +-2 deg oscillating on the
                         # curved route) -- only trim on straight segments
-                        TRIM_WIN.append((us / 1e6, acc[1], an))
+                        TRIM_WIN.append((us / 1e6, acc[1], an, acc[0]))
                     else:
                         TRIM_WIN.clear()
                     if TRIM_WIN and TRIM_WIN[-1][0] - TRIM_WIN[0][0] >= 1.0:
@@ -325,6 +325,17 @@ def rx_loop():
                         err = roll_true - state['roll']
                         err = max(-0.035, min(0.035, err))
                         state['roll'] += err
+                        # PITCH TRIM (07-09 replay): est v_x sat at -0.8 m/s
+                        # for 52 s while the route commanded +0.6 -- a ~5 deg
+                        # untrimmed pitch bias leaks gravity backward; roll
+                        # had a trim, pitch never did. Same window, same
+                        # clamp. At rest the spawn's known -17.8 deg pitch
+                        # validates the sign: pitch_true = asin(a_x / g).
+                        axm = sum(w[3] for w in TRIM_WIN) / len(TRIM_WIN)
+                        pitch_true = math.asin(max(-1.0, min(1.0, axm / 9.81)))
+                        perr = pitch_true - state['pitch']
+                        perr = max(-0.035, min(0.035, perr))
+                        state['pitch'] += perr
                         # ACCEL SCALE TRIM (07-09): this session's vehicle
                         # under-reads |f| by ~2% in steady hover (canary:
                         # mean 9.6, THRPROBE 9.43) -> est sinks 0.2 m/s^2
@@ -334,6 +345,7 @@ def rx_loop():
                         sc = max(0.97, min(1.06, 9.81 / max(fn, 1.0)))
                         state['acc_scale'] = 0.7 * state.get('acc_scale', 1.0) + 0.3 * sc
                         jlog('roll_trim', err_deg=round(math.degrees(err), 2),
+                             pitch_err_deg=round(math.degrees(perr), 2),
                              acc_scale=round(state['acc_scale'], 4))
                         TRIM_WIN.clear()
                 _sc = state.get('acc_scale', 1.0)
