@@ -399,6 +399,14 @@ def _det_loop():
     dev = torch.device('cuda')
     lm = OV.load_model(CKPT, CFG, dev)
     dk, sk = OV._multi_decode_knobs(lm.cfg, stride=lm.stride)
+    # warm-up inference: post-reboot the first CUDA forward pass takes
+    # 20-30 s (cuDNN autotune); fly3 arch40-42 all aborted their 15 s pad
+    # window while it compiled. Pay the cost here, before 'ready'.
+    dummy = np.zeros((360, 640, 3), np.uint8)
+    padded = OV.pad_bottom(dummy, lm.pad_to_h)
+    with torch.no_grad():
+        x = TG.frames_to_input(torch.from_numpy(padded[None]), dev)
+        TG._float_output(lm.model(x))
     print('detector ready', flush=True)
     last_ns = 0
     while not state['stop']:
