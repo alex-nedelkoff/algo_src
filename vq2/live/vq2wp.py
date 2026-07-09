@@ -58,8 +58,8 @@ CMD_HZ = 50.0
 TILT_ABORT = math.radians(55)
 RATE_GAIN = 1.62
 SIGN_R, SIGN_P = -1.0, +1.0
-KP = 1.8
-K_V = 0.12
+KP = 0.9    # halved for the 2.2x thrust authority (sim update 07-09)
+K_V = 0.06  # halved for the 2.2x thrust authority (sim update 07-09)
 CAM_TILT = math.radians(20.0)
 MISSION_S = 240.0
 TARGET_TICKS = int(os.environ.get('TICKS', '1'))  # prove ONE tick first; TICKS=2 chains to the next gate
