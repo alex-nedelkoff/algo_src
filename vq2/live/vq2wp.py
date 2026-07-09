@@ -600,11 +600,17 @@ def _det_loop():
                 jlog('obs_ident' if match_g is None else 'obs_offmap',
                      ns=ns, g_w=g_w.round(3).tolist(), miss=round(miss, 2))
             else:
-                # xy-only fix: zero the z innovation (obs z carries a per-run
-                # spawn-tilt bias of -0.6..-4 m; the map owns z)
                 g_w_upd = g_w.copy()
                 with KF_LOCK:
-                    g_w_upd[2] = float(match_g[2]) - KF.p[2]
+                    if os.environ.get('OBSZ', '1') != '1':
+                        # legacy xy-only quarantine (OLD sim's -0.6..-4.9
+                        # per-run obs-z bias): zero the z innovation
+                        g_w_upd[2] = float(match_g[2]) - KF.p[2]
+                    # updated sim (07-09): obs-z reads sane (canary implied
+                    # pad-hover height 0.3 m) AND its accelerometer
+                    # under-reads specific force under thrust ~4%, so z
+                    # MUST be vision-bounded or it runs away (est z +78 m
+                    # while hovering at the pad)
                     ok = KF.update_position(match_g - g_w_upd,
                                             rng=rng_meas, r_scale=r_scale)
                     nis = getattr(KF, 'last_nis', None)
