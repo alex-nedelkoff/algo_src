@@ -59,7 +59,7 @@ TILT_ABORT = math.radians(55)
 RATE_GAIN = 1.93
 SIGN_R, SIGN_P = -1.0, +1.0
 KP = 1.8
-K_V = 0.12
+K_V = 0.055  # armed-race vehicle: ~2.2x thrust => same tilt accelerates 2.2x; halve the velocity-loop gain
 CAM_TILT = math.radians(20.0)
 MISSION_S = 240.0
 TARGET_TICKS = int(os.environ.get('TICKS', '1'))  # prove ONE tick first; TICKS=2 chains to the next gate
