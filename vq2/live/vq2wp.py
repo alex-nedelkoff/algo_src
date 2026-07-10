@@ -351,7 +351,6 @@ def rx_loop():
                     if in_contact:
                         # freeze velocity propagation under contact forces
                         KF.predict(np.zeros(3), dt)
-                        KF.v *= 0.9
                     else:
                         KF.predict(a_w, dt)
                     vw = KF.v
