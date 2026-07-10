@@ -804,8 +804,12 @@ else:
 # pre-GO are clamped and release violently at the green. The 4-tick-era
 # runs cleared GO by lucky timing; post-07-08 relaunch timing shifted
 # and every takeoff hit the clamp (misdiagnosed as a vehicle update).
-while state.get('race_ms', 0) < 8500:
+_go_t0 = time.time()
+while state.get('race_ms', 0) < 8500 and time.time() - _go_t0 < 40.0:
     time.sleep(0.05)
+if state.get('race_ms', 0) < 8500:
+    print('NO RACE CLOCK after 40 s (rx dead or race not armed) -- aborting', flush=True)
+    sys.exit(1)
 print('race GO (clock %.1f s)' % (state.get('race_ms', 0) / 1e3), flush=True)
 m.mav.command_long_send(m.target_system, m.target_component,
     mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
