@@ -52,14 +52,16 @@ if REC_DIR:
 CKPT = r'C:\Users\alexj\gatenet_b2_cov.pt'
 CFG = r'C:\Users\alexj\Documents\algo_src_main\configs\perception\gatenet_b2_multi_pb_cov.yaml'
 
-HOVER = 0.125   # armed-race vehicle: hover ~0.12 (THRPROBE post-GO steps);
-                # pre-relaunch sessions flew 0.2675 -- config differs per session
+HOVER = 0.2675  # 07-10: the vehicle NEVER changed. THRPROBE's 'hover 0.12'
+                # was measured GROUNDED (98-100%% floor contact in every probe
+                # corpus); the flat |f|~g 'governor band' was the floor's
+                # normal force. Tick-era value restored.
 CMD_HZ = 50.0
 TILT_ABORT = math.radians(55)
 RATE_GAIN = 1.93
 SIGN_R, SIGN_P = -1.0, +1.0
 KP = 1.8
-K_V = 0.055  # armed-race vehicle: ~2.2x thrust => same tilt accelerates 2.2x; halve the velocity-loop gain
+K_V = 0.12
 CAM_TILT = math.radians(20.0)
 MISSION_S = 240.0
 TARGET_TICKS = int(os.environ.get('TICKS', '1'))  # prove ONE tick first; TICKS=2 chains to the next gate
@@ -339,12 +341,19 @@ def rx_loop():
                         jlog('roll_trim', err_deg=round(math.degrees(err), 2),
                              pitch_err_deg=round(math.degrees(perr), 2))
                         TRIM_WIN.clear()
+                in_contact = (state.get('contact') and
+                              time.time() - state.get('contact_wall', 0) < 0.3)
                 a_lvl = accel_level(acc, state['roll'], state['pitch'])
                 cyw, syw = math.cos(state['yaw']), math.sin(state['yaw'])
                 a_w = np.array([cyw * a_lvl[0] - syw * a_lvl[1],
                                 syw * a_lvl[0] + cyw * a_lvl[1], a_lvl[2]])
                 with KF_LOCK:
-                    KF.predict(a_w, dt)
+                    if in_contact:
+                        # freeze velocity propagation under contact forces
+                        KF.predict(np.zeros(3), dt)
+                        KF.v *= 0.9
+                    else:
+                        KF.predict(a_w, dt)
                     vw = KF.v
                 state['vx_b'] = cyw * vw[0] + syw * vw[1]
                 state['vy_b'] = -syw * vw[0] + cyw * vw[1]
@@ -357,6 +366,14 @@ def rx_loop():
             ATT_BUF.append((time.time(), state['roll'], state['pitch']))
         elif t == 'COLLISION':
             state['collision'] = msg.to_dict()
+            # CONTACT FLAG (07-10, Alex's insight): horizontal_minimum_delta
+            # < 5 cm = touching the world. Contact forces are not motion:
+            # the KF must not integrate them and guards must not fire on
+            # the resulting estimate garbage. 98-100%% of tonight's probe
+            # corpora were grounded -- every 'vehicle anomaly' was floor
+            # artifacts.
+            state['contact'] = msg.horizontal_minimum_delta < 0.05
+            state['contact_wall'] = time.time()
             jlog('collision', **msg.to_dict())
         elif t == 'ENCAPSULATED_DATA':
             d = bytes(msg.data)
@@ -701,7 +718,7 @@ def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0
     RATE_MAX = float(os.environ.get('RATE_MAX', '0.6'))
     rr = max(-RATE_MAX, min(RATE_MAX, rr)); pr = max(-RATE_MAX, min(RATE_MAX, pr))
     dthr = max(-0.06, min(0.06, 0.10 * (vz_ref - state['vz_up'])))
-    send_rate(rr, pr, yr, max(0.04, min(0.30, thr_base + dthr)))  # 0.24 = 8 g on this vehicle
+    send_rate(rr, pr, yr, max(0.05, min(0.6, thr_base + dthr)))
 
 def tilt(): return math.sqrt(state['roll']**2 + state['pitch']**2)
 
