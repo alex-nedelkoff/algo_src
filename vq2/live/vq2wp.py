@@ -856,6 +856,29 @@ if os.environ.get('VELPROBE') == '1':
     land('velocity probe complete')
     sys.exit(0)
 
+if os.environ.get('RATEPROBE') == '1':
+    # rate-command deadband probe: hover-scale corrections (~0.03 rad/s)
+    # produce no motion while EXCITE pulses (>=0.25) all worked. Step the
+    # pitch-rate command upward and find where the gyro responds.
+    while state.get('race_ms', 0) < 8500:
+        time.sleep(0.05)
+    _t0 = time.time()
+    while time.time() - _t0 < 1.2:
+        send_rate(0, 0, 0, 0.16); time.sleep(1/CMD_HZ)   # lift
+    _t0 = time.time()
+    while time.time() - _t0 < 2.0:
+        level_cmd(0, 0, 0); time.sleep(1/CMD_HZ)          # settle
+    for amp in (0.02, 0.04, 0.08, 0.12, 0.16, 0.25):
+        jlog('rateprobe', amp=amp)
+        _t0 = time.time()
+        while time.time() - _t0 < 0.8:
+            send_rate(0, amp, 0, HOVER); time.sleep(1/CMD_HZ)
+        _t0 = time.time()
+        while time.time() - _t0 < 1.5:
+            level_cmd(0, 0, 0); time.sleep(1/CMD_HZ)
+    land('rate probe complete')
+    sys.exit(0)
+
 if os.environ.get('EXCITE') == '1':
     # SysID excitation flight for the post-update vehicle (VQ1 playbook:
     # excite from steady state; fit offline, never in-air). Fine throttle
