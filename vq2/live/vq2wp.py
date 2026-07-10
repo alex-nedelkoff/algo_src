@@ -1226,7 +1226,17 @@ while not aborted:
                 yaw_ref_t += 0.3 * math.sin(0.9 * (now - state['_sweep_t0']))
                 vx_b_ref *= 0.3; vy_b_ref *= 0.3
         yr_cmd = SZ * max(-0.5, min(0.5, 1.2 * wrap(yaw_ref_t - state['yaw'])))
-        level_cmd(SX * vx_b_ref, SY * vy_b_ref, vz_ref, pitch_bias=-0.08, yr=yr_cmd)
+        if os.environ.get('CTRLV') == '1':
+            # HYBRID (RATEPROBE verdict): the armed-race vehicle obeys
+            # rate commands linearly to 0.02 rad/s yet damps translation
+            # (inner assist) -- 100 s hovers under commanded tilt. Route
+            # translation goes through the sim's velocity interface,
+            # which tracked laterally in every probe. NED z down = spawn
+            # z down (verified); xy mapping assumed spawn-aligned --
+            # first flight verifies via the position fixes.
+            send_vel(v_w[0], v_w[1], -vz_ref)
+        else:
+            level_cmd(SX * vx_b_ref, SY * vy_b_ref, vz_ref, pitch_bias=-0.08, yr=yr_cmd)
         state['_viz_ref'] = ref['pos']
         if now - last_route_log > 0.5:
             last_route_log = now
