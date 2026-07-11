@@ -143,16 +143,19 @@ if ARCHTEST:
         # ticking route, descaled to true units: S-curve through the
         # arch zone (~[4.3, -0.1], cross low z -0.85 like arch17's
         # raw-DR) then into the gate.
-        # STRAIGHT CHUTE (true-frame reset, 07-10): every stored
-        # y-coordinate predates the mirror fix and is wrong-side in the
-        # corrected frame; the chute is mirror-neutral (y ~ 0) and the
-        # gate re-anchors from the pad lock each run.
+        # DIRECTION-CONVENTION TEST (07-11, Alex protocol): fly a line
+        # deliberately OFFSET from the gate -- 'left' = 2 m at -y,
+        # 'up' = 2 m at -z -- and verify by eye in sim + viewer.
+        off = {'left': np.array([0.0, -2.0, 0.0]),
+               'up': np.array([0.0, 0.0, -2.0])}.get(
+                   os.environ.get('DIRTEST', ''), np.zeros(3))
+        tgt = gate + off
         pts = np.array([
             [0.0, 0.0, -1.3],
-            [2.0, 0.0, -1.2],
-            gate - 2.0 * N1,
-            gate,
-            gate + 2.0 * N1,
+            [2.0, off[1] * 0.5, -1.2 + off[2] * 0.5],
+            tgt - 2.0 * N1,
+            tgt,
+            tgt + 2.0 * N1,
         ])
         tr = GateTrajectory(pts, v_cruise=0.6, phi_max_deg=15.0,
                             tilt_budget_deg=12.0, vz_max=0.55)
@@ -847,6 +850,13 @@ if _pad_w is not None and np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
     TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
     state['next_gate_w'] = HIGH_W.copy()
     print(f'spline anchored to pad lock: aperture {G1_AP.round(2)} origin {G1_W.round(2)}', flush=True)
+    if _rr is not None:
+        try:
+            _rr.log('world/gate', _rr.Points3D([G1_AP.tolist()], radii=0.25,
+                                               colors=[255, 140, 0],
+                                               labels=['GATE (pad lock)']), static=True)
+        except Exception:
+            pass
 else:
     print('no course-gate pad obs -- flying the map', flush=True)
 
@@ -1329,7 +1339,8 @@ while not aborted:
         if (state['obs'] is not None and now - state['obs_wall'] < 0.8
                 and float(state['obs'][0]) < 7.5
                 and abs(float(state['obs'][1])) < 2.5
-                and (not ARCHTEST or s_here > 3.5)):
+                and (not ARCHTEST or s_here > 3.5)
+                and not os.environ.get('DIRTEST')):
             # HANDOFF RESTORED for ARCHTEST (07-10): route-only flying
             # reproduces the est-rotation drift every run (v3385 canary:
             # est crossed 0.25 m off-center, frames show 2-3 m right at
