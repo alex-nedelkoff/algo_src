@@ -169,6 +169,12 @@ if VIZ:
         import rerun as rr
         rr.init('vq2wp')
         rr.connect_grpc(MAC_VIEWER)
+        # declare the world frame handedness: spawn frame is FRD
+        # (x forward/downcourse, y right, z down). Without this, rerun
+        # renders z-down coords in its default z-up right-handed space:
+        # left/right appears MIRRORED and roll spikes render in the
+        # pitch plane (Alex spotted both on the live stream, 07-10).
+        rr.log('world', rr.ViewCoordinates.FRD, static=True)
         _rr = rr
     except Exception as e:
         print(f'rerun viz unavailable: {e}', flush=True)
