@@ -1147,8 +1147,9 @@ while not aborted:
                 # straight at approach speed. The 2 m/s blind lunge from
                 # 2.8 m (pursuit-oblique + stale-lat steering) missed the
                 # 1.5 m aperture left on arch34-36.
-                if fresh and fwd_ap < 1.5 and abs(lat) < 0.25 and abs(dz_err) < 0.5:
-                    punch_t0, punch_dur = now, (fwd_ap + 1.5) / 0.6
+                yaw_ok = abs(wrap(0.0 - state['yaw'])) < 0.15
+                if fresh and fwd_ap < 1.5 and abs(lat) < 0.25 and abs(dz_err) < 0.5 and yaw_ok:
+                    punch_t0, punch_dur = now, (fwd_ap + 1.5) / 1.0
                     phase = 'punch'
                     print(f'COAST from {fwd_ap:.1f} m (lat {lat:.2f} dwn {dwn:.2f})', flush=True)
             elif fresh and fwd_ap < 2.6 and abs(lat) < 0.35 and abs(dz_err) < 0.6:
@@ -1166,9 +1167,10 @@ while not aborted:
             fwd_est = lk[0] - float(np.hypot(dp[0], dp[1]))
             trig = 1.5 if ARCHTEST else 2.8 + ORIGIN_OFFSET
             lat_ok = 0.25 if ARCHTEST else 0.4
-            if fwd_est < trig and abs(lk[1]) < lat_ok:
+            if fwd_est < trig and abs(lk[1]) < lat_ok and (
+                    not ARCHTEST or abs(wrap(0.0 - state['yaw'])) < 0.15):
                 if ARCHTEST:
-                    punch_t0, punch_dur = now, (max(0.3, fwd_est) + 1.5) / 0.6
+                    punch_t0, punch_dur = now, (max(0.3, fwd_est) + 1.5) / 1.0
                     print(f'COAST (obs-DR) est {fwd_est:.1f} m (last lat {lk[1]:.2f}, obs age {now-lk[4]:.1f}s)', flush=True)
                 else:
                     punch_t0, punch_dur = now, max(0.6, fwd_est) / 2.0 + 1.2
@@ -1181,9 +1183,12 @@ while not aborted:
             phase, phase_t0, route_end_t0 = 'route', now, None
     elif phase == 'punch':
         if ARCHTEST:
-            # coast: straight through at approach speed, no steering on a
-            # stale observation
-            level_cmd(SX * 0.6, 0.0, 0)
+            # coast v2 (07-10 frames: bare slow coast angled ~1 m right of
+            # the aperture -- the oblique nose plus 5 s of blind drift):
+            # yaw-aligned trigger, 1 m/s, and hold yaw on the chute axis
+            # through the crossing
+            yr_hold = SZ * max(-0.3, min(0.3, 1.0 * wrap(0.0 - state['yaw'])))
+            level_cmd(SX * 1.0, 0.0, 0, yr=yr_hold)
         else:
             # hold the lateral line through the blind drive (#32 crossed drifting)
             lat_p = float(obs[1]) if obs is not None else 0.0
