@@ -1285,7 +1285,7 @@ while not aborted:
         if (state['obs'] is not None and now - state['obs_wall'] < 0.8
                 and float(state['obs'][0]) < 7.5
                 and abs(float(state['obs'][1])) < 2.5
-                and (not ARCHTEST or s_here > 1.5)):
+                and (not ARCHTEST or s_here > 3.5)):
             # HANDOFF RESTORED for ARCHTEST (07-10): route-only flying
             # reproduces the est-rotation drift every run (v3385 canary:
             # est crossed 0.25 m off-center, frames show 2-3 m right at
