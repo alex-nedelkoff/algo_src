@@ -59,7 +59,8 @@ HOVER = 0.2675  # 07-10: the vehicle NEVER changed. THRPROBE's 'hover 0.12'
 CMD_HZ = 50.0
 TILT_ABORT = math.radians(55)
 RATE_GAIN = 1.93
-SIGN_R, SIGN_P = -1.0, +1.0
+SIGN_R, SIGN_P = +1.0, +1.0   # true-frame plant: roll +2.0, pitch +1.8 (oracles 07-10)
+YAW_SIGN = -1.0               # yaw plant negative in the true frame
 KP = 1.8
 K_V = 0.07  # outer-loop limit cycle (Rerun cmd-vs-act, 07-10): vision-velocity jitter -> roll_ref oscillation; cut gain
 CAM_TILT = math.radians(20.0)
@@ -239,8 +240,8 @@ def viz_tick(p, ref_pos=None):
                 rr.log('cmd/thrust', rr.Scalars(float(lc[3])))
             g_ = state['gyr']
             rr.log('act/roll_rate', rr.Scalars(float(g_[0])))
-            rr.log('act/pitch_rate', rr.Scalars(-float(g_[1])))
-            rr.log('act/yaw_rate', rr.Scalars(-float(g_[2])))
+            rr.log('act/pitch_rate', rr.Scalars(float(g_[1])))
+            rr.log('act/yaw_rate', rr.Scalars(float(g_[2])))
             rr.log('act/vx_b', rr.Scalars(float(state['vx_b'])))
             rr.log('act/vy_b', rr.Scalars(float(state['vy_b'])))
             rr.log('act/vz_up', rr.Scalars(float(state['vz_up'])))
@@ -322,14 +323,18 @@ def rx_loop():
                 d['data'] = bytes(msg.data)[:64].hex()
             rec_mav.write(json.dumps(d, default=str) + '\n')
         if t == 'HIGHRES_IMU':
-            acc = (msg.xacc, msg.yacc, msg.zacc)
-            gyr = (msg.xgyro, msg.ygyro, msg.zgyro)
+            # SENSOR SIGN MODEL (07-10, frame-truth oracles + Alex's live
+            # ground truth): the sim streams NEGATED body rates on ALL
+            # axes and a NEGATED accel y. Ingest as true FRD here; all
+            # downstream math is standard.
+            acc = (msg.xacc, -msg.yacc, msg.zacc)
+            gyr = (-msg.xgyro, -msg.ygyro, -msg.zgyro)
             us = msg.time_usec
             if last_us is not None and us > last_us:
                 dt = (us - last_us) / 1e6
-                state['roll'] += gyr[0] * dt
-                state['pitch'] += (-gyr[1]) * dt      # wfix
-                state['yaw'] += (-gyr[2]) * dt        # wfix (yaw mirrored too)
+                state['roll'] += gyr[0] * dt      # standard FRD (stream corrected above)
+                state['pitch'] += gyr[1] * dt
+                state['yaw'] += gyr[2] * dt
                 # windowed force-balance ROLL TRIM (VQ2-DRIFT-01 root cause:
                 # per-flight roll bias -> phantom lateral force -> every gate
                 # miss, invisible to DR). Over a 1 s contiguous-quiet window,
@@ -748,7 +753,7 @@ def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0
     RATE_MAX = float(os.environ.get('RATE_MAX', '0.6'))
     rr = max(-RATE_MAX, min(RATE_MAX, rr)); pr = max(-RATE_MAX, min(RATE_MAX, pr))
     dthr = max(-0.06, min(0.06, 0.10 * (vz_ref - state['vz_up'])))
-    send_rate(rr, pr, yr, max(0.05, min(0.6, thr_base + dthr)))
+    send_rate(rr, pr, YAW_SIGN * yr, max(0.05, min(0.6, thr_base + dthr)))
 
 def tilt(): return math.sqrt(state['roll']**2 + state['pitch']**2)
 
