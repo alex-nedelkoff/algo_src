@@ -178,6 +178,14 @@ if VIZ:
         # left/right appears MIRRORED and roll spikes render in the
         # pitch plane (Alex spotted both on the live stream, 07-10).
         rr.log('world', rr.ViewCoordinates.FRD, static=True)
+        # handedness beacons: labeled points at pad-right and pad-left so
+        # the viewer's left/right is decidable at a glance from any eye
+        rr.log('world/beacon_right', _rr_pts_right := None or rr.Points3D(
+            [[1.0, 2.0, -1.0]], radii=0.15, colors=[255, 0, 0],
+            labels=['RIGHT of pad (+y)']), static=True)
+        rr.log('world/beacon_left', rr.Points3D(
+            [[1.0, -2.0, -1.0]], radii=0.15, colors=[0, 100, 255],
+            labels=['LEFT of pad (-y)']), static=True)
         _rr = rr
     except Exception as e:
         print(f'rerun viz unavailable: {e}', flush=True)
@@ -189,6 +197,14 @@ def _viz_static():
     try:
         rr = _rr
         rr.log('world', rr.ViewCoordinates.FRD, static=True)
+        # handedness beacons: labeled points at pad-right and pad-left so
+        # the viewer's left/right is decidable at a glance from any eye
+        rr.log('world/beacon_right', _rr_pts_right := None or rr.Points3D(
+            [[1.0, 2.0, -1.0]], radii=0.15, colors=[255, 0, 0],
+            labels=['RIGHT of pad (+y)']), static=True)
+        rr.log('world/beacon_left', rr.Points3D(
+            [[1.0, -2.0, -1.0]], radii=0.15, colors=[0, 100, 255],
+            labels=['LEFT of pad (-y)']), static=True)
         centers, sizes, labels = [], [], []
         for i, g in enumerate(GATES_W[:2]):
             centers.append(g.tolist())
@@ -522,13 +538,6 @@ def _det_loop():
             Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
             Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
             g_lvl = Ry @ (Rx @ g_b)
-            # CAMERA-CHAIN Y-MIRROR FIX (07-10): the IMU/DR chain is
-            # flight-proven correct (flipping it exploded DR to -400 m);
-            # the est-vs-true lateral mirror Alex observed lives in the
-            # detection transform's hidden sign layer. Negate the level
-            # lateral here -- every obs, fix, and servo input downstream
-            # inherits the correction.
-            g_lvl[1] = -g_lvl[1]
             state['det_wall'] = time.time()
             # phase-dependent z sanity: ON THE PAD (at rest, attitude exact,
             # obs-z bias absent) apertures read z ~ -0.6, so 2.0 rejects the
