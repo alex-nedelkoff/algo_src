@@ -61,7 +61,7 @@ TILT_ABORT = math.radians(55)
 RATE_GAIN = 1.93
 SIGN_R, SIGN_P = -1.0, +1.0
 KP = 1.8
-K_V = 0.12
+K_V = 0.07  # outer-loop limit cycle (Rerun cmd-vs-act, 07-10): vision-velocity jitter -> roll_ref oscillation; cut gain
 CAM_TILT = math.radians(20.0)
 MISSION_S = 240.0
 TARGET_TICKS = int(os.environ.get('TICKS', '1'))  # prove ONE tick first; TICKS=2 chains to the next gate
@@ -1138,7 +1138,7 @@ while not aborted:
             lat_slow = max(0.4, 1.0 - 0.3 * min(abs(lat), 2.0))
             dwn_slow = max(0.45, 1.0 - 0.5 * min(abs(dz_err), 1.5))
             vx_ref = min(1.4, max(0.6, 0.4 * (fwd - 1.0))) * lat_slow * dwn_slow   # slow: the detector drops the gate ~9 m out above ~1.5 m/s (flight #33)
-            lat_gain = 0.6 if fwd < 8.0 else 0.25
+            lat_gain = 0.35 if fwd < 8.0 else 0.2   # halved: servo sway through the crossing (07-10)
             vy_ref = max(-1.0, min(1.0, lat_gain * lat))
             # align-then-shoot: the start-light poles flank the course at ~x 5
             # with a ~+-1 m corridor (flights #3/#5/#6/#8 clipped them arriving
