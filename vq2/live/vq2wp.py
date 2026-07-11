@@ -1266,15 +1266,16 @@ while not aborted:
         # vision handoff for EVERY gate: KF world position over-integrates at
         # speed (+3 m by the gate, flight #31 dashboard), so the terminal leg
         # must servo on RELATIVE obs -- the only recipe that ever ticked
-        if (not ARCHTEST
-                and state['obs'] is not None and now - state['obs_wall'] < 0.8
+        if (state['obs'] is not None and now - state['obs_wall'] < 0.8
                 and float(state['obs'][0]) < 7.5
-                and abs(float(state['obs'][1])) < 2.5):
-            # ARCHTEST flies route-only: with the affine range correction,
-            # vision fixes and IMU share a metric space, so the map carrot
-            # crosses the aperture without the pursuit handoff (arch37:
-            # handoff fired at the pad, pursuit ran the whole chute at
-            # 1.4 m/s, est runaway, imp 9.3)
+                and abs(float(state['obs'][1])) < 2.5
+                and (not ARCHTEST or s_here > 1.5)):
+            # HANDOFF RESTORED for ARCHTEST (07-10): route-only flying
+            # reproduces the est-rotation drift every run (v3385 canary:
+            # est crossed 0.25 m off-center, frames show 2-3 m right at
+            # Station 21's pillar). All four ticks ever scored came via
+            # this relative-obs servo, which rotation error cannot touch.
+            # s_here > 1.5 keeps it from firing over the pad (arch37).
             # handoff only INSIDE the furniture radius: an early lock pulls the
             # drone off the dogleg straight into the x~5-7 structure (flight #36).
             # |lat| bound: arch26 locked a junk solve 4.3 m off-axis and the
