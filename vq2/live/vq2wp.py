@@ -845,6 +845,11 @@ if _pad_w is not None and np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
     # pad measurement confirms the mapped course gate: anchor to it
     G1_W = _pad_w
     G1_AP = G1_W - ORIGIN_OFFSET * N1
+    # JUDGE-CALIBRATED AIM BIAS (07-11): the accidental DIRTEST=left tick
+    # proved the true aperture sits ~2 m left (-y) of the pad-locked
+    # bearing (PnP origin displaced along the gate's rotated normal).
+    # Applied to the anchor so route, servo target, and coast all inherit.
+    G1_AP[1] += float(os.environ.get('AIMBIAS_Y', '0.0'))
     HIGH_W = G1_AP.copy()
     GATES_W[0] = HIGH_W
     TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
