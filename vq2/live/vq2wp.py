@@ -1105,6 +1105,10 @@ while not aborted:
             # perch blinds the 20-deg-up camera (flight #10)
             z_tgt = float(state['next_gate_w'][2])
             dz_err = pz - z_tgt
+            if now - state.get('_ap_log', 0) > 0.5:
+                state['_ap_log'] = now
+                jlog('approach', fwd=round(float(fwd), 2), lat=round(float(lat), 2),
+                     dz=round(float(dz_err), 2), age=round(float(age), 2))
             lat_slow = max(0.4, 1.0 - 0.3 * min(abs(lat), 2.0))
             dwn_slow = max(0.45, 1.0 - 0.5 * min(abs(dz_err), 1.5))
             vx_ref = min(1.4, max(0.6, 0.4 * (fwd - 1.0))) * lat_slow * dwn_slow   # slow: the detector drops the gate ~9 m out above ~1.5 m/s (flight #33)
