@@ -940,7 +940,8 @@ if os.environ.get('EXCITE') == '1':
     sys.exit(0)
 
 def guards(phase):
-    if tilt() > TILT_ABORT: return f'tilt abort ({phase})'
+    tilt_lim = TILT_ABORT * (1.6 if phase == 'punch' else 1.0)
+    if tilt() > tilt_lim: return f'tilt abort ({phase})'
     c = state['collision']
     imp_lim = 4.0 if phase == 'punch' else 2.5
     if c and c.get('threat_level', 0) >= 2 and c.get('horizontal_minimum_delta', 0) > imp_lim:
