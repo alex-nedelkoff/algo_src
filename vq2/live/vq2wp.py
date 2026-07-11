@@ -144,11 +144,14 @@ if ARCHTEST:
         # ticking route, descaled to true units: S-curve through the
         # arch zone (~[4.3, -0.1], cross low z -0.85 like arch17's
         # raw-DR) then into the gate.
+        # STRAIGHT CHUTE (true-frame reset, 07-10): every stored
+        # y-coordinate predates the mirror fix and is wrong-side in the
+        # corrected frame; the chute is mirror-neutral (y ~ 0) and the
+        # gate re-anchors from the pad lock each run.
         pts = np.array([
             [0.0, 0.0, -1.3],
-            [2.5, 0.8, -1.1],
-            [4.3, -0.1, -0.85],
-            [5.2, 0.35, -1.1],
+            [2.0, 0.0, -1.2],
+            gate - 2.0 * N1,
             gate,
             gate + 2.0 * N1,
         ])
