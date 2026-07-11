@@ -137,10 +137,17 @@ if ARCHTEST:
         # -10 s) show exactly this line: green start lights both sides,
         # gate dead ahead.
         gate = G1_AP
+        # TICK-GEOMETRY REPLICA (07-10): every scored tick transited the
+        # start-arch zone before the gate; today's straight chute (0/6,
+        # frame-verified centered crossings) never did. Yesterday's
+        # ticking route, descaled to true units: S-curve through the
+        # arch zone (~[4.3, -0.1], cross low z -0.85 like arch17's
+        # raw-DR) then into the gate.
         pts = np.array([
             [0.0, 0.0, -1.3],
-            [2.0, 0.3, -1.2],
-            gate - 2.0 * N1,
+            [2.5, 0.8, -1.1],
+            [4.3, -0.1, -0.85],
+            [5.2, 0.35, -1.1],
             gate,
             gate + 2.0 * N1,
         ])
