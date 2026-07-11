@@ -222,6 +222,23 @@ def viz_tick(p, ref_pos=None):
                                                    colors=[255, 255, 0]))
             rr.log('plots/alt_m', rr.Scalars(-float(p[2])))
             rr.log('plots/gate_idx', rr.Scalars(float(state['gate_idx'])))
+            # CMD vs ACTUAL (07-10, Alex: 'sway -- disconnect between
+            # command and actual'): commanded body rates + thrust against
+            # measured gyro and estimated velocity, same timeline
+            lc = state.get('last_cmd')
+            if lc is not None:
+                rr.log('cmd/roll_rate', rr.Scalars(float(lc[0])))
+                rr.log('cmd/pitch_rate', rr.Scalars(float(lc[1])))
+                rr.log('cmd/yaw_rate', rr.Scalars(float(lc[2])))
+                rr.log('cmd/thrust', rr.Scalars(float(lc[3])))
+            g_ = state['gyr']
+            rr.log('act/roll_rate', rr.Scalars(float(g_[0])))
+            rr.log('act/pitch_rate', rr.Scalars(-float(g_[1])))
+            rr.log('act/yaw_rate', rr.Scalars(-float(g_[2])))
+            rr.log('act/vx_b', rr.Scalars(float(state['vx_b'])))
+            rr.log('act/vy_b', rr.Scalars(float(state['vy_b'])))
+            rr.log('act/vz_up', rr.Scalars(float(state['vz_up'])))
+            rr.log('act/tilt_deg', rr.Scalars(math.degrees(tilt()) if state.get('airborne') else 0.0))
         jp = state.get('jpeg')
         if jp is not None and now - _viz_last[1] > 0.2:
             _viz_last[1] = now
@@ -698,6 +715,7 @@ def _det_loop():
 
 def send_rate(rr, pr, yr, thr):
     state['last_thr'] = thr
+    state['last_cmd'] = (rr, pr, yr, thr)
     m.mav.set_attitude_target_send(
         int(time.time()*1000) & 0xFFFFFFFF, m.target_system, m.target_component,
         mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE,
