@@ -366,6 +366,12 @@ def rx_loop():
             acc = (msg.xacc, msg.yacc, msg.zacc)
             gyr = (msg.xgyro, msg.ygyro, msg.zgyro)
             us = msg.time_usec
+            # 38% of HIGHRES_IMU messages are exact re-sends of the previous
+            # sample ~0.2 ms later (07-12 corpus audit, vq2_night1: 1541 of
+            # 1549 sub-ms pairs bit-identical). Skip them: no information,
+            # and they double-integrate the same sample over the sub-ms dt.
+            if last_us is not None and 0 <= us - last_us < 1000:
+                continue
             if last_us is not None and us > last_us:
                 dt = (us - last_us) / 1e6
                 state['roll'] += gyr[0] * dt
@@ -812,7 +818,7 @@ def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0
     rr = SIGN_R * (KP * (roll_ref - state['roll'])) / RATE_GAIN
     pr = SIGN_P * (KP * (pitch_ref - state['pitch'])) / RATE_GAIN
     # RATE DISCIPLINE (07-06 collapse root cause): commanded transients hit
-    # 356 deg/s measured; HIGHRES_IMU drops ~24% of samples (14 ms gaps), and
+    # 356 deg/s measured; HIGHRES_IMU cadence is bursty (unique samples at 7/14/28 ms), and
     # gyro integration across gaps at those rates accrues 1-3 deg PERMANENT
     # attitude error -> gravity leak -> estimate runaway. The attitude chain
     # is proven clean below ~1 rad/s actual; RATE_GAIN 1.93 means +-0.6
