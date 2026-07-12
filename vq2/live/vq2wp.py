@@ -239,6 +239,7 @@ def _viz_static():
         pass
 
 _trail = []
+_fixpts = deque(maxlen=200)   # accepted vision-fix positions (viewer markers)
 _viz_last = [0.0, 0.0]   # [pose_wall, cam_wall]
 
 def viz_tick(p, ref_pos=None):
@@ -268,6 +269,14 @@ def viz_tick(p, ref_pos=None):
                                                    colors=[255, 255, 0]))
             rr.log('plots/alt_m', rr.Scalars(-float(p[2])))
             rr.log('plots/gate_idx', rr.Scalars(float(state['gate_idx'])))
+            # vision-fix markers: red dots where accepted fixes snapped the
+            # KF -- attributes the trail's jerks to fixes, not IMU noise
+            lf = state.get('_last_fix')
+            if lf is not None and now - lf[2] < 0.5:
+                _fixpts.append(lf[0])
+                rr.log('world/vision_fixes',
+                       rr.Points3D(list(_fixpts), radii=0.07,
+                                   colors=[255, 60, 60]))
             # CMD vs ACTUAL (07-10, Alex: 'sway -- disconnect between
             # command and actual'): commanded body rates + thrust against
             # measured gyro and estimated velocity, same timeline
@@ -760,6 +769,9 @@ def _det_loop():
                     nis = getattr(KF, 'last_nis', None)
                     p_now = KF.p.round(2).tolist(); v_now = KF.v.round(2).tolist()
                 state['fix_count'] = state.get('fix_count', 0) + 1
+                # viewer attribution: mark each accepted fix so the trail's
+                # snaps read as "vision fix here", not IMU noise
+                state['_last_fix'] = (list(p_now), round(miss, 2), time.time())
                 jlog('kf_upd', ok=ok, miss=round(miss, 2),
                      r_scale=round(r_scale, 2),
                      nis=round(nis, 2) if nis is not None else None,
