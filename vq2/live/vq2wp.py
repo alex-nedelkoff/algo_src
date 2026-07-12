@@ -605,6 +605,17 @@ def _det_loop():
             with KF_LOCK:
                 p_kf = KF.p.copy()
             rng_meas = float(np.linalg.norm(g_lvl))
+            if (os.environ.get('NOFIX') == '1' and state.get('airborne')
+                    and ticks == 0):
+                # PURE-DR CHUTE (07-12 error budget): sim IMU is NOISELESS
+                # (at-rest gyro/accel sigma = 0 to 5 decimals) while in-
+                # flight detection lateral noise is sigma 0.3-1.4 m per obs
+                # -- position fixes at 1.7 Hz were injecting the entire
+                # +-1.5 m crossing spread into a near-perfect DR chain.
+                # Pre-tick: pad anchor only, no in-flight position fixes.
+                jlog('obs_nofix', ns=ns, rng=round(rng_meas, 1))
+                cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
+                continue
             _rng_cap = 14.0
             if os.environ.get('G2TEST') == '1':
                 # G2TEST (07-12, run 5): the course gates are IDENTICAL, so
