@@ -150,15 +150,33 @@ if ARCHTEST:
                'up': np.array([0.0, 0.0, -2.0])}.get(
                    os.environ.get('DIRTEST', ''), np.zeros(3))
         tgt = gate + off
-        pts = np.array([
+        pts = [
             [0.0, 0.0, -1.3],
             [2.0, off[1] * 0.5, -1.2 + off[2] * 0.5],
             tgt - 2.0 * N1,
             tgt,
             tgt + 2.0 * N1,
-        ])
+        ]
+        if os.environ.get('G2TEST') == '1':
+            # GATE-2 SEGMENT MAP (07-11): gate-2 center from the ribbon
+            # triangulation artifact (g2rib_corners_world), expressed as a
+            # DELTA from the same pipeline's gate-1 center so the shared
+            # detection-chain bias cancels: [5.14, 5.26, 0]. Applied to
+            # the judge-calibrated ticking aperture (tgt). Frame-verified:
+            # after gate 1 the ribbon turns right ~24 deg to gate 2,
+            # crossed along +x. Same aperture z (official gates identical).
+            g2 = tgt + np.array([5.14, 5.26, 0.0])
+            pts += [
+                (tgt + g2) / 2 + np.array([-0.5, 0.0, 0.0]),  # swing wide into the right turn
+                g2 - 2.5 * np.array([1.0, 0.0, 0.0]),
+                g2,
+                g2 + 2.5 * np.array([1.0, 0.0, 0.0]),
+            ]
+        pts = np.array(pts)
         tr = GateTrajectory(pts, v_cruise=0.6, phi_max_deg=15.0,
                             tilt_budget_deg=12.0, vz_max=0.55)
+        if os.environ.get('G2TEST') == '1':
+            return tr, [tr.nearest_s(gate), tr.nearest_s(pts[-2]), tr.s_max]
         return tr, [tr.nearest_s(gate), tr.s_max, tr.s_max]
 
 TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
@@ -852,6 +870,11 @@ if _pad_w is not None and np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
     G1_AP[1] += float(os.environ.get('AIMBIAS_Y', '0.0'))
     HIGH_W = G1_AP.copy()
     GATES_W[0] = HIGH_W
+    if os.environ.get('G2TEST') == '1':
+        # keep the tick-handler aim/z targets on the SAME gate-2 the
+        # G2TEST spline flies (delta from the ticking aperture)
+        G2_W = HIGH_W + np.array([5.14, 5.26, 0.0])
+        GATES_W[1] = GATES_W[2] = G2_W.copy()
     TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
     state['next_gate_w'] = HIGH_W.copy()
     print(f'spline anchored to pad lock: aperture {G1_AP.round(2)} origin {G1_W.round(2)}', flush=True)
