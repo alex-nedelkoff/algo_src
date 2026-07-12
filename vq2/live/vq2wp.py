@@ -1109,18 +1109,97 @@ while time.time() - t0 < 1.6 and not aborted:
     # fixes keep flowing from t0 (map v2 retired the near-pad arch
     # anchor; if the gate leaves view, DR owns the flight and wanders)
     yr_c = 0.0
-    if state['obs'] is not None and time.time() - state['obs_wall'] < 1.0:
+    if (state['obs'] is not None and time.time() - state['obs_wall'] < 1.0
+            and os.environ.get('STRAIGHTTEST') != '1'):
         brg = math.atan2(float(state['obs'][1]), float(state['obs'][0]))
         yr_c = max(-0.3, min(0.3, 1.0 * brg))   # SZ=+1 (flight-measured default; defined later)
     level_cmd(0, 0, 1.0, yr=yr_c); aborted = guards('climb'); time.sleep(1/CMD_HZ)
 state['airborne'] = True   # loosens the det z-guard (in-flight obs-z bias)
 print(f'airborne tilt {math.degrees(tilt()):.1f} vz {state["vz_up"]:.2f}', flush=True)
 
+if os.environ.get('RELEVEL') == '1' and not aborted:
+    # TRANSIENT WIPE (07-12): the spawn sits at -17.8 deg pitch and the
+    # takeoff level-off rotates ~0.5 rad/s across the stream's 28 ms
+    # sample gaps -- unsampled rotation banks 2-4 deg of permanent
+    # attitude error (the entire -2.0/+0.5 aim-bias budget; sensor
+    # itself is noiseless). Hover 1.2 s, then re-zero attitude from the
+    # accel (exact at hover) and zero the KF velocity once (its error
+    # comes from the same wrong attitude; the controller would chase it).
+    _acc_win = []
+    t0 = time.time()
+    while time.time() - t0 < 1.2 and not aborted:
+        level_cmd(0, 0, 0)
+        if time.time() - t0 > 0.4:
+            _acc_win.append(state['acc'])
+        aborted = guards('climb'); time.sleep(1/CMD_HZ)
+    if _acc_win and not aborted:
+        axm = sum(a[0] for a in _acc_win) / len(_acc_win)
+        aym = sum(a[1] for a in _acc_win) / len(_acc_win)
+        azm = sum(a[2] for a in _acc_win) / len(_acc_win)
+        an = math.sqrt(axm*axm + aym*aym + azm*azm)
+        if abs(an - 9.81) < 0.8:      # genuine near-hover: level formula valid
+            r_old, p_old = state['roll'], state['pitch']
+            state['roll'] = math.atan2(aym, -azm)
+            state['pitch'] = math.atan2(axm, math.sqrt(aym*aym + azm*azm))
+            with KF_LOCK:
+                KF.x[3:6] = 0.0
+            print(f'RELEVEL: roll {math.degrees(r_old):+.1f} -> '
+                  f'{math.degrees(state["roll"]):+.1f} deg, pitch '
+                  f'{math.degrees(p_old):+.1f} -> {math.degrees(state["pitch"]):+.1f} deg, v zeroed',
+                  flush=True)
+            jlog('relevel', dr=round(math.degrees(state['roll'] - r_old), 2),
+                 dp=round(math.degrees(state['pitch'] - p_old), 2))
+        else:
+            print(f'RELEVEL skipped: |f| {an:.2f} not hover-quiet', flush=True)
+
 # AXIS PROBES (frame tripwires -- physical defaults, flip only on strong evidence).
 # Flight 2026-07-05 #3 measured SX/SY/SZ all +1 AND the probe shove (2 m off-axis,
 # +16 deg yaw) misaligned the G1 approach into a gate-post clip. Probes now
 # opt-in via PROBES=1; the measured physical signs are the default.
 SX, SY = 1.0, 1.0
+
+if os.environ.get('RECENTER') == '1' and not aborted:
+    # FLY OUT THE CLIMB DRIFT (07-12 straight probe): takeoff physically
+    # displaces the drone ~+1.0 m y / -0.55 m z and the estimator TRACKS
+    # it (real motion, noiseless DR). Don't compensate in the aim --
+    # converge back to the spawn line on the estimate, then fly the
+    # chute. Kills the +-0.75 run-to-run crossing lottery at its source.
+    _tgt = np.array([0.0, 0.0, -1.3])
+    t0 = time.time()
+    while time.time() - t0 < 8.0 and not aborted:
+        with KF_LOCK:
+            _p = KF.p.copy()
+        _d = _tgt - _p
+        if float(np.hypot(_d[1], _d[2])) < 0.15:
+            break
+        _vy = max(-0.5, min(0.5, 0.8 * float(_d[1])))
+        _vz = max(-0.5, min(0.5, -0.8 * float(_d[2])))   # vz_ref is up-positive
+        level_cmd(0.0, _vy, _vz)
+        aborted = guards('climb')
+        time.sleep(1/CMD_HZ)
+    with KF_LOCK:
+        _p = KF.p.copy()
+    print(f'RECENTER done at [{_p[0]:.2f} {_p[1]:.2f} {_p[2]:.2f}] '
+          f'({time.time()-t0:.1f} s)', flush=True)
+    jlog('recenter', p=[round(float(x), 2) for x in _p], t=round(time.time()-t0, 1))
+
+if os.environ.get('STRAIGHTTEST') == '1' and not aborted:
+    # SWIVEL ISOLATION (07-12, Alex's eyes-on): climb a little, fly
+    # straight forward 5 s, yaw rate pinned to 0 the whole way. No
+    # route, no servo, no nose aiming -- if the drone still swivels,
+    # the yaw motion is not commanded by us.
+    print('STRAIGHTTEST: 5 s forward, yr=0', flush=True)
+    t0 = time.time()
+    while time.time() - t0 < 5.0 and not aborted:
+        level_cmd(0.8, 0, 0, yr=0.0)
+        jlog('straight', yaw=round(state['yaw'], 4),
+             gz=round(float(state['gyr'][2]), 4),
+             p=[round(float(x), 2) for x in KF.p])
+        aborted = guards('route')
+        time.sleep(1/CMD_HZ)
+    land(aborted or 'straight test complete')
+    sys.exit(0)
+
 RUN_PROBES = os.environ.get('PROBES') == '1'
 def probe_axis(vx_r, vy_r, dur=1.2):
     v0 = np.array([state['vx_b'], state['vy_b']])
@@ -1411,7 +1490,16 @@ while not aborted:
         # up behind (flight #14's spin into structure); tangent is stable and
         # keeps the camera downcourse for re-acquisition
         yaw_ref_t = math.atan2(float(ref['tang'][1]), float(ref['tang'][0]))
-        if ARCHTEST and ARCH_SWEEP_S < s_here < s_stop - 1.0:
+        if os.environ.get('NOFIX') == '1' and ticks == 0:
+            # HEADING LOCK on the blind chute (07-12 recenter traces): the
+            # obs-stale scan sweep oscillated yaw the entire chute (obs are
+            # ALWAYS stale under NOFIX) and yaw rotation across the 28 ms
+            # IMU gaps banks yaw error that rotates the whole DR frame --
+            # est crossed at a perfect -2.06 while the frames show the
+            # truth 2-3 m right into the top bar. Camera is unused
+            # pre-tick; hold heading, full speed.
+            yaw_ref_t = 0.0
+        elif ARCHTEST and ARCH_SWEEP_S < s_here < s_stop - 1.0:
             # perception-aware yaw (bench, arch15 corridor: nose a median
             # 72 deg off the est-expected gate under tangent yaw -- the
             # detector starves because the camera never faces the target).
