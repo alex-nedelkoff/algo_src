@@ -930,6 +930,11 @@ if _pad_w is not None and np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
     # bearing (PnP origin displaced along the gate's rotated normal).
     # Applied to the anchor so route, servo target, and coast all inherit.
     G1_AP[1] += float(os.environ.get('AIMBIAS_Y', '0.0'))
+    # AIMBIAS_Z (07-12 batch6): under NOFIX the z channel is pure DR too,
+    # and it drifts ~+0.5 m up through the takeoff climb -- three of six
+    # crossings clipped the TOP bar (frames: yellow warning stripe).
+    # Positive value = aim lower (FRD z down).
+    G1_AP[2] += float(os.environ.get('AIMBIAS_Z', '0.0'))
     HIGH_W = G1_AP.copy()
     GATES_W[0] = HIGH_W
     if os.environ.get('G2TEST') == '1':
