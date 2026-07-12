@@ -293,6 +293,7 @@ def viz_tick(p, ref_pos=None):
     except Exception:
         pass
 LEAD = 2.5                      # carrot lead (m); drone-locked s_ref cannot run away
+CARROT_DS = 0.12                # max s advance per 20 Hz iter (~2.4 m/s along-track)
 V_ROUTE_MAX = float(os.environ.get('VMAX', '1.0'))  # slow everywhere: keep the detector locked to punch range
 ACCEPT_R = 3.0                  # legacy radius gate (POLICY=radius rollback + hysteresis bound)
 OBS_POLICY = os.environ.get('POLICY', 'huber_area')  # 'huber_area' | 'radius'
@@ -589,7 +590,16 @@ def _det_loop():
             with KF_LOCK:
                 p_kf = KF.p.copy()
             rng_meas = float(np.linalg.norm(g_lvl))
-            if ARCHTEST and rng_meas > 14.0:
+            _rng_cap = 14.0
+            if os.environ.get('G2TEST') == '1':
+                # G2TEST (07-12, run 5): the course gates are IDENTICAL, so
+                # constellation identity cannot tell gate 2 from gate 1.
+                # Gate-2 sightings at rng 10-13 m identity-passed as G1 and
+                # huber-dragged the KF backward (miss 3.4-4.9 accepted).
+                # Every legitimate fix on this route is < 8 m: gate 1 from
+                # the pad is 6.9, gate 2 from the gate-1 crossing is 7.4.
+                _rng_cap = 8.0
+            if ARCHTEST and rng_meas > _rng_cap:
                 # the verification course is <= 14 m end to end; far solves
                 # are hangar junk, and huber's inflate-don't-discard walked
                 # the KF into a pillar on them (arch19: miss 8-21 accepted
@@ -597,9 +607,30 @@ def _det_loop():
                 jlog('obs_far_archtest', ns=ns, rng=round(rng_meas, 1))
                 cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
                 continue
+            if os.environ.get('G2TEST') == '1' and ticks == 0:
+                # pre-tick blackout past the crossing zone: from the late
+                # chute gate 2 is also < 8 m and indistinguishable from
+                # gate 1, and near-range G1 fixes carry the ~2 m lateral
+                # bias with a huge identity tolerance (220 px at 1.6 m).
+                # LATCHED (run 7: a soft x>5.9 gate chattered -- fixes at
+                # x<5.9 dragged est back out of the zone and re-opened the
+                # tap). Once armed, ride DR until the tick.
+                if p_kf[0] > 5.5:
+                    state['_g2_blackout'] = True
+                if state.get('_g2_blackout'):
+                    jlog('obs_blackout_g2test', ns=ns, rng=round(rng_meas, 1))
+                    continue
             ident_full = False
             miss, match_g = 1e9, None
-            for gw_map in (G1_W, RIB_W, G2_W, DECOY_W):
+            # pre-tick under G2TEST the moved-in G2_W anchor (12 m, was
+            # parked at 31.6) becomes range-plausible from the mid-chute and
+            # steals matches from G1 (runs 5-6: est dragged +y/backward off
+            # the ticking line). Gate 2 only becomes a legal anchor after
+            # tick 1.
+            _cands = ((G1_W, RIB_W) if (os.environ.get('G2TEST') == '1'
+                                        and ticks == 0)
+                      else (G1_W, RIB_W, G2_W, DECOY_W))
+            for gw_map in _cands:
                 if OBS_POLICY in ('huber_area', 'huber'):
                     rng_exp = float(np.linalg.norm((gw_map - p_kf)[:2]))
                     ratio = (min(rng_meas / max(rng_exp, 0.1),
@@ -1297,7 +1328,16 @@ while not aborted:
         # map-spline carrot on KF dead reckoning, nose along the carrot
         with KF_LOCK:
             p = KF.p.copy()
-        s_here = TRAJ.nearest_s(p)
+        # WINDOWED CARROT (07-11/12, g2test runs 1-4): with the G2TEST leg the
+        # spline passes within ~2 m of the start chute and the raw global
+        # nearest-s projection leaps onto the turn leg (run 3: 2.99 -> 12.61;
+        # run 4 showed rate-limiting the advance only CREEPS to the same wrong
+        # leg). Search only a window around the previous s so the other leg is
+        # never a candidate, and keep the advance monotonic + rate-limited.
+        s_prev = state.get('_s_prev', 0.0)
+        s_raw = TRAJ.nearest_s_window(p, s_prev - 1.0, s_prev + 2.0)
+        s_here = min(s_raw, s_prev + CARROT_DS) if s_raw > s_prev else s_prev
+        state['_s_prev'] = s_here
         # carrot stops just past the next UN-TICKED gate: #12 blew through G2's
         # plane blind because the carrot ran the whole spline while validation
         # still expected G1
@@ -1386,7 +1426,9 @@ while not aborted:
             # re-cross 0.4 m higher (the aperture height is only known to
             # ~0.5 m; #17 crossed at 1.3, #18 at 2.24, no tick; #4 ticked ~2.7)
             route_end_t0 = route_end_t0 or now
-            if now - route_end_t0 > 4.0:
+            # G2TEST: judge flip lags the crossing ~2 s and run 3's tick
+            # arrived during the landing -- give it 8 s before giving up
+            if now - route_end_t0 > (8.0 if os.environ.get('G2TEST') == '1' else 4.0):
                 retries += 1
                 if retries > 3:
                     aborted = f'gate not ticked after {retries - 1} height retries, ticks={ticks}'

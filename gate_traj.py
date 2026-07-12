@@ -78,6 +78,20 @@ class GateTrajectory:
         i = int(np.argmin(np.einsum("ij,ij->i", d, d)))
         return float(self._s[i])
 
+    def nearest_s_window(self, pos, lo: float, hi: float) -> float:
+        """nearest_s restricted to s in [lo, hi].
+
+        For self-adjacent paths (legs passing within a few meters of each
+        other) the global projection can leap between legs; windowing around
+        the previous s keeps the carrot on the leg being flown.
+        """
+        m = (self._s >= max(0.0, lo)) & (self._s <= min(self.s_max, hi))
+        if not m.any():
+            return float(np.clip(lo, 0.0, self.s_max))
+        d = self._P[m] - np.asarray(pos, float)
+        i = int(np.argmin(np.einsum("ij,ij->i", d, d)))
+        return float(self._s[m][i])
+
     def speed_at(self, kappa_abs: float) -> float:
         """Tilt-budget speed law: forward drag (c*v^2) + centripetal (v^2*kappa) <= budget*margin,
         solved for v. Straight (kappa->0) -> sqrt(budget*margin/c_drag) = the drag-saturation ceiling;
