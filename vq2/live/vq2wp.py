@@ -607,14 +607,16 @@ def _det_loop():
                 jlog('obs_far_archtest', ns=ns, rng=round(rng_meas, 1))
                 cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
                 continue
-            if os.environ.get('G2TEST') == '1' and ticks == 0:
-                # pre-tick blackout past the crossing zone: from the late
-                # chute gate 2 is also < 8 m and indistinguishable from
-                # gate 1, and near-range G1 fixes carry the ~2 m lateral
-                # bias with a huge identity tolerance (220 px at 1.6 m).
-                # LATCHED (run 7: a soft x>5.9 gate chattered -- fixes at
-                # x<5.9 dragged est back out of the zone and re-opened the
-                # tap). Once armed, ride DR until the tick.
+            if (os.environ.get('G2TEST') == '1' and ticks == 0
+                    and os.environ.get('DIRTEST')):
+                # BLIND-MODE ONLY (DIRTEST set): pre-tick blackout past the
+                # crossing zone -- gate 2 is also < 8 m from the late chute
+                # and indistinguishable from gate 1, and near-range fixes
+                # ride a huge identity tolerance. LATCHED (run 7: a soft
+                # boundary chattered). In servo mode (no DIRTEST) the
+                # approach handoff needs these obs: 07-12 frames prove the
+                # detection bearing is unbiased now, so the servo -- the
+                # machinery behind every historical tick -- steers on them.
                 if p_kf[0] > 5.5:
                     state['_g2_blackout'] = True
                 if state.get('_g2_blackout'):
@@ -1408,7 +1410,10 @@ while not aborted:
                 and float(state['obs'][0]) < 7.5
                 and abs(float(state['obs'][1])) < 2.5
                 and (not ARCHTEST or s_here > 3.5)
-                and not os.environ.get('DIRTEST')):
+                and (not os.environ.get('DIRTEST') or ticks >= 1)):
+            # DIRTEST blocks the handoff only PRE-tick (blind calibrated
+            # chute for gate 1); after tick 1 the servo takes gate 2 --
+            # hybrid config for the fresh-sim tick budget (07-12)
             # HANDOFF RESTORED for ARCHTEST (07-10): route-only flying
             # reproduces the est-rotation drift every run (v3385 canary:
             # est crossed 0.25 m off-center, frames show 2-3 m right at
