@@ -1344,6 +1344,12 @@ while not aborted:
         # plane blind because the carrot ran the whole spline while validation
         # still expected G1
         s_stop = (S_GATES[ticks] if ticks < len(S_GATES) else TRAJ.s_max) + 2.0
+        if os.environ.get('G2FULL') == '1':
+            # judge-gate-identity probe (07-12): fly the WHOLE two-gate route
+            # regardless of ticks -- if the judge's gate 1 is the ribbon gate
+            # (07-08 forensics: arch17/23/27 all ticked THERE), the tick
+            # arrives at the second crossing, not the chute gate
+            s_stop = TRAJ.s_max
         s_ref = min(s_here + LEAD, s_stop, TRAJ.s_max)
         ref = TRAJ.sample(s_ref)
         d = ref['pos'] - p
