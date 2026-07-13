@@ -269,6 +269,10 @@ def viz_tick(p, ref_pos=None):
                                                    colors=[255, 255, 0]))
             rr.log('plots/alt_m', rr.Scalars(-float(p[2])))
             rr.log('plots/gate_idx', rr.Scalars(float(state['gate_idx'])))
+            dp = state.get('dpvo_p')
+            if dp is not None and now - state.get('dpvo_wall', 0) < 1.0:
+                rr.log('world/dpvo', rr.Points3D([list(dp)], radii=0.1,
+                                                 colors=[60, 120, 255]))
             # vision-fix markers: red dots where accepted fixes snapped the
             # KF -- attributes the trail's jerks to fixes, not IMU noise
             lf = state.get('_last_fix')
@@ -531,6 +535,26 @@ def _det_loop():
         if img is None or ns == last_ns:
             time.sleep(0.01); continue
         last_ns = ns
+        if (os.environ.get('DPVO') == '1' and os.environ.get('NOFIX') == '1'
+                and state.get('go_passed') and ticks == 0):
+            # DPVO owns the pre-tick estimate; UNLOAD GateNet entirely --
+            # sim (~1.8G) + GateNet (~1G) + DPVO (~1.5G) exceed the RTX
+            # 3050's 4 GB and the process died silently at DPVO init
+            # (pair-5 autopsy: 64 rows, no traceback = VRAM kill)
+            if lm is not None:
+                del lm, x, out
+                lm = None
+                torch.cuda.empty_cache()
+                print('GateNet unloaded (DPVO owns the GPU pre-tick)', flush=True)
+            time.sleep(0.05)
+            continue
+        if lm is None:
+            # post-tick: reload for the gate-2 servo leg (warm-up cost
+            # accepted; the 8 s tick grace covers part of it)
+            print('GateNet reloading for gate-2 leg', flush=True)
+            lm = OV.load_model(CKPT, CFG, dev)
+            dk, sk = OV._multi_decode_knobs(lm.cfg, stride=lm.stride)
+            print('GateNet reloaded', flush=True)
         padded = OV.pad_bottom(img, lm.pad_to_h)
         with torch.no_grad():
             x = TG.frames_to_input(torch.from_numpy(padded[None]), dev)
@@ -613,6 +637,16 @@ def _det_loop():
                 # -- position fixes at 1.7 Hz were injecting the entire
                 # +-1.5 m crossing spread into a near-perfect DR chain.
                 # Pre-tick: pad anchor only, no in-flight position fixes.
+                # SERVO PASS-THROUGH (07-12, gate-1 1/8 ceiling): every
+                # engineered tick in campaign history came from the
+                # relative-obs servo -- KF updates stay off, but a
+                # plausible dead-ahead gate-1 sighting still feeds the
+                # terminal handoff (relative steering is immune to the
+                # est-truth gap that blind DR cannot see).
+                if rng_meas < 8.0 and abs(float(g_lvl[1])) < 2.5:
+                    state['obs'] = g_lvl
+                    state['obs_wall'] = time.time()
+                    state['tgt'] = g_lvl.copy()
                 jlog('obs_nofix', ns=ns, rng=round(rng_meas, 1))
                 cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
                 continue
@@ -966,10 +1000,19 @@ if state.get('race_ms', 0) < 8500:
     print('NO RACE CLOCK after 40 s (rx dead or race not armed) -- aborting', flush=True)
     sys.exit(1)
 print('race GO (clock %.1f s)' % (state.get('race_ms', 0) / 1e3), flush=True)
+state['go_passed'] = True   # pad lock done; det thread may release the GPU
 m.mav.command_long_send(m.target_system, m.target_component,
     mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
 time.sleep(0.5)
 print('armed', flush=True)
+
+if os.environ.get('DPVO') == '1':
+    # live visual odometry (task #24): DPVO camera positions fused into
+    # the KF -- the estimator finally sees the real motion that blind DR
+    # cannot (the un-modelled push that capped gate-1 at ~12%).
+    from dpvo_odom import DpvoOdom
+    DpvoOdom(state, KF, KF_LOCK, M_BODY_CAM, jlog=jlog).start()
+    print('DPVO odometry thread started', flush=True)
 
 if os.environ.get('THRPROBE') == '1':
     # Thrust-curve probe (post sim-update the old HOVER=0.2675 produces
