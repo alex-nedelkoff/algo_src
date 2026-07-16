@@ -1,0 +1,10 @@
+- [Workspace layout & disk cleanup](workspace-layout.md) — which algo_src clone is live, and what was reclaimed 2026-07-13
+- [DPVO lietorch launch crash](dpvo-lietorch-launch-crash.md) — Eigen CUDA kernels host-AV at launch; exhaustive elimination done 2026-07-13
+- [VQ2 pad acquisition](vq2-pad-acquisition.md) — "NO PAD ACQUISITION" is spawn-pitch, not GateNet; verify −17.8° before scored flights
+- [DPVO live scale](dpvo-live-scale.md) — live monocular scale unreliable (10.87 vs 20.96); corrupted the gate-1 estimate → route collision
+- [VQ2 perception latency](vq2-perception-latency.md) — GateNet inference ~0.45-1.0s late (drone moves 41-87cm during staleness); prime suspect for gate-1 crashes
+- [DPVO tracking](dpvo-tracking.md) — the gate-1 killer is DPVO tracking quality (freeze/divergence), NOT scale; scale is ~metric. Reserve DPVO for continuous-motion legs
+- [VQ2 blind drift cause](vq2-blind-drift-cause.md) — blind gate-1 miss is the roll/pitch TRIM misfiring (injects false attitude), NOT a force, NOT IMU gaps; drone was on-target and got steered off
+- [VQ2 terminal push](vq2-terminal-push.md) — REAL ~0.3 m/s IMU-invisible rightward push in the gate area (07-10 was right); 17-run campaign, knob-turning exhausted → needs fast closed-loop detector
+- [VQ2 fastgate](vq2-fastgate.md) — FASTGATE hole detector (1.8ms, 100%) + FGPURSUIT built; association solved; last wall = 20°-up camera goes blind <2-3m → try below-height approach next
+- [VQ2 Vagon pivot](vq2-vagon-pivot.md) — survey plan stopped; cloud compute + Janahan 6-gate map; ingest loader built
