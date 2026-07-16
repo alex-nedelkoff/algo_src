@@ -163,10 +163,17 @@ class DpvoOdom(threading.Thread):
             now = time.time()
             if now - last_upd > 0.1:
                 last_upd = now
-                with self.kf_lock:
-                    ok = self.kf.update_position(p_spawn, rng=5.0,
-                                                 r_scale=self.r_scale)
-                self.jlog('dpvo_upd', ok=bool(ok),
-                          p=np.round(p_spawn, 3).tolist())
+                if os.environ.get('DPVO_OBSERVE') == '1':
+                    # observe-only (07-15): log the DPVO pose stream without
+                    # touching the KF -- first-flight health check for the
+                    # post-punch tracking question.
+                    self.jlog('dpvo_upd', ok='observe',
+                              p=np.round(p_spawn, 3).tolist())
+                else:
+                    with self.kf_lock:
+                        ok = self.kf.update_position(p_spawn, rng=5.0,
+                                                     r_scale=self.r_scale)
+                    self.jlog('dpvo_upd', ok=bool(ok),
+                              p=np.round(p_spawn, 3).tolist())
         if slam is not None:
             print('DPVO odom thread exiting', flush=True)

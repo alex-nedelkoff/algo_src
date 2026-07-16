@@ -59,7 +59,11 @@ HOVER = 0.2675  # 07-10: the vehicle NEVER changed. THRPROBE's 'hover 0.12'
 CMD_HZ = 50.0
 TILT_ABORT = math.radians(55)
 RATE_GAIN = 1.93
-SIGN_R, SIGN_P = -1.0, +1.0
+# SIGN_R flipped -1 -> +1 with the roll-integration wfix (07-15): the old -1
+# made the rate loop converge the MIRRORED est roll (true roll went the
+# opposite way, unobservable at rest). With est roll now truth-signed, +1
+# drives TRUE roll to the reference.
+SIGN_R, SIGN_P = +1.0, +1.0
 KP = 1.8
 K_V = 0.07  # outer-loop limit cycle (Rerun cmd-vs-act, 07-10): vision-velocity jitter -> roll_ref oscillation; cut gain
 CAM_TILT = math.radians(20.0)
@@ -192,7 +196,14 @@ if VIZ:
     try:
         import rerun as rr
         rr.init('vq2wp')
-        rr.connect_grpc(MAC_VIEWER)
+        # RRD=path -> record to a local .rrd file (robust: no tailnet, replayable
+        # in `rerun <file>`). Otherwise stream to the Mac viewer (VQ1 convention).
+        _rrd = os.environ.get('RRD')
+        if _rrd:
+            rr.save(_rrd)
+            print(f'rerun recording -> {_rrd}', flush=True)
+        else:
+            rr.connect_grpc(MAC_VIEWER)
         # declare the world frame handedness: spawn frame is FRD
         # (x forward/downcourse, y right, z down). Without this, rerun
         # renders z-down coords in its default z-up right-handed space:
@@ -349,7 +360,8 @@ state = {'acc': (0, 0, -9.81), 'gyr': (0, 0, 0), 't_us': 0,
          'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0, 'vx_b': 0.0, 'vy_b': 0.0, 'vz_up': 0.0,
          'collision': None, 'gate_idx': 0, 'race_finish_ns': -1, 'stop': False,
          'obs': None, 'obs_wall': 0.0, 'frame': None, 'frame_ns': 0,
-         'next_gate_w': HIGH_W.copy(), 'nav_ready': False}
+         'next_gate_w': HIGH_W.copy(), 'nav_ready': False,
+         'gatenet_unloaded': False, 'gatenet_unloaded_wall': 0.0}
 log_f = open(OUT + '/log.jsonl', 'w')
 llock = threading.Lock()
 
@@ -387,9 +399,35 @@ def rx_loop():
                 continue
             if last_us is not None and us > last_us:
                 dt = (us - last_us) / 1e6
-                state['roll'] += gyr[0] * dt
-                state['pitch'] += (-gyr[1]) * dt      # wfix
-                state['yaw'] += (-gyr[2]) * dt        # wfix
+                if os.environ.get('EULERFIX') == '1':
+                    # PROPER BODY-RATE -> EULER-RATE KINEMATICS (07-14): the
+                    # raw integrator treats body rates as direct angle rates,
+                    # dropping the coupling terms. Yawing at 0.35 rad/s with
+                    # ~10 deg pitch loses ~3.6 deg/s of roll rate -> gravity
+                    # leaks laterally -> phantom velocity (servo_nt3 runaway:
+                    # est 8 m/s at a real 0.8). This was the error the roll
+                    # trim mopped up in cruise (and why the blind chute needed
+                    # heading-lock); integrate correctly instead.
+                    _p, _q, _r = gyr[0], -gyr[1], -gyr[2]   # wfix signs
+                    _sf, _cf = math.sin(state['roll']), math.cos(state['roll'])
+                    _tt = max(-3.0, min(3.0, math.tan(state['pitch'])))
+                    _ct = max(0.3, math.cos(state['pitch']))
+                    state['roll'] += (_p + _q * _sf * _tt + _r * _cf * _tt) * dt
+                    state['pitch'] += (_q * _cf - _r * _sf) * dt
+                    state['yaw'] += ((_q * _sf + _r * _cf) / _ct) * dt
+                else:
+                    # wfix ALL THREE axes (07-15, fg44 frames): roll was the
+                    # only axis integrating the raw gyro sign -- unlike pitch/
+                    # yaw it has no at-rest truth (spawn roll=0) so the sign
+                    # was never calibrated. Frames at est roll -0.10/-0.18
+                    # show the horizon banked the OPPOSITE way: est roll was
+                    # a MIRROR of true roll (rate loop stayed self-consistent
+                    # via SIGN_R=-1, hiding it). This mirror is the root of
+                    # the "IMU-invisible rightward push" family: every est-
+                    # frame roll correction physically banked the wrong way.
+                    state['roll'] += (-gyr[0]) * dt       # wfix (07-15)
+                    state['pitch'] += (-gyr[1]) * dt      # wfix
+                    state['yaw'] += (-gyr[2]) * dt        # wfix
                 # windowed force-balance ROLL TRIM (VQ2-DRIFT-01 root cause:
                 # per-flight roll bias -> phantom lateral force -> every gate
                 # miss, invisible to DR). Over a 1 s contiguous-quiet window,
@@ -401,7 +439,8 @@ def rx_loop():
                 # loop sets trim_ok; approach/punch/retreat clear it. Per-
                 # window correction clamped to 2 deg (bias converges over
                 # 2-3 windows; a false window can no longer wreck attitude).
-                if state.get('airborne') and state.get('trim_ok'):
+                if (state.get('airborne') and state.get('trim_ok')
+                        and os.environ.get('NOTRIM') != '1'):
                     gm = max(abs(gyr[0]), abs(gyr[1]), abs(gyr[2]))
                     an = math.sqrt(acc[0]**2 + acc[1]**2 + acc[2]**2)
                     if gm < 0.4 and abs(an - 9.81) < 1.0 and abs(gyr[2]) < 0.03:
@@ -471,6 +510,11 @@ def rx_loop():
                     rs = struct.unpack('<BQqqIq', d[:37])
                     if rs[4] != state['gate_idx']:
                         jlog('gate_tick', idx=rs[4])
+                        if rs[4] > state['gate_idx']:
+                            # Camera frame stamps share the receive-wall epoch,
+                            # unlike the judge's internal tickstamp.
+                            state['gate_tick_ns'] = time.time_ns()
+                            state['judge_tickstamp'] = rs[5]
                     state['gate_idx'] = rs[4]
                     state['race_finish_ns'] = rs[3]
                     state['race_ms'] = rs[1]   # race clock (resets on hard reset)
@@ -494,6 +538,7 @@ def cam_loop():
             if len(data) == jsize:
                 img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
                 if img is not None:
+                    state['dpvo_frame'] = (ns, data)
                     state['frame'], state['frame_ns'] = img, ns
                     state['frame_wall'] = time.time()
                     state['jpeg'] = data          # raw jpeg for the Rerun stream
@@ -535,19 +580,54 @@ def _det_loop():
         if img is None or ns == last_ns:
             time.sleep(0.01); continue
         last_ns = ns
-        if (os.environ.get('DPVO') == '1' and os.environ.get('NOFIX') == '1'
-                and state.get('go_passed') and ticks == 0):
+        if (state.get('go_passed')
+            # GN_UNLOAD (07-15): fastgate is CPU-only and owns the whole
+            # flight now -- GateNet's only job is the at-rest pad lock.
+            # Release the GPU right after GO regardless of DPVO so a DPVO
+            # thread (or anything else) gets the full 4 GB in flight.
+            # (go_passed FIRST: 'ticks' is a main-thread global that does
+            # not exist until the mission loop starts -- fg58 det crash.)
+                and (os.environ.get('GN_UNLOAD') == '1'
+                     or (os.environ.get('DPVO') == '1'
+                         and os.environ.get('NOFIX') == '1'
+                         and state.get('gate_idx', 0) == 0))):
             # DPVO owns the pre-tick estimate; UNLOAD GateNet entirely --
             # sim (~1.8G) + GateNet (~1G) + DPVO (~1.5G) exceed the RTX
             # 3050's 4 GB and the process died silently at DPVO init
-            # (pair-5 autopsy: 64 rows, no traceback = VRAM kill)
-            if lm is not None:
-                del lm, x, out
-                lm = None
-                torch.cuda.empty_cache()
-                print('GateNet unloaded (DPVO owns the GPU pre-tick)', flush=True)
-            time.sleep(0.05)
-            continue
+            # (pair-5 autopsy: 64 rows, no traceback = VRAM kill).
+            # GNSCALE (07-13): keep GateNet loaded a few more seconds so it can
+            # publish gate-referenced metric drone positions (state['gatenet_p']
+            # = G1_W - g_w) for the bridge to anchor DPVO scale on a drift-free
+            # reference. Unload once the scale locks (bridge sets
+            # dpvo_scale_locked) or a VRAM-safety timeout, so DPVO gets the GPU
+            # for the crossing. NOTE: brief GateNet+WSL2-DPVO overlap -- if this
+            # OOM-kills the process, drop GNSCALE_TMAX or DPVO patches.
+            _hold = (os.environ.get('GNSCALE') == '1'
+                     and os.environ.get('DPVO_OBSERVE') == '1'
+                     and not state.get('dpvo_scale_locked')
+                     and time.time() - state.get('go_wall', 0.0)
+                         < float(os.environ.get('GNSCALE_TMAX', '12.0')))
+            if not _hold:
+                if lm is not None:
+                    del lm, x, out
+                    lm = None
+                    torch.cuda.empty_cache()
+                    _handoff_wall = time.time()
+                    state['gatenet_unloaded'] = True
+                    state['gatenet_unloaded_wall'] = _handoff_wall
+                    jlog('gatenet_unloaded',
+                         go_delay_ms=round(
+                             (_handoff_wall - state.get('go_wall', _handoff_wall))
+                             * 1000.0, 1))
+                    _why = ('scale locked' if state.get('dpvo_scale_locked')
+                            else 'timeout' if os.environ.get('GNSCALE') == '1'
+                            else 'GPU handoff')
+                    print(f'GateNet unloaded (DPVO owns the GPU pre-tick) [{_why}]',
+                          flush=True)
+                time.sleep(0.05)
+                continue
+            # else (GNSCALE hold): fall through and keep detecting so the NOFIX
+            # block below can publish state['gatenet_p'] for scale cal
         if lm is None:
             # post-tick: reload for the gate-2 servo leg (warm-up cost
             # accepted; the 8 s tick grace covers part of it)
@@ -643,10 +723,68 @@ def _det_loop():
                 # plausible dead-ahead gate-1 sighting still feeds the
                 # terminal handoff (relative steering is immune to the
                 # est-truth gap that blind DR cannot see).
-                if rng_meas < 8.0 and abs(float(g_lvl[1])) < 2.5:
+                # GATE-1 IDENTITY (07-14, servo_nt6 frames): the hangar is FULL
+                # of station-bay gates; with the servo enabled (no DIRTEST) a
+                # drifted drone locks a WRONG bay gate at <8 m and punches at it
+                # (nt6 punched in the right-side stalls, parked jet dead ahead).
+                # DR is clean now (NOTRIM+EULERFIX) -- only pass through obs
+                # whose DR-implied world position matches the pad-locked G1.
+                _gseen = p_kf + g_w
+                _g1miss = float(np.linalg.norm((_gseen - G1_W)[:2]))
+                if (rng_meas < 8.0 and abs(float(g_lvl[1])) < 2.5
+                        and _g1miss < float(os.environ.get('G1_IDENT_R', '2.5'))):
                     state['obs'] = g_lvl
                     state['obs_wall'] = time.time()
                     state['tgt'] = g_lvl.copy()
+                    with KF_LOCK:
+                        # arm the obs-DR punch (07-14): _last_fresh was only set
+                        # in the non-NOFIX fix path, so under NOFIX the terminal
+                        # punch NEVER fired -- every approach coasted blind past
+                        # the plane after the ~4 m detector dropout.
+                        state['_last_fresh'] = (float(g_lvl[0]), float(g_lvl[1]),
+                                                float(g_lvl[2]), KF.p.copy(),
+                                                time.time())
+                elif rng_meas < 8.0:
+                    jlog('obs_wronggate', ns=ns, rng=round(rng_meas, 1),
+                         miss=round(_g1miss, 1))
+                if os.environ.get('GNSCALE') == '1':
+                    # GATE-REFERENCED METRIC DRONE POSITION (07-13/14): a gate's
+                    # world position is fixed (pad-locked G1_W, and G2_W = HIGH_W
+                    # + fixed offset, same frame); a detection gives it relative
+                    # to the drone (g_w), so drone_world = gate_W - g_w -- a
+                    # drift-free metric position the bridge anchors DPVO scale on
+                    # (does NOT touch the control KF). In level flight the 20-up
+                    # cam mostly sees the FARTHER gate 2, so accept ANY range and
+                    # assign to the nearest KNOWN gate by RANGE-RATIO identity
+                    # (identical gates -> range disambiguates g1/g2; ratio <
+                    # RANGE_RATIO_MIN rejects junk/mis-ID). Tag the gate id so the
+                    # bridge never mixes G1 and a coarsely-mapped G2 in one
+                    # displacement. A constant gate-map error cancels in the
+                    # scale's displacement ratio.
+                    _gid, _gwm, _gbest = None, None, RANGE_RATIO_MIN
+                    for _gi, _gwc in ((0, G1_W), (1, G2_W)):
+                        _re = float(np.linalg.norm((_gwc - p_kf)[:2]))
+                        if _re < 0.5:
+                            continue
+                        _ra = min(rng_meas / _re, _re / rng_meas)
+                        if _ra > _gbest:
+                            _gbest, _gid, _gwm = _ra, _gi, _gwc
+                    if _gwm is not None:
+                        _gp = (_gwm - g_w).astype(float)
+                        state['gatenet_sample'] = (
+                            int(ns), int(_gid),
+                            tuple(float(value) for value in _gp))
+                        state['gatenet_p'] = _gp
+                        state['gatenet_gate'] = _gid
+                        state['gatenet_p_wall'] = time.time()
+                        # tag the SOURCE frame ns: this detection lags ~1 s, so
+                        # the bridge must pair it with the DPVO pose from THIS
+                        # frame, not the current one (else ~1 s of motion leaks
+                        # into the scale). f_wall is the frame's rx wall time.
+                        state['gatenet_ns'] = ns
+                        state['gatenet_fwall'] = f_wall
+                        jlog('gnscale_anchor', ns=ns, gate=_gid,
+                             rng=round(rng_meas, 1), ratio=round(_gbest, 2))
                 jlog('obs_nofix', ns=ns, rng=round(rng_meas, 1))
                 cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
                 continue
@@ -855,6 +993,102 @@ def _det_loop():
                      g_lvl=g_lvl.round(3).tolist())
         cv2.imwrite(f'{OUT}/frames/{ns}.jpg', img)
 
+def fastgate_loop():
+    """FASTGATE (07-14): millisecond classical aperture detector (fastgate.py,
+    orange frame + dark hole -> HOLE center bearing, 1.8 ms/frame, holds the
+    gate through the terminal band where GateNet drops out at ~4 m). Publishes
+    state['fg_bear'] = (lat/fwd, dwn/fwd) level-frame bearing at ~30 Hz for the
+    approach servo + punch to steer closed-loop through the crossing. Range is
+    glow-corrupted at close range -- bearing only."""
+    try:
+        import fastgate as FG
+    except Exception as e:
+        print(f'fastgate unavailable: {e}', flush=True)
+        return
+    last_ns = 0
+    print('fastgate loop up', flush=True)
+    while not state['stop']:
+        img, ns = state['frame'], state['frame_ns']
+        if img is None or ns == last_ns:
+            time.sleep(0.005)
+            continue
+        last_ns = ns
+        try:
+            dets = FG.detect(img)
+        except Exception:
+            continue
+        if not dets:
+            continue
+        r_, p_ = state['roll'], state['pitch']
+        sr, cr = math.sin(r_), math.cos(r_)
+        sp, cp = math.sin(p_), math.cos(p_)
+        Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+        Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+        # associate: prefer the det nearest in bearing to the current GateNet
+        # obs (identity-confirmed); else the most-centered forward det
+        ref = state.get('obs')
+        ref_ok = ref is not None and time.time() - state.get('obs_wall', 0) < 3.0 \
+            and float(ref[0]) > 0.3
+        # TEMPORAL CONTINUITY (07-14, fg3 frames): when the chute gate's hole
+        # clipped out of frame at 5.2 m, the biggest-hole rule silently
+        # re-locked onto the stacked gate-2 pair and the pursuit flew a perfect
+        # approach to the WRONG gate. Once locked, follow the SAME hole
+        # (nearest to the last bearing); size/centeredness only for the
+        # initial acquisition.
+        last_b = state.get('fg_bear')
+        last_ok = last_b is not None and time.time() - state.get('fg_wall', 0) < 0.6
+        best = None
+        for d in dets:
+            t_cam, hole_w = d[0], d[1]
+            # CLOSE-GATES-ONLY (07-14, Alex): only holes >= FG_MIN_W px may
+            # influence trajectory -- far bay/course gates (<40 px) can never
+            # steal the track. With gate-to-gate pursuit this makes the course
+            # fly itself in proximity order.
+            if hole_w < float(os.environ.get('FG_MIN_W', '40')):
+                continue
+            if len(d) > 3 and d[3]:
+                # CLIPPED HOLE (fg4): a half-visible hole's remnant center is
+                # biased toward the visible side -- at 3.5 m the jump (0.28 rad)
+                # slid under the continuity gate and the pursuit chased the
+                # phantom hard-right. Never steer on clipped detections; the
+                # fallback coasts straight on the already-nulled line.
+                continue
+            g = Ry @ (Rx @ (M_BODY_CAM @ t_cam))
+            if g[0] < 0.3:
+                continue
+            bear = (float(g[1] / g[0]), float(g[2] / g[0]))
+            if last_ok:
+                cost = abs(bear[0] - last_b[0]) + abs(bear[1] - last_b[1])
+                if cost > 0.15:          # continuity gate: same hole only
+                    continue
+                # THROUGH-HOLE ALIAS (07-15, fg22 frames): a far gate visible
+                # THROUGH the tracked aperture sits at the SAME bearing, so
+                # when the near hole clips out, bearing continuity hands the
+                # track to it (w 94 -> 44 in ONE frame) and the pursuit sails
+                # past the near gate aiming at the far one. A real hole cannot
+                # halve between frames at 30 Hz -- reject size discontinuities
+                # and let the coast/punch logic own the crossing.
+                if hole_w < 0.55 * state.get('fg_w', 0.0):
+                    continue
+            else:
+                # ACQUISITION BY SIZE (fg6: 'most-centered' acquired a 9 px FAR
+                # bay gate and continuity faithfully tracked the wrong target).
+                # At start range (~6 m) the chute hole is ~80 px; bay gates are
+                # <=20 px. Only a big hole can start a track.
+                if hole_w < float(os.environ.get('FG_ACQ_W', '40')):
+                    continue
+                cost = -hole_w                       # largest qualifying hole
+            if best is None or cost < best[0]:
+                best = (cost, bear, hole_w)
+        if best is not None:
+            state['fg_bear'] = best[1]
+            state['fg_wall'] = time.time()
+            state['fg_w'] = best[2]
+            if time.time() - state.get('_fg_log', 0) > 0.4:
+                state['_fg_log'] = time.time()
+                jlog('fg', bear=[round(best[1][0], 3), round(best[1][1], 3)],
+                     w=round(best[2], 0))
+
 def send_rate(rr, pr, yr, thr):
     state['last_thr'] = thr
     state['last_cmd'] = (rr, pr, yr, thr)
@@ -869,9 +1103,20 @@ def send_rate(rr, pr, yr, thr):
                                   'pr': round(pr, 4), 'yr': round(yr, 4),
                                   'thr': round(thr, 4)}) + '\n')
 
-def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0, yr=0.0):
-    roll_ref = max(-0.25, min(0.25, -K_V * (state['vy_b'] - vy_ref)))
-    pitch_ref = max(-0.35, min(0.35, K_V * (state['vx_b'] - vx_ref) + pitch_bias))
+def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0, yr=0.0,
+              roll_bias=0.0, att=False):
+    # att=True: PURE-ATTITUDE MODE (07-15) -- references come straight from
+    # vision, NO est-velocity feedback (the est banks ~1 m/s offsets per
+    # maneuver and the velocity loop converts them into real wrong motion:
+    # fg33 flew backward-up while est read "vx +0.9, satisfied"). In att
+    # mode vz_ref is a THROTTLE DELTA (same +/-0.06 clamp); roll_bias/
+    # pitch_bias ARE the attitude references. Same hard clamps either way.
+    if att:
+        roll_ref = max(-0.25, min(0.25, roll_bias))
+        pitch_ref = max(-0.35, min(0.35, pitch_bias))
+    else:
+        roll_ref = max(-0.25, min(0.25, -K_V * (state['vy_b'] - vy_ref) + roll_bias))
+        pitch_ref = max(-0.35, min(0.35, K_V * (state['vx_b'] - vx_ref) + pitch_bias))
     rr = SIGN_R * (KP * (roll_ref - state['roll'])) / RATE_GAIN
     pr = SIGN_P * (KP * (pitch_ref - state['pitch'])) / RATE_GAIN
     # RATE DISCIPLINE (07-06 collapse root cause): commanded transients hit
@@ -883,7 +1128,10 @@ def level_cmd(vx_ref=0.0, vy_ref=0.0, vz_ref=0.0, thr_base=HOVER, pitch_bias=0.0
     # the gap-error budget.
     RATE_MAX = float(os.environ.get('RATE_MAX', '0.6'))
     rr = max(-RATE_MAX, min(RATE_MAX, rr)); pr = max(-RATE_MAX, min(RATE_MAX, pr))
-    dthr = max(-0.06, min(0.06, 0.10 * (vz_ref - state['vz_up'])))
+    if att:
+        dthr = max(-0.06, min(0.06, vz_ref))
+    else:
+        dthr = max(-0.06, min(0.06, 0.10 * (vz_ref - state['vz_up'])))
     send_rate(rr, pr, yr, max(0.05, min(0.6, thr_base + dthr)))
 
 def tilt(): return math.sqrt(state['roll']**2 + state['pitch']**2)
@@ -910,12 +1158,30 @@ def land(reason):
         except Exception as e:
             print('livelog snapshot failed:', e, flush=True)
 
-for th in (rx_loop, cam_loop, det_loop):
+_threads = [rx_loop, cam_loop, det_loop]
+if os.environ.get('FASTGATE') == '1':
+    _threads.append(fastgate_loop)
+for th in _threads:
     threading.Thread(target=th, daemon=True).start()
 time.sleep(2.0)
 
 print('sim HARD reset (param1=1: restarts the RACE + countdown)', flush=True)
 m.mav.command_long_send(m.target_system, m.target_component, 31000, 0, 1, 0, 0, 0, 0, 0, 0)
+
+select_dpvo_route_position = None
+_dpvo_route_started = False
+if (os.environ.get('DPVO') == '1'
+        and os.environ.get('DPVO_ROUTE') == '1'):
+    if os.environ.get('DPVO_BRIDGE') != '1':
+        raise RuntimeError('DPVO_ROUTE requires the low-memory WSL2 bridge')
+    from dpvo_odom_bridge import DpvoOdom
+    from dpvo_route import select_route_position
+    select_dpvo_route_position = select_route_position
+    print('DPVO: prewarming independent WSL2 route bridge', flush=True)
+    DpvoOdom(state, KF, KF_LOCK, M_BODY_CAM, jlog=jlog).start()
+    _dpvo_route_started = True
+    print('DPVO route prewarm thread started', flush=True)
+
 time.sleep(6.0)
 state['collision'] = None
 time.sleep(1.0)
@@ -1000,20 +1266,23 @@ if state.get('race_ms', 0) < 8500:
     print('NO RACE CLOCK after 40 s (rx dead or race not armed) -- aborting', flush=True)
     sys.exit(1)
 print('race GO (clock %.1f s)' % (state.get('race_ms', 0) / 1e3), flush=True)
+state['go_wall'] = time.time()   # authoritative GPU-handoff clock
 state['go_passed'] = True   # pad lock done; det thread may release the GPU
 m.mav.command_long_send(m.target_system, m.target_component,
     mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
 time.sleep(0.5)
 print('armed', flush=True)
 
-if os.environ.get('DPVO') == '1':
-    # live visual odometry (task #24): DPVO camera positions fused into
-    # the KF -- the estimator finally sees the real motion that blind DR
-    # cannot (the un-modelled push that capped gate-1 at ~12%).
-    from dpvo_odom import DpvoOdom
+if os.environ.get('DPVO') == '1' and not _dpvo_route_started:
+    # Legacy DPVO modes keep their established post-arm startup. Route mode
+    # was started during the hard-reset settle so it can be ready before GO.
+    if os.environ.get('DPVO_BRIDGE') == '1':
+        from dpvo_odom_bridge import DpvoOdom
+        print('DPVO: using WSL2 bridge', flush=True)
+    else:
+        from dpvo_odom import DpvoOdom
     DpvoOdom(state, KF, KF_LOCK, M_BODY_CAM, jlog=jlog).start()
     print('DPVO odometry thread started', flush=True)
-
 if os.environ.get('THRPROBE') == '1':
     # Thrust-curve probe (post sim-update the old HOVER=0.2675 produces
     # ~2-4x the expected climb): step throttle at/near ground, log the
@@ -1137,7 +1406,18 @@ def guards(phase):
     imp_lim = 4.0 if phase == 'punch' else 2.5
     if c and c.get('threat_level', 0) >= 2 and c.get('horizontal_minimum_delta', 0) > imp_lim:
         return f'collision ({phase}): imp {c.get("horizontal_minimum_delta"):.1f}'
-    if abs(state['vx_b']) > 8 or abs(state['vy_b']) > 8: return f'velocity runaway ({phase})'
+    # ATTMODE flies on vision (range-rate governor bounds REAL speed); the
+    # est velocity it ignores drifts to fiction in ~10-15 s and was falsely
+    # killing healthy pursuits (fg38 mid-punch, fg39 mid-approach). Keep a
+    # loose sanity ceiling there; full strictness everywhere else.
+    _vlim = 20.0 if (os.environ.get('ATTMODE') == '1'
+                     and phase in ('fgpursuit', 'punch')) else 8.0
+    if (os.environ.get('MF_DR') == '1'
+            and phase in ('fgpursuit', 'punch')):
+        _vlim = 1e9   # kinematic DR: est velocity is unused fantasy (fg61:
+                      # the 20 m/s check killed a healthy staged approach)
+    if abs(state['vx_b']) > _vlim or abs(state['vy_b']) > _vlim:
+        return f'velocity runaway ({phase})'
     return None
 
 _viz_static()
@@ -1147,7 +1427,13 @@ t0 = time.time()
 while time.time() - t0 < 0.7:
     level_cmd(0, 0, 0, thr_base=0.10); time.sleep(1/CMD_HZ)
 t0 = time.time()
-while time.time() - t0 < 1.6 and not aborted:
+# CLIMB_S (07-15, fg15/17/19 frames): 1.6 s @ 1 m/s + the 0.55 m takeoff
+# displacement parks the drone at 2.5-3.5 m TRUTH (est-z under-reads it as
+# ~1.3) -- far above the 1.35 m aperture line, and the throttle channel
+# (dthr +/-0.06 on a drifting est-vz) cannot descend out of it. Start AT
+# gate height instead of descending to it.
+_climb_s = float(os.environ.get('CLIMB_S', '1.6'))
+while time.time() - t0 < _climb_s and not aborted:
     # perception-aware climb: keep the nose on the pad-locked gate so
     # fixes keep flowing from t0 (map v2 retired the near-pad arch
     # anchor; if the gate leaves view, DR owns the flight and wanders)
@@ -1207,24 +1493,107 @@ if os.environ.get('RECENTER') == '1' and not aborted:
     # it (real motion, noiseless DR). Don't compensate in the aim --
     # converge back to the spawn line on the estimate, then fly the
     # chute. Kills the +-0.75 run-to-run crossing lottery at its source.
-    _tgt = np.array([0.0, 0.0, -1.3])
+    # RECENTER_Y (07-14, nt10 frames): takeoff displaces the drone ~+2 m right
+    # of the est frame (accel under-reads under thrust -- the est-truth gap that
+    # the historical AIMBIAS_Y=-2 was really compensating). Converge est-y to
+    # the biased line HERE, in hover, so the blind chute needs zero lateral
+    # motion at the crossing (nt10 crossed at est -0.48: the carrot never
+    # finished the diagonal shift).
+    # RECENTER_Z (07-15, fg19-21 frames): est-z under-reads the climb by
+    # ~1.2-1.7 m, so the old -1.3 target parks the drone at TRUTH 2.5-3 m --
+    # above the 1.35 m aperture line, seeing near gates oblique-from-above
+    # (hole width shrinks while closing -> pillar/pole hits at ~23 s in
+    # fg19/20/21). -0.4 est ~= 1.3-1.6 m truth ~= the aperture line; err low:
+    # from below, the 20-up camera keeps the hole in view (below-height
+    # approach, memory note).
+    _tgt = np.array([0.0, float(os.environ.get('RECENTER_Y', '0.0')),
+                     float(os.environ.get('RECENTER_Z', '-1.3'))])
     t0 = time.time()
-    while time.time() - t0 < 8.0 and not aborted:
+    # GNSCALE SCALE-CAL HOLD (07-14): stay near the pad (~6 m from gate 1, SAFE)
+    # while DPVO calibrates metric scale off the gate anchors, then commit to the
+    # spline. Without this the drone dives into the gate before scale locks
+    # (scored7: banked 5 of 12 samples, crashed at ~2 m). A slow FORWARD creep to
+    # a safe hold-x gives a monotonic DPVO baseline (symmetric bobs -> ~0 net
+    # displacement -> ill-posed scale) and keeps the gate in view.
+    _gn = os.environ.get('GNSCALE') == '1'
+    _tmax = float(os.environ.get('GNSCALE_HOLD_TMAX', '18.0')) if _gn else 8.0
+    _holdx = float(os.environ.get('GNSCALE_HOLD_X', '1.5'))
+    while time.time() - t0 < _tmax and not aborted:
         with KF_LOCK:
             _p = KF.p.copy()
         _d = _tgt - _p
-        if float(np.hypot(_d[1], _d[2])) < 0.15:
+        _conv = float(np.hypot(_d[1], _d[2])) < 0.15
+        _wait_scale = _gn and not state.get('dpvo_scale_locked')
+        if _conv and not _wait_scale:
             break
         _vy = max(-0.5, min(0.5, 0.8 * float(_d[1])))
         _vz = max(-0.5, min(0.5, -0.8 * float(_d[2])))   # vz_ref is up-positive
-        level_cmd(0.0, _vy, _vz)
+        _vx = 0.0
+        if _conv and _wait_scale:
+            _vx = 0.3 if _p[0] < _holdx else 0.0         # creep to safe hold-x, then hover
+        level_cmd(_vx, _vy, _vz)
         aborted = guards('climb')
         time.sleep(1/CMD_HZ)
     with KF_LOCK:
         _p = KF.p.copy()
+    _sl = 'scale LOCKED' if state.get('dpvo_scale_locked') else 'scale NOT locked'
     print(f'RECENTER done at [{_p[0]:.2f} {_p[1]:.2f} {_p[2]:.2f}] '
-          f'({time.time()-t0:.1f} s)', flush=True)
+          f'({time.time()-t0:.1f} s, {_sl})', flush=True)
     jlog('recenter', p=[round(float(x), 2) for x in _p], t=round(time.time()-t0, 1))
+
+if os.environ.get('YAWPROBE') == '1' and not aborted:
+    # YAW-SIGN PROBE (07-14): hover, spin ~180 deg at 0.4 rad/s, stop, and log
+    # integrated roll/pitch vs gravity-derived truth throughout. If the gyro
+    # reports FRD body rates, EULERFIX keeps roll/pitch true through the spin;
+    # if it reports Euler-angle rates, EULERFIX's coupling terms inject phantom
+    # roll (fg14 runaway). Run with EULERFIX=1 and =0, compare drift.
+    print(f'YAWPROBE start (EULERFIX={os.environ.get("EULERFIX","0")})', flush=True)
+    _t0 = time.time()
+    while time.time() - _t0 < 14.0 and not aborted:
+        _el = time.time() - _t0
+        _yr = 0.4 if 2.0 < _el < 10.0 else 0.0
+        level_cmd(0.0, 0.0, 0.0, yr=_yr)
+        acc_ = state['acc']
+        _r_acc = math.atan2(acc_[1], -acc_[2])
+        _p_acc = math.atan2(acc_[0], math.sqrt(acc_[1]**2 + acc_[2]**2))
+        jlog('yawprobe', el=round(_el, 2), yr=_yr,
+             r_est=round(math.degrees(state['roll']), 2),
+             p_est=round(math.degrees(state['pitch']), 2),
+             y_est=round(math.degrees(state['yaw']), 1),
+             r_acc=round(math.degrees(_r_acc), 2),
+             p_acc=round(math.degrees(_p_acc), 2),
+             vx=round(state['vx_b'], 2), vy=round(state['vy_b'], 2))
+        time.sleep(1 / CMD_HZ)
+    land(aborted or 'yawprobe complete')
+    sys.exit(0)
+
+if os.environ.get('HOVERPROBE') == '1' and not aborted:
+    # HOVER-DRIFT PROBE (07-15): is the rightward terminal drift a REAL
+    # environmental push or flight-coupled (attitude banking during
+    # maneuvers)? Hover 12 s with ZERO commands right after RELEVEL, with
+    # the pad-locked chute hole in view: fastgate's 30 Hz bearing stream is
+    # a truth-referenced lateral velocity measurement (drift_rad/s x range).
+    # If the hole bearing walks left at hover -> the drone drifts right with
+    # zeroed attitude and no commands -> the push is real. If it hovers
+    # clean -> the drift only exists in flight.
+    print('HOVERPROBE start (12 s zero-cmd hover, fastgate as truth)', flush=True)
+    _t0 = time.time()
+    while time.time() - _t0 < 12.0 and not aborted:
+        level_cmd(0.0, 0.0, 0.0)
+        acc_ = state['acc']
+        _r_acc = math.atan2(acc_[1], -acc_[2])
+        _fga = time.time() - state.get('fg_wall', 0.0)
+        _fgb = state.get('fg_bear', (9.9, 9.9))
+        jlog('hoverprobe', el=round(time.time() - _t0, 2),
+             bear=[round(_fgb[0], 4), round(_fgb[1], 4)],
+             fga=round(_fga, 2), w=round(state.get('fg_w', 0.0), 0),
+             r_est=round(math.degrees(state['roll']), 2),
+             r_acc=round(math.degrees(_r_acc), 2),
+             vy=round(state['vy_b'], 2))
+        aborted = guards('route')
+        time.sleep(1 / CMD_HZ)
+    land(aborted or 'hoverprobe complete')
+    sys.exit(0)
 
 if os.environ.get('STRAIGHTTEST') == '1' and not aborted:
     # SWIVEL ISOLATION (07-12, Alex's eyes-on): climb a little, fly
@@ -1242,6 +1611,90 @@ if os.environ.get('STRAIGHTTEST') == '1' and not aborted:
         time.sleep(1/CMD_HZ)
     land(aborted or 'straight test complete')
     sys.exit(0)
+
+if (os.environ.get('YAWCAL', '1') == '1' and os.environ.get('FGPURSUIT') == '1'
+        and not aborted):
+    # VISUAL CRAB CALIBRATION -- the vision yaw-relevel (07-15, hp1/st1
+    # probes): the takeoff level-off banks ~10-17 deg of est-yaw error
+    # (gravity observes roll/pitch, never yaw, so RELEVEL can't touch it);
+    # the vy_b velocity loop converts it into a REAL rightward crab
+    # ~ vx*sin(err) that the est reads back as vy~0 (st1: 1-1.5 m right
+    # over a 4 m pinned-yaw leg while est-y moved 0.03 m). Measure the crab
+    # directly against the tracked hole bearing during a short pinned-yaw
+    # forward leg, and store the equal-and-opposite lateral ratio; the
+    # pursuit applies the constant crab_vy bias everywhere (tracked/coast/punch).
+    # Sign chain (verified on fg25/26 logs): drone crabs RIGHT -> hole
+    # walks LEFT in frame -> bear[0] slope NEGATIVE -> vlat=-slope*range
+    # POSITIVE(right) -> ratio negative -> negative vy = leftward = opposes.
+    _cal_t0 = time.time()
+    # small nose-down bias throughout the calibration (07-15, fg38 n=0): at
+    # hover the hole sits right at the up-tilted camera's FOV edge, and the
+    # backward leg's nose-up transient pushes it out entirely -- no samples,
+    # no seed. -0.06 rad holds it in view.
+    while time.time() - _cal_t0 < 4.0 and not aborted:   # wait for a track
+        if time.time() - state.get('fg_wall', 0.0) < 0.3 and state.get('fg_w', 0) >= 40:
+            break
+        level_cmd(0, 0, 0, pitch_bias=-0.06)
+        aborted = guards('climb')
+        time.sleep(1 / CMD_HZ)
+    _cal_t0 = time.time()
+    while time.time() - _cal_t0 < 1.5 and not aborted:   # yaw-center the hole
+        _b = state.get('fg_bear', (0.0, 0.0))
+        _fresh = time.time() - state.get('fg_wall', 0.0) < 0.3
+        # SZ (yaw sign) is defined later in the flow; it is +1 by
+        # flight-measured default -- use raw yr here.
+        level_cmd(0, 0, 0, pitch_bias=-0.06,
+                  yr=(max(-0.4, min(0.4, 1.2 * _b[0])) if _fresh else 0.0))
+        aborted = guards('climb')
+        time.sleep(1 / CMD_HZ)
+    _hold_yaw = state['yaw']
+    _samp = []
+    # BACKWARD leg (07-15, fg31: the forward leg toward the chute threads the
+    # start-light pole corridor at light-box height and hit the right pole
+    # mid-calibration). Backing up goes into the open spawn area, keeps the
+    # hole in view un-clipped (range grows), and measures the same ratio --
+    # crab scales with signed vx.
+    _VXL = -0.7
+    _cal_t0 = time.time()
+    while time.time() - _cal_t0 < 1.6 and not aborted:   # pinned-yaw leg
+        _yrh = max(-0.3, min(0.3, 1.0 * wrap(_hold_yaw - state['yaw'])))
+        level_cmd(SX * _VXL, 0, 0, pitch_bias=-0.06, yr=_yrh)
+        if time.time() - state.get('fg_wall', 0.0) < 0.1:
+            _samp.append((time.time(), state['fg_bear'][0], state.get('fg_w', 50.0)))
+        aborted = guards('route')
+        time.sleep(1 / CMD_HZ)
+    _cal_t0 = time.time()
+    while time.time() - _cal_t0 < 1.0 and not aborted:   # brake
+        level_cmd(0, 0, 0)
+        time.sleep(1 / CMD_HZ)
+    if len(_samp) >= 12:
+        _ts = np.array([s[0] for s in _samp]); _ts -= _ts[0]
+        _bs = np.array([s[1] for s in _samp])
+        _ws = np.array([s[2] for s in _samp])
+        _slope = float(np.polyfit(_ts, _bs, 1)[0])           # rad/s, + = hole right
+        _rng = 290.0 / max(20.0, float(np.median(_ws)))      # m from hole width
+        _vlat = -_slope * _rng                               # m/s, + = drone RIGHT
+        # DIRECTION-INDEPENDENT (07-15, st1 fwd vs fg32 bwd legs): the drift
+        # is rightward in BOTH flight directions (~0.1-0.3 m/s when
+        # translating, ~0 at hover) -- NOT a yaw-error crab (that would flip
+        # with vx). Mechanism open; compensate empirically with a CONSTANT
+        # opposite vy bias, re-measured every flight (magnitude varies
+        # run-to-run, the historical 0.8-2.2 m spread).
+        state['crab_vy'] = max(-0.4, min(0.4, -_vlat))
+        # ATTMODE: pre-seed the roll-trim integrator from the measured drift
+        # so the trim doesn't need to wind up from zero during the approach.
+        state['_att_ri'] = max(-0.15, min(0.15,
+            float(os.environ.get('ATT_TRIM_K', '0.5')) * state['crab_vy']))
+        print(f'YAWCAL: slope {_slope:+.4f} rad/s @ {_rng:.1f} m -> lateral '
+              f'drift {_vlat:+.2f} m/s while translating; vy bias '
+              f'{state["crab_vy"]:+.2f}, att roll trim '
+              f'{state["_att_ri"]:+.3f} rad', flush=True)
+        jlog('yawcal', slope=round(_slope, 5), rng=round(_rng, 2),
+             vlat=round(_vlat, 3), n=len(_samp))
+    else:
+        state['crab_vy'] = 0.0
+        print(f'YAWCAL: insufficient samples (n={len(_samp)}), no compensation',
+              flush=True)
 
 RUN_PROBES = os.environ.get('PROBES') == '1'
 def probe_axis(vx_r, vy_r, dur=1.2):
@@ -1290,6 +1743,13 @@ if RUN_PROBES:
 print(f'sign map: SX {SX} SY {SY} SZ {SZ} (probes {"run" if RUN_PROBES else "skipped -- flight-measured defaults"})', flush=True)
 
 phase = 'route'                 # spline-first: route owns the course; vision approach is terminal aid
+if os.environ.get('FGPURSUIT') == '1':
+    # FGPURSUIT (07-14): fastgate tracked the hole dead-centered at 30 Hz for
+    # 14 s straight (fg2 log) while the legacy GateNet handoff never fired.
+    # Skip route/approach/punch: pure pursuit on the live hole bearing from
+    # RECENTER to the crossing. The variable push is out-corrected in real
+    # time; no handoff lottery, no blind coast.
+    phase = 'fgpursuit'
 retries = 0
 gate_z_off = [0.0, 0.0, 0.0]    # per-gate aperture-height sweep offsets (retry logic)
 retreat_pt = np.zeros(3)
@@ -1327,7 +1787,24 @@ while not aborted:
         # our aim point. Run-21 proved otherwise (judge gate 1 is at ~[6,0],
         # ticked en route) -- teleporting the KF to the aim point would wreck
         # navigation. Re-anchor ONLY if vision has been stale for 3 s+.
-        if time.time() - state.get('obs_wall', 0.0) > 3.0 and                 state.get('fix_count', 0) < 1:
+        if os.environ.get('MAPFOLLOW') == '1':
+            # MAPFOLLOW re-anchor (07-15, fg49): the punch + clearance dash
+            # bank est error hard (fg49 est z -7 m, y -16 within seconds) and
+            # the carrot then steers on fantasy. The tick is truth: we are AT
+            # the ticked gate's aperture +/-0.75 m, moving ~2 m/s forward,
+            # level. Anchor position AND velocity so the gate-2 carrot leg
+            # starts clean. (The old run-21 caution no longer applies: 5/5
+            # tick-punch correlation proves the ticked gate IS our aim point.)
+            with KF_LOCK:
+                KF.x[:3] = state['next_gate_w']
+                KF.x[3] = 2.0 * math.cos(state['yaw'])
+                KF.x[4] = 2.0 * math.sin(state['yaw'])
+                KF.x[5] = 0.0
+                KF.P[:3, :3] = np.eye(3) * 0.5
+            jlog('tick_fix', p=state['next_gate_w'].round(2).tolist(),
+                 mode='mapfollow-full')
+        elif time.time() - state.get('obs_wall', 0.0) > 3.0 and \
+                state.get('fix_count', 0) < 1:
             with KF_LOCK:
                 KF.x[:3] = state['next_gate_w']
                 KF.P[:3, :3] = np.eye(3) * 0.5
@@ -1336,9 +1813,79 @@ while not aborted:
             jlog('tick_fix_skipped', reason='vision healthy')
         state['obs'] = None; state['tgt'] = None; state['obs_wall'] = 0.0
         state['landmark_w'] = None
+        _dash_s = 0.4 if os.environ.get('MAPFOLLOW') == '1' else 1.2
         t0c = time.time()
-        while time.time() - t0c < 1.2:   # clearance dash through the plane
+        while time.time() - t0c < _dash_s:   # clearance dash through the plane
             level_cmd(SX * 1.5, 0, 0, pitch_bias=-0.08); time.sleep(1/CMD_HZ)
+        if os.environ.get('MAPFOLLOW') == '1':
+            # RE-ANCHOR AFTER THE DASH (07-15, fg54): anchoring at the tick
+            # and then dashing re-banks est error on bad draws before the
+            # staging loop ever runs. Post-dash truth is the ticked gate
+            # plus ~1 m of punch residual + dash along heading, ~1.5 m/s
+            # forward, level -- start the loop from THAT.
+            with KF_LOCK:
+                KF.x[0] = float(state['next_gate_w'][0]) \
+                    + 1.0 * math.cos(state['yaw'])
+                KF.x[1] = float(state['next_gate_w'][1]) \
+                    + 1.0 * math.sin(state['yaw'])
+                KF.x[2] = float(state['next_gate_w'][2])
+                KF.x[3] = 1.5 * math.cos(state['yaw'])
+                KF.x[4] = 1.5 * math.sin(state['yaw'])
+                KF.x[5] = 0.0
+                KF.P[:3, :3] = np.eye(3) * 0.5
+            jlog('tick_fix', p=[round(float(x), 2) for x in KF.x[:3]],
+                 mode='post-dash')
+            # MF_DR seed (07-15): kinematic DR for the staging leg starts
+            # HERE -- position = ticked gate + ~1 m of dash along heading.
+            # Skip the brake+relevel entirely (fg57 proved it can't settle);
+            # the leg flies on commanded-speed x gyro-yaw DR instead.
+            state['_mf_p'] = np.array([
+                float(state['next_gate_w'][0]) + 1.0 * math.cos(state['yaw']),
+                float(state['next_gate_w'][1]) + 1.0 * math.sin(state['yaw']),
+                float(state['next_gate_w'][2])])
+            state['_mf_lastpb'] = -0.06
+            with KF_LOCK:
+                state['_mf_z0'] = float(KF.x[2])   # relative-altitude baseline
+            state.pop('_mf_zerr', None)
+            jlog('mfdr_seed', p=[round(float(x), 2) for x in state['_mf_p']])
+        if (os.environ.get('MAPFOLLOW') == '1'
+                and os.environ.get('MF_DR') != '1'):
+            # BRAKE + MID-FLIGHT RELEVEL (07-15, fg55): the anchor fixes the
+            # STATE but the punch banks ATTITUDE error, so est velocity
+            # re-explodes within seconds. Hover-brake, re-zero roll/pitch
+            # from the accel (exact at hover -- the takeoff RELEVEL move),
+            # zero velocity, re-anchor position. The staging loop then runs
+            # on a genuinely clean estimator.
+            _t0b = time.time()
+            _quiet = False
+            while time.time() - _t0b < 4.0:
+                level_cmd(0, 0, 0.0, att=True)
+                _acB = state['acc']
+                _an = math.sqrt(_acB[0]**2 + _acB[1]**2 + _acB[2]**2)
+                # re-zero ONLY when hover-quiet (fg56: an unsettled accel
+                # injects attitude error instead of removing it)
+                if time.time() - _t0b > 1.5 and abs(_an - 9.34) < 0.12:
+                    _quiet = True
+                    break
+                time.sleep(1 / CMD_HZ)
+            if _quiet:
+                _acB = state['acc']
+                state['roll'] = math.atan2(_acB[1], -_acB[2])
+                state['pitch'] = math.atan2(
+                    _acB[0], math.sqrt(_acB[1] ** 2 + _acB[2] ** 2))
+            else:
+                print('post-tick relevel: not quiet, attitude kept', flush=True)
+            with KF_LOCK:
+                KF.x[0] = float(state['next_gate_w'][0]) \
+                    + 1.7 * math.cos(state['yaw'])
+                KF.x[1] = float(state['next_gate_w'][1]) \
+                    + 1.7 * math.sin(state['yaw'])
+                KF.x[2] = float(state['next_gate_w'][2])
+                KF.x[3:6] = 0.0
+                KF.P[:3, :3] = np.eye(3) * 0.5
+            print('post-tick brake + mid-flight relevel done', flush=True)
+            jlog('tick_fix', p=[round(float(x), 2) for x in KF.x[:3]],
+                 mode='post-brake-relevel')
         if ticks >= TARGET_TICKS:
             print(f'*** MISSION COMPLETE: {ticks} gates ***', flush=True)
             jlog('mission_complete', ticks=ticks)
@@ -1346,8 +1893,25 @@ while not aborted:
         nxt = GATES_W[min(ticks, len(GATES_W) - 1)]
         state['next_gate_w'] = nxt + np.array([0, 0, gate_z_off[min(ticks, 2)]])
         retries = 0
-        phase, phase_t0, route_end_t0 = 'route', now, None
-        print(f'ROUTE to gate {ticks} at {state["next_gate_w"].round(2)}', flush=True)
+        if os.environ.get('FGPURSUIT') == '1':
+            # POST-TICK GATE-TO-GATE (07-15, fg36 first tick): stay in the
+            # visual pursuit -- the legacy route/obs-DR punch missed gate 2
+            # twice after the tick while fg35's pursuit re-acquisition had
+            # already reached the ribbon visually. Drop the old track so
+            # acquisition picks the next biggest close hole.
+            state['fg_wall'] = 0.0
+            state['_fg_close'] = 0.0
+            state['_fgp_vy'] = state['_fgp_vz'] = 0.0
+            state['_fgp_ib'] = 0.0
+            state.pop('_punch_rb', None); state.pop('_punch_dthr', None)
+            state['_att_bd'] = (0.0, 0.0)
+            state['_att_lastb'] = None
+            phase, phase_t0, route_end_t0 = 'fgpursuit', now, None
+            print(f'FGPURSUIT to gate {ticks} at {state["next_gate_w"].round(2)}',
+                  flush=True)
+        else:
+            phase, phase_t0, route_end_t0 = 'route', now, None
+            print(f'ROUTE to gate {ticks} at {state["next_gate_w"].round(2)}', flush=True)
         continue
     if state.get('race_finish_ns', -1) >= 0:
         print(f'*** RACE FINISH *** ticks={ticks}', flush=True)
@@ -1356,7 +1920,433 @@ while not aborted:
     if now - mission_t0 > MISSION_S:
         aborted = f'mission timeout, ticks={ticks}'
 
-    if phase == 'acquire':
+    if phase == 'fgpursuit':
+        state['trim_ok'] = False
+        with KF_LOCK:
+            _pp = KF.p.copy()
+        _dpvo_control = (os.environ.get('DPVO_ROUTE') == '1'
+                         and os.environ.get('DPVO_OBSERVE') != '1')
+        if (os.environ.get('DPVO_ROUTE') == '1'
+                and select_dpvo_route_position is not None):
+            _observe_only = os.environ.get('DPVO_OBSERVE') == '1'
+            _dpvo_p, _dpvo_reason = select_dpvo_route_position(
+                state, ticks, now, _observe_only)
+            if _observe_only:
+                if now - state.get('_dpvo_compare_log', 0.0) > 0.5:
+                    state['_dpvo_compare_log'] = now
+                    jlog('dpvo_compare', reason=_dpvo_reason,
+                         dpvo=None if state.get('dpvo_route_p') is None
+                         else [round(float(x), 3)
+                               for x in state['dpvo_route_p']],
+                         control=[round(float(x), 3) for x in _pp])
+            elif ticks >= 1:
+                if _dpvo_p is not None:
+                    _pp = np.asarray(_dpvo_p, dtype=float)
+                    state['_route_source'] = 'dpvo'
+                else:
+                    _tick_age = (time.time_ns()
+                                 - int(state.get('gate_tick_ns', 0))) / 1e9
+                    _grace = float(os.environ.get('DPVO_START_GRACE', '1.5'))
+                    if 0.0 <= _tick_age < _grace:
+                        level_cmd(0, 0, 0.0, att=True)
+                        time.sleep(1 / CMD_HZ)
+                        continue
+                    aborted = f'DPVO route unhealthy: {_dpvo_reason}'
+                    state['dpvo_abort_reason'] = _dpvo_reason
+                    jlog('dpvo_abort', reason=_dpvo_reason)
+                    continue
+        # FGP_PLANE_X (07-14, fg12 frames): the cyan racing line dives through
+        # the STACKED (ribbon) gate at x~11.5, and every historical tick
+        # (arch17/23/27) happened THERE -- the chute-plane backstop killed the
+        # pursuit at x 10.3 just short of it. Let the pursuit cross the ribbon.
+        _plane_x = float(os.environ.get('FGP_PLANE_X', '0') or 0) \
+            or float(state['next_gate_w'][0])
+        _fwd_dr = _plane_x - float(_pp[0])
+        _fgage = now - state.get('fg_wall', 0.0)
+        _fgw = state.get('fg_w', 0.0)
+        # RANGE FROM THE HOLE, not DR (fg5: DR over-integrated and braked ~2 m
+        # short while the bearing was still tracking smoothly). Hole width
+        # >=120 px ~= <4 m: mark 'close'. When the hole then vanishes (clipped
+        # out at ~1.5 m), punch straight through.
+        # PUNCH-CENTERING GATE (07-15, fg15/fg16 frames): post-RECENTER
+        # altitude is a +/-1 m est-z lottery -- fg15 skimmed 0.3 m OVER the
+        # gate top, fg16 punched with the hole 0.6 rad ABOVE (drone below the
+        # aperture) and hit the frame. The punch zeroes vz, so it must only
+        # arm when the hole is inside the aperture cone (0.18 rad ~= 0.7 m at
+        # the w>=120 trigger range); until then keep steering and let the
+        # bearing loop converge.
+        # STAGING GATE (07-15, fg50/51): on the gate-2 leg, holes seen
+        # obliquely mid-dogleg must not steal the track or arm the punch --
+        # vision control is allowed only once the staging point on the
+        # gate's crossing normal is reached (head-on geometry, like gate 1).
+        _allow_track = (os.environ.get('MAPFOLLOW') != '1' or ticks == 0
+                        or (state.get('_mf_stage_done', False)
+                            # HEAD-ON CONFIRMATION (07-15, fg63): kinematic
+                            # DR speed error can fire 'staged' early/late --
+                            # release vision only when the hole also LOOKS
+                            # head-on, else keep the carrot.
+                            and _fgage < 0.4 and _fgw >= 45
+                            # 0.6, not 0.35 (fg64/65: DR speed error runs the
+                            # east leg ~1 m south of the gate line -- the hole
+                            # sits at 0.4-0.8 rad, visible but never passing a
+                            # strict gate; the pursuit converges 0.75 rad fine)
+                            and abs(state.get('fg_bear', (9.9, 9.9))[0]) < 0.6))
+        _ctr = float(os.environ.get('FGP_PUNCH_CTR', '0.18'))
+        _fgb = state.get('fg_bear', (9.9, 9.9))
+        if (_allow_track and _fgage < 0.4 and _fgw >= 120
+                and abs(_fgb[0]) < _ctr and abs(_fgb[1]) < _ctr):
+            state['_fg_close'] = now
+        # PUNCH-WHILE-LOCKED (07-15, fg26/fg27 frames): the hole clips out at
+        # w 95-108 -- BELOW the 120 vanish-trigger -- so every crossing ended
+        # as a 2.5 s blind coast that the rightward push owns (fg26/27 both
+        # slid just right of the post). Punch the moment the hole is big AND
+        # centered, while still visually locked: no coast, minimal blind time.
+        _punch_now = (_allow_track and _fgage < 0.4
+                      and _fgw >= float(os.environ.get('FGP_PUNCH_W', '95'))
+                      and abs(_fgb[0]) < _ctr and abs(_fgb[1]) < _ctr)
+        if _punch_now or (_fgage > 0.5 and now - state.get('_fg_close', 0) < 3.0):
+            # GATE-TO-GATE (07-14, Alex): a close hole (w>=120) just left the
+            # frame -> punch straight through it, then DROP the track and keep
+            # pursuing -- the next course gate is now the biggest close hole and
+            # acquisition picks it up. The course flies itself in proximity
+            # order; the main-loop tick handler scores as we go.
+            print(f'fgpursuit: crossing (w {_fgw:.0f}), punching + continuing', flush=True)
+            t0p = time.time()
+            _hold_yaw = state['yaw']
+            while time.time() - t0p < 1.6 and not aborted:
+                _yrh = SZ * max(-0.3, min(0.3, 1.0 * wrap(_hold_yaw - state['yaw'])))
+                # STEERED PUNCH (07-15, fg28 frames): the straight punch let
+                # the ~0.3-0.5 m/s push slide the drone OUTSIDE the right
+                # post in 1.6 s -- while the detector was still SEEING the
+                # aperture (w=200 at 0.55 rad left). Keep the lateral loop
+                # closed on the hole as long as it stays visible; hold the
+                # last correction when it finally clips out.
+                if os.environ.get('ATTMODE') == '1':
+                    # attitude punch: strong fixed forward pitch; roll/thr
+                    # steered on the hole while visible, trim+hold after.
+                    if time.time() - state.get('fg_wall', 0.0) < 0.3:
+                        _pv = state['fg_bear']
+                        state['_punch_rb'] = max(-0.22, min(0.22,
+                            0.4 * _pv[0] + state.get('_att_ri', 0.0)))
+                        state['_punch_dthr'] = max(-0.05, min(0.05, -0.15 * _pv[1]))
+                    level_cmd(0, 0, state.get('_punch_dthr', 0.0),
+                              pitch_bias=float(os.environ.get('ATT_PUNCH_PITCH', '-0.18')),
+                              yr=_yrh,
+                              roll_bias=state.get('_punch_rb',
+                                                  state.get('_att_ri', 0.0)),
+                              att=True)
+                else:
+                    if time.time() - state.get('fg_wall', 0.0) < 0.3:
+                        _pv = state['fg_bear']
+                        state['_punch_vy'] = max(-0.6, min(0.6, 0.9 * _pv[0]))
+                        state['_punch_vz'] = max(-0.5, min(0.5, -0.9 * _pv[1]))
+                    level_cmd(SX * 1.8,
+                              SY * (state.get('_punch_vy', 0.0)
+                                    + state.get('crab_vy', 0.0)),
+                              state.get('_punch_vz', 0.0), yr=_yrh)
+                aborted = guards('punch')
+                time.sleep(1 / CMD_HZ)
+            state['_punch_vy'] = state['_punch_vz'] = 0.0
+            state['fg_wall'] = 0.0          # drop track -> re-acquire next gate
+            state['_fg_close'] = 0.0
+            state['_fgp_vy'] = state['_fgp_vz'] = 0.0
+            state['_fgp_ib'] = 0.0          # new gate, new disturbance integral
+            state.pop('_punch_rb', None); state.pop('_punch_dthr', None)
+            state['_att_bd'] = (0.0, 0.0)   # new gate: derivative discontinuity
+            state['_att_lastb'] = None      # (keep _att_ri -- the drift trim
+                                            # is global, not per-gate)
+            state['_mf_stage_done'] = False  # new gate: stage its normal first
+            state['_mf_wps'] = None; state['_mf_wpi'] = 0
+            continue
+        if os.environ.get('MAPFOLLOW') == '1':
+            # x-plane overrun is meaningless on the dogleg (07-15 fg48: the
+            # drone exits the chute at x~12, already PAST gate 2's x=11.4,
+            # so _fwd_dr starts negative and the brake preempted the carrot
+            # instantly). Runaway bound = horizontal distance from the next
+            # gate instead.
+            _ppo = state['_mf_p'] if (os.environ.get('MF_DR') == '1'
+                                      and not _dpvo_control
+                                      and state.get('_mf_p') is not None) else _pp
+            _dgx = float(state['next_gate_w'][0]) - float(_ppo[0])
+            _dgy = float(state['next_gate_w'][1]) - float(_ppo[1])
+            _overrun = math.hypot(_dgx, _dgy) > 25.0
+        else:
+            _overrun = _fwd_dr < -4.0
+        if _overrun:
+            print('fgpursuit: deep DR overrun, braking', flush=True)
+            phase, phase_t0 = 'post', now
+            continue
+        _vx = 0.9 if _fwd_dr > 2.0 else 1.4
+        _yr_t = 0.0
+        if _fgage < 0.4:
+            state['_fgp_had_track'] = True
+            _b = state['fg_bear']
+            # RANGE-FROM-HOLE SCALE (07-15, fg19/fg20): max(_fwd_dr, 1.2) was
+            # a range-to-gate proxy only while FGP_PLANE_X sat AT the gate;
+            # with plane 25 it reads ~20-24 near the pad, so a 0.08 rad
+            # bearing saturates vy at +/-0.6 (4-5x hot) -- both runs slid
+            # ~1.7 m sideways into the LEFT start-light pole. Hole width is
+            # the honest range cue: w=46 px at 6.3 m -> range ~ 290/w.
+            _scale = max(1.2, min(8.0, 290.0 / max(_fgw, 20.0)))
+            # TURN-TO-TARGET (07-14): yaw toward the hole (a strafe with yaw
+            # locked can't fly the 40-deg dogleg to the ribbon gate -- fg13's
+            # bearing grew 0.37->0.85 with vy pinned). Small strafe assist for
+            # the last-metre fine centering; vz on bearing as before.
+            _yr_t = max(-0.6, min(0.6, 1.4 * _b[0]))
+            # BEARING INTEGRATOR (07-15, fg23/fg25): the ~0.3 m/s gate-area
+            # push turns pure pursuit into a constant-bearing drift and
+            # P-gain alone leaves a ~0.5-1 m steady-state miss (fg23 right-
+            # side miss at bear -0.014). A fixed APPROACH_VYBIAS feed-forward
+            # made the drift 3x WORSE in fg25 (frame convention mismatch) --
+            # integrate the bearing instead: pushes vy in whichever direction
+            # actually nulls the drift, no sign assumptions.
+            _ib = state.get('_fgp_ib', 0.0)
+            _ib = max(-0.4, min(0.4, _ib + 1.5 * _b[0] / CMD_HZ))
+            state['_fgp_ib'] = _ib
+            _vy = max(-0.6, min(0.6, 0.4 * _b[0] * _scale + _ib))
+            _vz = max(-0.8, min(0.8, -1.0 * _b[1] * _scale))
+            state['_fgp_vy'] = _vy - _ib   # P part only; coast re-adds _fgp_ib
+            state['_fgp_vz'] = _vz
+            # ATTMODE bearing PID state: derivative from consecutive fresh
+            # detections (fastgate is 1.8 ms / 30 Hz -- the D term is usable,
+            # unlike GateNet's 450 ms), EMA-smoothed; integrator = the roll
+            # trim that nulls steady-state bearing drift (subsumes the crab).
+            _fw = state.get('fg_wall', 0.0)
+            if _fw != state.get('_att_lastw', 0.0):
+                _dtb = _fw - state.get('_att_lastw', _fw)
+                _lb = state.get('_att_lastb')
+                _rng_n = 290.0 / max(20.0, _fgw)
+                if _lb is not None and 0.01 < _dtb < 0.25:
+                    _obd = state.get('_att_bd', (0.0, 0.0))
+                    state['_att_bd'] = (
+                        0.6 * _obd[0] + 0.4 * (_b[0] - _lb[0]) / _dtb,
+                        0.6 * _obd[1] + 0.4 * (_b[1] - _lb[1]) / _dtb)
+                    _lr = state.get('_att_rng')
+                    if _lr is not None:
+                        # range rate from hole width: the vision speedometer.
+                        # HEAVY smoothing (07-15 fg40 att log): +/-2 px on a
+                        # 45 px hole is +/-0.5 m of range -> instantaneous
+                        # rates of +/-3 m/s flapped the governor into braking
+                        # mid-approach and the drone never closed.
+                        state['_att_rrate'] = (0.85 * state.get('_att_rrate', 0.0)
+                                               + 0.15 * (_rng_n - _lr) / _dtb)
+                state['_att_rng'] = _rng_n
+                state['_att_lastw'] = _fw
+                state['_att_lastb'] = _b
+            _ari = state.get('_att_ri', 0.0)
+            _ari = max(-0.18, min(0.18,
+                       _ari + float(os.environ.get('ATT_KI', '0.5')) * _b[0] / CMD_HZ))
+            state['_att_ri'] = _ari
+            if now - state.get('_fgp_log', 0) > 0.5:
+                state['_fgp_log'] = now
+                jlog('fgp', fwd=round(_fwd_dr, 2), bear=[round(_b[0], 3),
+                     round(_b[1], 3)], vy=round(_vy, 2), w=round(_fgw, 0))
+        else:
+            # hole not in view: hold the last correction, decayed; hold yaw
+            _decay = 0.97
+            state['_fgp_vy'] = state.get('_fgp_vy', 0.0) * _decay
+            state['_fgp_vz'] = state.get('_fgp_vz', 0.0) * _decay
+            # carry the integrator (the measured push estimate) UNDECAYED
+            # through the blind coast (07-15, fg26: perfect tracked approach
+            # to w=95, then the 2.5 s blind coast let the push slide it just
+            # right of the post) -- only the P part decays.
+            _vy = state['_fgp_vy'] + state.get('_fgp_ib', 0.0) \
+                + float(os.environ.get('APPROACH_VYBIAS', '0.0')) * 0.5
+            _vz = state['_fgp_vz']
+            # DESCEND-UNTIL-ACQUIRE (07-15, fg17 acquisition frame): post-
+            # RECENTER the drone sits 2.5-3.5 m up (est-z under-reads the
+            # climb) and from there the 20-deg-up camera CANNOT see the near
+            # chute hole (~40 deg below axis) while FAR bay gates stay
+            # visible -- the blind forward creep then acquired a w=40 far
+            # gate and wasted the run. Until the FIRST track of the flight:
+            # crawl, don't creep, and descend so the near hole re-enters the
+            # FOV band from below gate height (memory: below-height approach).
+            if not state.get('_fgp_had_track'):
+                _vx = 0.3
+                _vz = float(os.environ.get('FGP_SEEK_VZ', '-0.35'))
+                if float(_pp[2]) > -0.5:    # est floor margin (alt under-read)
+                    _vz = 0.0
+        # NOSE-DOWN TILT: rotates the 20-up cam down -> hole in view to ~1.5 m;
+        # pitch-forward also accelerates through the crossing.
+        # Keyed on HOLE SIZE, not DR (07-15): with FGP_PLANE_X deep, _fwd_dr
+        # never reads <4.5 at the chute, the ramp never engaged, and the hole
+        # clipped out at w~94 -- short of the w>=120 punch trigger.
+        _close_t = (_fgw >= 70 and _fgage < 1.0) or _fwd_dr < 4.5
+        if os.environ.get('ATTMODE') == '1':
+            # PURE-ATTITUDE PURSUIT: bearing PID -> roll/throttle directly,
+            # fixed pitch for speed. No est-velocity feedback anywhere.
+            _pb = float(os.environ.get('FGP_PITCH', '-0.15')) if _close_t \
+                else float(os.environ.get('ATT_PITCH', '-0.08'))
+            # VISION SPEED GOVERNOR (07-15, fg34): a tilt commands
+            # acceleration, not speed -- without a governor the drone
+            # accelerates indefinitely (est hit the 8 m/s guard). Range rate
+            # from hole width is the est-free speedometer: brake tilt when
+            # closing faster than ATT_VMAX.
+            if (_fgage < 0.4 and _fgw >= 55 and
+                    -state.get('_att_rrate', 0.0) > float(os.environ.get('ATT_VMAX', '1.6'))):
+                _pb = 0.06
+            if _fgage < 0.4 and _allow_track:
+                _bd = state.get('_att_bd', (0.0, 0.0))
+                _bb = state['fg_bear']
+                _rb = (float(os.environ.get('ATT_KP', '0.4')) * _bb[0]
+                       + float(os.environ.get('ATT_KD', '0.25')) * _bd[0]
+                       + state.get('_att_ri', 0.0))
+                _dthr = (-float(os.environ.get('ATT_KT', '0.15')) * _bb[1]
+                         - float(os.environ.get('ATT_KTD', '0.10')) * _bd[1])
+            else:
+                # LEVEL OUT when blind (07-15 fg40): in attitude mode a held
+                # tilt is a held ACCELERATION -- coasting at full trim for 8 s
+                # ran the drone away leftward. Hold trim briefly (punch-window
+                # scale), then fade it and brake gently.
+                _ari0 = state.get('_att_ri', 0.0)
+                _rb = _ari0 if _fgage < 1.0 else \
+                    _ari0 * max(0.0, 1.0 - (_fgage - 1.0) / 1.5)
+                if _fgage >= 1.0:
+                    _pb = 0.02
+                _dthr = -0.02 if not state.get('_fgp_had_track') else 0.0
+                if (os.environ.get('MAPFOLLOW') == '1'
+                        and (_fgage >= 1.0 or not _allow_track)
+                        and state.get('next_gate_w') is not None):
+                    # MAP CARROT (07-15, st2 probe: post-roll-fix DR lateral
+                    # drift ~0.06 m/s -- navigable): during blind stretches
+                    # steer on pose toward the next gate's map position
+                    # instead of coasting. The carrot only needs to deliver
+                    # the camera into fastgate's acquisition cone; the
+                    # moment a hole >=40 px appears, the tracked branch owns
+                    # terminal again. Frame conventions per the route phase.
+                    _g = state['next_gate_w']
+                    # MF_DR (07-15, fg55-57: post-punch KF cannot be
+                    # stabilized): kinematic dead reckoning for the staging
+                    # leg -- position from COMMANDED speed x GYRO yaw only
+                    # (yaw is exact short-term: YAWPROBE 0.2 deg/415 deg),
+                    # seeded at the tick. No accel, no KF. +/-20% speed
+                    # error over the ~15 m loop lands within fastgate's
+                    # acquisition cone.
+                    if (os.environ.get('MF_DR') == '1'
+                            and not _dpvo_control
+                            and state.get('_mf_p') is not None):
+                        _vn = 1.2 if state.get('_mf_lastpb', -0.06) < -0.04 \
+                            else 0.35
+                        state['_mf_p'][0] += _vn * math.cos(state['yaw']) / CMD_HZ
+                        state['_mf_p'][1] += _vn * math.sin(state['yaw']) / CMD_HZ
+                        # RELATIVE altitude hold (07-15, fg66 frames: zero
+                        # vertical control on the corridor drifted the drone
+                        # into the CEILING over 20 s). Kinematic DR knows no
+                        # z; short-horizon est-z DELTA since the seed is
+                        # trustworthy even though absolute z is not.
+                        state['_mf_zerr'] = float(_pp[2]) \
+                            - state.get('_mf_z0', float(_pp[2]))
+                        _pp = state['_mf_p']
+                    if ticks >= 1 and not state.get('_mf_stage_done', False):
+                        # STAGING VIA A FORWARD-ONLY LOOP (07-15, fg52/53):
+                        # the chute exit (x~12.5) is PAST the staging x, and
+                        # brake-turn-in-place destabilizes the est (rotation
+                        # across IMU gaps). Instead: a teardrop of waypoints
+                        # -- forward-right, over the top north of the gate,
+                        # down onto the staging point heading +x. Always
+                        # translating, every leg turn within the yaw cap.
+                        if state.get('_mf_wps') is None:
+                            _gx, _gy, _gz = (float(_g[0]), float(_g[1]),
+                                             float(_g[2]))
+                            _stgb = float(os.environ.get('MF_STAGE_BACK', '3.0'))
+                            if float(_pp[0]) < _gx - _stgb + 0.5:
+                                # already WEST of the staging plane (short
+                                # dash, 07-15 fg60): direct +y corridor to
+                                # the staging point -- hugs x~8, clear of
+                                # the pillar row (x>=10). No loop needed.
+                                state['_mf_wps'] = [
+                                    np.array([_gx - _stgb, _gy, _gz])]
+                            else:
+                                state['_mf_wps'] = [
+                                    np.array([_gx + 2.5, _gy - 2.3, _gz]),
+                                    np.array([_gx - 0.2, _gy + 2.0, _gz]),
+                                    np.array([_gx - _stgb - 1.7, _gy + 1.3, _gz]),
+                                    np.array([_gx - _stgb, _gy, _gz]),
+                                ]
+                            state['_mf_wpi'] = 0
+                        _wps = state['_mf_wps']
+                        _wpi = state['_mf_wpi']
+                        if math.hypot(float(_wps[_wpi][0]) - float(_pp[0]),
+                                      float(_wps[_wpi][1]) - float(_pp[1])) < 1.4:
+                            _wpi += 1
+                            state['_mf_wpi'] = _wpi
+                            if _wpi >= len(_wps):
+                                state['_mf_stage_done'] = True
+                                print('MAPFOLLOW: staged on gate normal, '
+                                      'releasing vision', flush=True)
+                            else:
+                                print(f'MAPFOLLOW: waypoint {_wpi}', flush=True)
+                        if not state.get('_mf_stage_done', False):
+                            _g = _wps[min(_wpi, len(_wps) - 1)]
+                    _dx = float(_g[0]) - float(_pp[0])
+                    _dyw = float(_g[1]) - float(_pp[1])
+                    _cyw = math.cos(state['yaw']); _syw = math.sin(state['yaw'])
+                    _exb = _cyw * _dx + _syw * _dyw
+                    _eyb = -_syw * _dx + _cyw * _dyw
+                    # DPVO-friendly transit (07-15): CONSTANT pitch (drag
+                    # equilibrium ~1-1.5 m/s -- no hover, no lunges) and a
+                    # tight yaw-rate cap (smooth rotation for DPVO tracking
+                    # AND for our own gyro integration across the bursty
+                    # IMU gaps).
+                    _yrmax = float(os.environ.get('MF_YRMAX', '0.2'))
+                    _brg = math.atan2(_eyb, _exb)   # TRUE bearing, +/-pi
+                    if abs(_brg) > 1.2:
+                        # target well off the nose (fg52: the staging point
+                        # sits BEHIND the post-punch position) -- brake and
+                        # turn in place at a faster cap; do not fly away
+                        # while slowly yawing.
+                        _yr_t = math.copysign(
+                            max(_yrmax, 0.45), _brg)
+                        _rb = state.get('_att_ri', 0.0)
+                        _pb = 0.03
+                    else:
+                        _yr_t = max(-_yrmax, min(_yrmax, 1.0 * _brg))
+                        _rb = max(-0.12, min(0.12, 0.08 * _eyb)) \
+                            + state.get('_att_ri', 0.0)
+                        _pb = -float(os.environ.get('MF_PITCH', '0.06')) \
+                            if _exb > 1.0 else 0.02
+                    state['_mf_lastpb'] = _pb   # MF_DR speed inference
+                    if (os.environ.get('MF_DR') == '1'
+                            and not _dpvo_control
+                            and '_mf_zerr' in state):
+                        # climbed since seed (zerr negative) -> descend
+                        _dthr = max(-0.035, min(0.035,
+                                0.06 * state['_mf_zerr']))
+                    else:
+                        _dthr = max(-0.04, min(0.04,
+                                0.08 * (float(_pp[2]) - float(_g[2]))))
+                    if now - state.get('_mf_log', 0) > 0.5:
+                        state['_mf_log'] = now
+                        jlog('mapfollow', ex=round(_exb, 2), ey=round(_eyb, 2),
+                             rb=round(_rb, 3), pb=round(_pb, 3),
+                             p=[round(float(x), 2) for x in _pp])
+            _rb = max(-0.22, min(0.22, _rb))
+            _dthr = max(-0.055, min(0.055, _dthr))
+            if now - state.get('_att_log', 0) > 0.5:
+                state['_att_log'] = now
+                jlog('att', rb=round(_rb, 3), dthr=round(_dthr, 3),
+                     ri=round(state.get('_att_ri', 0.0), 3),
+                     pb=round(_pb, 3),
+                     rrate=round(state.get('_att_rrate', 0.0), 2),
+                     r_est=round(state['roll'], 3),
+                     p_est=round(state['pitch'], 3),
+                     yaw=round(state['yaw'], 3),
+                     gz=round(float(state['gyr'][2]), 3),
+                     yrc=round(_yr_t, 3))
+            level_cmd(0, 0, _dthr, pitch_bias=_pb, yr=SZ * _yr_t,
+                      roll_bias=_rb, att=True)
+        else:
+            _pb = float(os.environ.get('FGP_PITCH', '-0.15')) if _close_t else -0.05
+            # crab compensation (YAWCAL): constant measured lateral drift while
+            # translating -- apply uniformly (tracked, coast, seek).
+            _vy = max(-0.6, min(0.6, _vy + state.get('crab_vy', 0.0)))
+            level_cmd(SX * _vx, SY * _vy, _vz, pitch_bias=_pb, yr=SZ * _yr_t)
+        aborted = aborted or guards('fgpursuit')
+        if now - phase_t0 > 90:
+            aborted = 'fgpursuit timeout'
+        time.sleep(1 / CMD_HZ)
+        continue
+    elif phase == 'acquire':
         print(f'flying pad lock: {state["tgt"].round(2)}', flush=True)
         phase, phase_t0 = 'approach', now
         continue
@@ -1373,6 +2363,22 @@ while not aborted:
             level_cmd(SX * 1.2 * d[0], SY * 1.2 * d[1], vz_creep, pitch_bias=-0.10)
         else:
             fwd, lat, dwn = obs[0], obs[1], obs[2]
+            # SERVO APERTURE BIAS (07-14, nt8 frames): every servo crossing
+            # misses RIGHT of the visible gate -- the judge-calibrated 07-11
+            # offset (true aperture ~2 m LEFT of the PnP origin, AIMBIAS_Y)
+            # was applied to the blind anchor but never to the live servo lat.
+            # Steer on the aperture, not the PnP origin.
+            lat = lat + float(os.environ.get('AIMBIAS_Y', '0.0'))
+            # FASTGATE OVERRIDE (07-14): live 30 Hz HOLE-center bearing beats
+            # the 2 Hz / 450 ms GateNet lat -- and it needs no aperture bias
+            # (it tracks the hole itself). fwd stays GateNet/DR (fg range is
+            # glow-corrupted); lat/dwn = live bearing scaled by fwd.
+            _fgw = state.get('fg_wall', 0.0)
+            if os.environ.get('FASTGATE') == '1' and now - _fgw < 0.35:
+                _fb = state['fg_bear']
+                lat = _fb[0] * fwd
+                dwn = _fb[1] * fwd
+                age = now - _fgw          # live again: unfreeze stale logic
             # misalignment speed governor: off-axis (lat) OR off-height (KF-z
             # error) -> slow down, buy correction time (flight #3 clipped a post
             # at 2.5 m/s with 2.5 m lat error; #5 clipped the top bar high)
@@ -1391,12 +2397,23 @@ while not aborted:
             dwn_slow = max(0.45, 1.0 - 0.5 * min(abs(dz_err), 1.5))
             vx_ref = min(1.4, max(0.6, 0.4 * (fwd - 1.0))) * lat_slow * dwn_slow   # slow: the detector drops the gate ~9 m out above ~1.5 m/s (flight #33)
             lat_gain = 0.35 if fwd < 8.0 else 0.2   # halved: servo sway through the crossing (07-10)
+            if age > 0.6:
+                # STALE-LAT FREEZE (07-14, servo_nt4): the detector's last close
+                # obs freezes; steering on frozen lat for 2.5 s double-corrects
+                # and drives the drone off-line sideways. Hold the line instead.
+                lat_gain = 0.0
             vy_ref = max(-1.0, min(1.0, lat_gain * lat))
+            # APPROACH_VYBIAS (07-14, nt15): a real ~0.3 m/s rightward push acts
+            # through the terminal area (lat grew -0.57 -> -1.05 across fresh
+            # obs faster than the 2 Hz servo corrects; same 0.34 m/s measured in
+            # the nt8/nt13 coasts). Velocity-level, invisible to the IMU (est
+            # never sees it) -- counter it with a constant feed-forward.
+            vy_ref += float(os.environ.get('APPROACH_VYBIAS', '0.0'))
             # align-then-shoot: the start-light poles flank the course at ~x 5
             # with a ~+-1 m corridor (flights #3/#5/#6/#8 clipped them arriving
             # 0.3-2 m off-axis; #4 threaded it dead-center). Center FIRST, then
             # accelerate through.
-            if fwd > 3.5 and abs(lat) > 0.25:
+            if fwd > 3.5 and abs(lat) > 0.25 and age <= 0.6:
                 vx_ref = 0.5
                 vy_ref = max(-1.2, min(1.2, 1.0 * lat))
             # altitude: hold the MAP gate height on KF z (pure-IMU + xy-only
@@ -1411,7 +2428,11 @@ while not aborted:
                 print(f'passed target plane (DR, rng {rng:.1f}); braking', flush=True)
                 phase, phase_t0 = 'post', now
                 continue
-            if fwd < -1.0:
+            if fwd < -1.0 and age < 2.5:
+                # only drop on a FRESH obs that says behind. Near the gate the
+                # DR target (obs fallback when stale) reports "behind" while the
+                # drone is still ~3 m out -- that dropped a centered lock and
+                # reverted to blind route -> clipped the top (servo_nt run).
                 print('target behind at range -- dropping lock, back to route', flush=True)
                 state['obs'] = None; state['tgt'] = None; state['obs_wall'] = 0.0
                 state['landmark_w'] = None
@@ -1432,6 +2453,7 @@ while not aborted:
                     print(f'COAST from {fwd_ap:.1f} m (lat {lat:.2f} dwn {dwn:.2f})', flush=True)
             elif fresh and fwd_ap < 2.6 and abs(lat) < 0.35 and abs(dz_err) < 0.6:
                 punch_t0, punch_dur = now, max(0.8, fwd_ap / 2.0 + 1.2)
+                state['_punch_lat0'] = float(lat)
                 phase = 'punch'
                 print(f'PUNCH from {fwd_ap:.1f} m to aperture (lat {lat:.2f} dwn {dwn:.2f})', flush=True)
         # PUNCH-ON-RECENT-OBS: the detector reliably dies ~6 m out (gate slides
@@ -1439,19 +2461,24 @@ while not aborted:
         # fires (#41/#42). Short-horizon DR from the last fresh obs is
         # cm-accurate right after a vision-velocity fix -- fire on that.
         lk = state.get('_last_fresh')
-        if phase == 'approach' and lk is not None and now - lk[4] < 2.5:
+        if (phase == 'approach' and lk is not None
+                and now - lk[4] < float(os.environ.get('PUNCH_WIN', '2.5'))):
             with KF_LOCK:
                 dp = KF.p - lk[3]
             fwd_est = lk[0] - float(np.hypot(dp[0], dp[1]))
-            trig = 1.5 if ARCHTEST else 2.8 + ORIGIN_OFFSET
-            lat_ok = 0.25 if ARCHTEST else 0.4
-            if fwd_est < trig and abs(lk[1]) < lat_ok and (
+            trig = 1.5 if ARCHTEST else float(os.environ.get('PUNCH_TRIG', '2.8')) + ORIGIN_OFFSET
+            lat_ok = 0.25 if ARCHTEST else float(os.environ.get('PUNCH_LAT', '0.4'))
+            lk_lat = lk[1] + float(os.environ.get('AIMBIAS_Y', '0.0'))  # aperture-ref
+            if fwd_est < trig and abs(lk_lat) < lat_ok and (
                     not ARCHTEST or abs(wrap(0.0 - state['yaw'])) < 0.15):
                 if ARCHTEST:
                     punch_t0, punch_dur = now, (max(0.3, fwd_est) + 1.5) / 1.0
                     print(f'COAST (obs-DR) est {fwd_est:.1f} m (last lat {lk[1]:.2f}, obs age {now-lk[4]:.1f}s)', flush=True)
                 else:
-                    punch_t0, punch_dur = now, max(0.6, fwd_est) / 2.0 + 1.2
+                    _pvx0 = float(os.environ.get('PUNCH_VX', '2.0'))
+                    punch_t0 = now
+                    punch_dur = (max(0.6, fwd_est) + 1.5) / _pvx0
+                    state['_punch_lat0'] = float(lk_lat)
                     print(f'PUNCH (obs-DR) est {fwd_est:.1f} m (last lat {lk[1]:.2f}, obs age {now-lk[4]:.1f}s)', flush=True)
                 phase = 'punch'
         if now - phase_t0 > 60:
@@ -1470,7 +2497,32 @@ while not aborted:
         else:
             # hold the lateral line through the blind drive (#32 crossed drifting)
             lat_p = float(obs[1]) if obs is not None else 0.0
-            level_cmd(SX * 2.0, SY * max(-0.5, min(0.5, 0.5 * lat_p)), 0)
+            if os.environ.get('PUNCH_STRAIGHT') == '1':
+                # FEED-FORWARD COAST (07-14): null the remembered lateral offset
+                # exactly once over the punch duration (vy = lat0/dur), instead
+                # of drifting with it (nt8 crossed on the edge) or pushing on a
+                # frozen lat with no feedback (overshoots). Hold yaw on-axis.
+                # FF coast (07-14): null the remembered lat over the coast, PLUS
+                # a constant counter-RATE for the ~0.3 m/s rightward push (the
+                # terminal 'inner assist', measured nt8/nt13/nt15 -- a rate, so
+                # it compensates correctly for any coast duration). Faster coast
+                # (PUNCH_VX) = less blind time = less push variance.
+                _lat0 = state.get('_punch_lat0', 0.0)
+                _vy_ff = (max(-0.5, min(0.5, _lat0 / max(punch_dur, 0.5)))
+                          + float(os.environ.get('PUNCH_VYBIAS', '0.0')))
+                _pvx = float(os.environ.get('PUNCH_VX', '1.2'))
+                # FASTGATE closed-loop crossing: while the hole is in view,
+                # steer on its LIVE bearing (out-corrects the variable push);
+                # fall back to the FF when it finally leaves the frame (<1.5 m).
+                _fgw = state.get('fg_wall', 0.0)
+                if os.environ.get('FASTGATE') == '1' and now - _fgw < 0.35:
+                    _rem = max(0.5, _pvx * (punch_dur - (now - punch_t0)))
+                    _lat_live = state['fg_bear'][0] * _rem
+                    _vy_ff = max(-0.8, min(0.8, 0.9 * _lat_live))
+                yrh = SZ * max(-0.3, min(0.3, 1.0 * wrap(0.0 - state['yaw'])))
+                level_cmd(SX * _pvx, SY * _vy_ff, 0, yr=yrh)
+            else:
+                level_cmd(SX * 2.0, SY * max(-0.5, min(0.5, 0.5 * lat_p)), 0)
         if now - punch_t0 > punch_dur:
             phase, phase_t0 = 'post', now
             print('punch window over, braking', flush=True)
@@ -1508,6 +2560,16 @@ while not aborted:
             s_stop = TRAJ.s_max
         s_ref = min(s_here + LEAD, s_stop, TRAJ.s_max)
         ref = TRAJ.sample(s_ref)
+        if (os.environ.get('STRAIGHTCHUTE') == '1' and ticks == 0
+                and os.environ.get('NOFIX') == '1'):
+            # STRAIGHT CHUTE (07-14, nt11 frames): RECENTER parks the drone ON
+            # the biased aperture line, but the spline curves from (0,0) and
+            # the carrot DRAGS the drone back off the line (est crossed -1.38
+            # aiming -1.98 -> clipped the right edge). Pre-tick: fly a straight
+            # line at the aperture's y/z from wherever we are.
+            _ngw = state['next_gate_w']
+            ref = {'pos': np.array([p[0] + 2.0, float(_ngw[1]), float(_ngw[2])]),
+                   'v': ref['v'], 'tang': np.array([1.0, 0.0, 0.0])}
         d = ref['pos'] - p
         # route-phase forensics: live KF estimate vs spline carrot, so a
         # missed gate can be diagnosed as estimate drift vs tracking error
