@@ -22,3 +22,9 @@ outputs/
 carwelding_depth_left.zip
 dataset/
 aero_data/ 
+
+# macOS metadata / AppleDouble noise (rsync from Mac)
+._*
+.DS_Store
+# root RL checkpoint zips
+ft_*.zip
