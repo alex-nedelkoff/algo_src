@@ -112,6 +112,41 @@ N2 = N1.copy()
 GATES_W = [HIGH_W, G2_W, G2_W]
 THRU = [N1, N2, N2]
 
+# MAP_JSON (07-17): course model from a validated map file (contract:
+# docs/vq2-map-json-contract.md; loader: map_ingest.py, fails closed on
+# contract violations and prints judge-anchor disagreements). Overrides the
+# constants above; everything downstream inherits: the pad-lock anchor block
+# treats G1 as a prior exactly as before, and the G2TEST gate-2 delta becomes
+# map-derived (route-2 minus route-1) instead of the hardcoded [5.14,5.26,0].
+# Unset (default) = the constants above, byte-identical behavior.
+G2_DELTA = None
+MAP_JSON = os.environ.get('MAP_JSON', '')
+if MAP_JSON:
+    try:
+        from map_ingest import load_course_map, anchor_warnings
+    except ImportError:                    # running from the repo checkout
+        from vq2.map_ingest import load_course_map, anchor_warnings
+    _map_gates = load_course_map(MAP_JSON)
+    for _mw in anchor_warnings(_map_gates):
+        print(f'MAP_JSON WARNING: {_mw}', flush=True)
+    _mg_p = [np.array(g.pos, dtype=float) for g in _map_gates]
+    _mg_n = [np.array(g.normal, dtype=float) for g in _map_gates]
+    N1 = _mg_n[0]
+    G1_AP = _mg_p[0].copy()
+    G1_W = G1_AP.copy()
+    RIB_W = G1_AP.copy()
+    HIGH_W = G1_AP.copy()
+    if len(_mg_p) > 1:
+        G2_W = _mg_p[1].copy()
+        N2 = _mg_n[1]
+        G2_DELTA = _mg_p[1] - _mg_p[0]
+    GATES_W = [HIGH_W, G2_W, G2_W]
+    THRU = [N1, N2, N2]
+    print(f'MAP_JSON: {len(_mg_p)} gates from {MAP_JSON} | '
+          f'G1 {G1_AP.round(2).tolist()} G2 {G2_W.round(2).tolist()} '
+          f'delta {None if G2_DELTA is None else G2_DELTA.round(2).tolist()}',
+          flush=True)
+
 def build_traj(gh, g1, g2):
     """Spline: climb to the high gate, controlled-sink dive to the red gate,
     then level run to G2. vz_max caps the descent rate (VQ1 controlled-sink)."""
@@ -169,7 +204,9 @@ if ARCHTEST:
             # the judge-calibrated ticking aperture (tgt). Frame-verified:
             # after gate 1 the ribbon turns right ~24 deg to gate 2,
             # crossed along +x. Same aperture z (official gates identical).
-            g2 = tgt + np.array([5.14, 5.26, 0.0])
+            # MAP_JSON supplies the delta (route2 - route1) when set.
+            g2 = tgt + (G2_DELTA if G2_DELTA is not None
+                        else np.array([5.14, 5.26, 0.0]))
             pts += [
                 (tgt + g2) / 2 + np.array([-0.5, 0.0, 0.0]),  # swing wide into the right turn
                 g2 - 2.5 * np.array([1.0, 0.0, 0.0]),
@@ -1005,6 +1042,20 @@ def fastgate_loop():
     except Exception as e:
         print(f'fastgate unavailable: {e}', flush=True)
         return
+    _FLOW = None
+    if os.environ.get('FLOWOBS') == '1':
+        # OBSERVE-ONLY ground-plane flow velocity (07-17): vq2/flow_vel.py
+        # fed at frame rate; publishes state['flow_v'] + jlog('flow') next to
+        # the KF velocity for divergence analysis. NO control authority and
+        # NO KF fusion in this mode -- wire update_velocity only after the
+        # observe flights certify it. (Piggybacks this loop: FLOWOBS needs
+        # FASTGATE=1.)
+        try:
+            from flow_vel import FlowVelocity
+            _FLOW = FlowVelocity()
+            print('flow observe up (FLOWOBS=1, observe-only)', flush=True)
+        except Exception as e:
+            print(f'flow_vel unavailable: {e}', flush=True)
     last_ns = 0
     print('fastgate loop up', flush=True)
     while not state['stop']:
@@ -1013,6 +1064,49 @@ def fastgate_loop():
             time.sleep(0.005)
             continue
         last_ns = ns
+        if os.environ.get('LINEFOLLOW') == '1':
+            # E3 cyan-line detector (07-15 handoff, re-applied 07-17 after
+            # the DPVO rewrite wiped it): the sim paints the racing line
+            # through every gate; its image ROW is a direct height-over-
+            # course observation (est-z under-reads climbs ~40% -- THE
+            # gate-2 ceiling-drift killer). Lower 45% of frame = floor.
+            try:
+                _h2, _w2 = img.shape[:2]
+                _roi = img[int(_h2 * 0.55):, :]
+                _b_ = _roi[:, :, 0].astype('int16')
+                _g_ = _roi[:, :, 1].astype('int16')
+                _r_ = _roi[:, :, 2].astype('int16')
+                _cy = ((_b_ > 120) & (_g_ > 100) & (_b_ - _r_ > 40)
+                       & (_g_ - _r_ > 20))
+                _n_ = int(_cy.sum())
+                if _n_ > 150:
+                    _ys, _xs = np.nonzero(_cy)
+                    state['line_off'] = (float(_xs.mean()) - _w2 / 2.0) / _w2
+                    state['line_row'] = (int(_h2 * 0.55)
+                                         + float(_ys.mean())) / _h2
+                    state['line_n'] = _n_
+                    state['line_wall'] = time.time()
+            except Exception:
+                pass
+        if _FLOW is not None:
+            try:
+                _fl_res = _FLOW.process(
+                    cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), ns * 1e-9,
+                    (state['roll'], state['pitch'], state['yaw']),
+                    float(0.15 - KF.p[2]))
+                if _fl_res is not None:
+                    _fv, _fsig, _finl, _ftr = _fl_res
+                    state['flow_v'] = _fv
+                    state['flow_wall'] = time.time()
+                    if time.time() - state.get('_flow_log', 0) > 0.3:
+                        state['_flow_log'] = time.time()
+                        jlog('flow', v=[round(float(x), 3) for x in _fv],
+                             sig=round(float(_fsig), 3), n=int(_finl),
+                             tr=int(_ftr),
+                             kfv=[round(float(x), 3) for x in KF.v],
+                             z=round(float(KF.p[2]), 2))
+            except Exception:
+                pass
         try:
             dets = FG.detect(img)
         except Exception:
@@ -1239,8 +1333,10 @@ if _pad_w is not None and np.linalg.norm((_pad_w - G1_W)[:2]) < 4.0:
     GATES_W[0] = HIGH_W
     if os.environ.get('G2TEST') == '1':
         # keep the tick-handler aim/z targets on the SAME gate-2 the
-        # G2TEST spline flies (delta from the ticking aperture)
-        G2_W = HIGH_W + np.array([5.14, 5.26, 0.0])
+        # G2TEST spline flies (delta from the ticking aperture;
+        # MAP_JSON supplies the delta when set)
+        G2_W = HIGH_W + (G2_DELTA if G2_DELTA is not None
+                         else np.array([5.14, 5.26, 0.0]))
         GATES_W[1] = GATES_W[2] = G2_W.copy()
     TRAJ, S_GATES = build_traj(HIGH_W, G1_W, G2_W)
     state['next_gate_w'] = HIGH_W.copy()
@@ -2315,11 +2411,49 @@ while not aborted:
                     else:
                         _dthr = max(-0.04, min(0.04,
                                 0.08 * (float(_pp[2]) - float(_g[2]))))
+                    if os.environ.get('LINEFOLLOW') == '1':
+                        # E3 height-hold (07-15 handoff): cyan-line image row
+                        # is a REAL height observation -- overrides the est-z
+                        # channel that ceiling-drifts. Lateral is OPT-IN
+                        # (LINE_LAT=1): line-centering fought the map carrot
+                        # in fg75 (the corridor deliberately leaves the line).
+                        _line_age = time.time() - state.get('line_wall', 0)
+                        if _line_age < 0.4:
+                            if os.environ.get('LINE_LAT') == '1':
+                                _rb = max(-0.2, min(0.2,
+                                          _rb + 0.35 * state['line_off']))
+                            # gain raised 0.08 -> 0.25 after test3: the old
+                            # gain maxed at ~-0.012 dthr against a multi-metre
+                            # climb (row err saturates at ~0.15).
+                            _dthr = max(-0.05, min(0.05, _dthr
+                                        + float(os.environ.get('LINE_KZ',
+                                                               '0.25'))
+                                        * (float(os.environ.get(
+                                            'LINE_ROW_REF', '0.80'))
+                                            - state['line_row'])))
+                        elif (os.environ.get('LINE_LOST_DESCEND', '1') == '1'
+                                and state.get('line_n', 0) > 0
+                                and _line_age < 10.0):
+                            # LINE_LOST_DESCEND (07-17, test3 frames): the
+                            # climb pushes the line out the BOTTOM of the
+                            # 20-deg-up camera -- the height observation
+                            # self-extinguishes exactly when it's needed most
+                            # (row 0.73->0.955->gone, then blind into the
+                            # roof trusses). The line's ABSENCE is itself the
+                            # height signal: firm descend bias until it
+                            # reacquires (reacquisition resumes the row
+                            # consumer above, so it cannot run away; >10 s
+                            # stale means something else is wrong -- stop).
+                            _dthr = max(-0.055, min(0.055, _dthr
+                                        - float(os.environ.get('LINE_LOST_DZ',
+                                                               '0.03'))))
                     if now - state.get('_mf_log', 0) > 0.5:
                         state['_mf_log'] = now
                         jlog('mapfollow', ex=round(_exb, 2), ey=round(_eyb, 2),
                              rb=round(_rb, 3), pb=round(_pb, 3),
-                             p=[round(float(x), 2) for x in _pp])
+                             p=[round(float(x), 2) for x in _pp],
+                             lr=round(state.get('line_row', -1.0), 3),
+                             ln=state.get('line_n', 0))
             _rb = max(-0.22, min(0.22, _rb))
             _dthr = max(-0.055, min(0.055, _dthr))
             if now - state.get('_att_log', 0) > 0.5:

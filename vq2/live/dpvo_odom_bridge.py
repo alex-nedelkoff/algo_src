@@ -229,6 +229,12 @@ def ensure_control_approved(calibration: dict, observe_only: bool) -> None:
 
 
 def _wsl_ip() -> str:
+    # DPVO_BRIDGE_HOST (07-17): the bridge service may run on a REMOTE Linux
+    # host (Vagon has no WSL -- e.g. the laptop's WSL2 build over Tailscale).
+    # Explicit host wins; local WSL discovery is the laptop-era fallback.
+    host = os.environ.get("DPVO_BRIDGE_HOST", "").strip()
+    if host:
+        return host
     output = subprocess.check_output(
         ["wsl", "-d", "Ubuntu", "hostname", "-I"],
         stderr=subprocess.DEVNULL,
@@ -487,6 +493,40 @@ class DpvoOdom(threading.Thread):
                         print(
                             "DPVO GateNet scale candidate "
                             f"{estimate.scale:.3f} m/unit (observe only)",
+                            flush=True,
+                        )
+                    # GNSCALE APPLY (07-17): feed the GateNet-fitted scale INTO
+                    # the route, replacing the per-session-wrong fixed cal.
+                    # test5 proved the fixed fg62 scale (9.38) inflates this
+                    # session's speeds ~1.5x -> DPVO_MAX_SPEED rejects 50/64
+                    # route poses. Guarded: ready + tight MAD + GNSCALE_APPLY.
+                    # Still observe-safe -- DPVO_OBSERVE keeps _dpvo_control
+                    # False, so the corrected route is LOGGED, not steered;
+                    # this measures whether the fit survives the transit.
+                    if (
+                        estimate.ready
+                        and estimate.scale is not None
+                        and estimate.relative_mad is not None
+                        and estimate.relative_mad <= float(
+                            os.environ.get("GNSCALE_APPLY_MAD", "0.15"))
+                        and os.environ.get("GNSCALE_APPLY") == "1"
+                        and not state.get("dpvo_scale_locked")
+                    ):
+                        _old = self.route.scale
+                        self.route.scale = float(estimate.scale)
+                        state["dpvo_scale_locked"] = True
+                        self.jlog(
+                            "dpvo_scale_applied",
+                            scale=round(float(estimate.scale), 6),
+                            was=round(float(_old), 6),
+                            mad=round(float(estimate.relative_mad), 6),
+                            gate=estimate.gate_id,
+                            pairs=estimate.pair_count,
+                        )
+                        print(
+                            f"DPVO scale LOCKED from GateNet: "
+                            f"{estimate.scale:.3f} m/unit (was {_old:.3f} cal, "
+                            f"mad {estimate.relative_mad:.3f})",
                             flush=True,
                         )
 

@@ -92,3 +92,21 @@ def test_vq2wp_publishes_atomic_snapshots_and_observe_only_gpu_hold():
     assert "state['dpvo_frame'] = (ns, data)" in source
     assert "state['gatenet_sample'] = (" in source
     assert "and os.environ.get('DPVO_OBSERVE') == '1'" in source
+
+
+def test_gnscale_apply_feeds_fitted_scale_into_route():
+    # GNSCALE APPLY (07-17): the fitted scale must reach self.route, guarded on
+    # ready + MAD + GNSCALE_APPLY, and set dpvo_scale_locked. Source assertions
+    # (dpvo_odom_bridge imports torch-adjacent deps; not importable in CI).
+    import inspect
+    from pathlib import Path
+    src = Path(inspect.getfile(test_gnscale_apply_feeds_fitted_scale_into_route))
+    text = (src.parents[1] / "live/dpvo_odom_bridge.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("GNSCALE_APPLY") == "1"' in text
+    assert "self.route.scale = float(estimate.scale)" in text
+    assert 'state["dpvo_scale_locked"] = True' in text
+    # must stay guarded on estimate quality
+    apply_at = text.index("self.route.scale = float(estimate.scale)")
+    window = text[apply_at - 500:apply_at]
+    assert "estimate.ready" in window
+    assert "GNSCALE_APPLY_MAD" in window

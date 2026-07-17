@@ -53,3 +53,13 @@ def test_publish_route_observation_sets_independent_state_fields():
         "dpvo_route_reason": "ok",
         "dpvo_route_frame_ns": 123,
     }
+
+
+def test_bridge_host_env_overrides_local_wsl_discovery():
+    # Vagon has no WSL: DPVO_BRIDGE_HOST must win before any wsl.exe call
+    import inspect
+    from vq2.live import dpvo_odom_bridge as mod
+    source = inspect.getsource(mod._wsl_ip)
+    env_at = source.index("DPVO_BRIDGE_HOST")
+    wsl_at = source.index('"wsl"')
+    assert env_at < wsl_at

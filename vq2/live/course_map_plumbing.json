@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "frame": "spawn:x-downcourse,y-right,z-down",
+  "units": "m",
+  "source": "PLUMBING-CHECK map (2026-07-17): encodes vq2wp.py's flown constants verbatim so the first MAP_JSON flight changes NOTHING. pos are flight-tuned AIM points (G1 prior [5.9,0.9,-1.1] incl. the fly-z tweak), NOT true aperture centers; G2 = G1 + the ribbon-triangulation delta [5.14,5.26,0]. Expect one anchor warning (~1.0 m) by construction. Do not refine this file - swap in a real map.",
+  "gates": [
+    {
+      "id": "G1-chute",
+      "route_order": 1,
+      "pos": [5.9, 0.9, -1.1],
+      "normal": [1.0, 0.0, 0.0],
+      "aperture_m": 1.5,
+      "confidence": "ticked",
+      "pos_sigma_m": 0.3
+    },
+    {
+      "id": "G2-ribbon",
+      "route_order": 2,
+      "pos": [11.04, 6.16, -1.1],
+      "normal": [1.0, 0.0, 0.0],
+      "aperture_m": 1.5,
+      "confidence": "ticked",
+      "pos_sigma_m": 0.3
+    }
+  ]
+}
