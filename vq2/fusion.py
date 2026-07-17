@@ -25,6 +25,7 @@ from .eskf import PosVelKF, accel_level
 from .estimators import accel_implied_attitude, is_at_rest
 from .flow_vel import FlowVelocity, Z_FLOOR
 from .replay import find_rest_windows
+from .vp import vp_roll_pitch
 
 # course map (spawn frame, z down) — HANDOFF_vq2_racing.md course facts
 GATES = (
@@ -103,6 +104,12 @@ class FusionConfig:
     # lateral force that both causes the drift and hides it from DR).
     att_vision_gain: float = 0.0
     att_vision_min_corners: int = 3
+    # Manhattan-vertical VP attitude correction (vq2/vp.py, T6c Tier A):
+    # absolute roll/pitch from vertical line structure, valid IN FLIGHT
+    # (unlike the quasi-static-only accel CF). Applied per frame at the
+    # gyro-chain prior; the ONLY absolute in-flight tilt reference we have.
+    att_vp_gain: float = 0.0
+    att_vp_min_quality: float = 0.5
 
 
 @dataclass
@@ -113,6 +120,11 @@ class FusionResult:
     anchors: list = field(default_factory=list)
     flow_updates: int = 0
     flow_rejects: int = 0
+    vp_fixes: int = 0
+    vp_misses: int = 0
+    # per-flight VP bias measured on rest frames vs accel truth (rad);
+    # None = calibration failed and VP correction was disabled (fail closed)
+    vp_bias: tuple | None = None
     a_w_xy: list = field(default_factory=list)  # gravity-leak diagnostic
     att_rpy: list = field(default_factory=list)  # attitude timeline (bench)
     # obs waterfall: one event per detection, stage in
@@ -324,6 +336,32 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
     fi = di = 0
     last_us = s0.t_us
 
+    # per-flight VP bias calibration on rest frames (accel attitude = truth
+    # at rest on the noiseless sim IMU). The VP chain carries a systematic
+    # ~0.7 deg pitch offset (principal-point / CAM_TILT error); uncalibrated
+    # it INJECTS that bias all flight (measured: DR ~1.5-2 m worse on the G1
+    # approach). Same per-flight-cal pattern as the spawn-pitch verify.
+    # Fail closed: no calibration -> VP correction disabled.
+    vp_gain = cfg.att_vp_gain
+    vp_bias_r = vp_bias_p = 0.0
+    if vp_gain > 0.0:
+        t_seed = s0.t_us / 1e6
+        rest_fr = [p for t, p in frames if t <= t_seed][-10:]
+        deltas = []
+        for path in rest_fr:
+            gray = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if gray is None:
+                continue
+            vpr = vp_roll_pitch(gray, att.roll, att.pitch)
+            if vpr is not None:
+                deltas.append((vpr.roll - att.roll, vpr.pitch - att.pitch))
+        if len(deltas) >= 3:
+            vp_bias_r = float(np.median([d[0] for d in deltas]))
+            vp_bias_p = float(np.median([d[1] for d in deltas]))
+            res.vp_bias = (vp_bias_r, vp_bias_p)
+        else:
+            vp_gain = 0.0   # fail closed
+
     for s in seg.imu[seed_idx + 1:]:
         if s.t_us <= last_us:
             continue
@@ -344,11 +382,23 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
             drag_velocity_update(kf, s, R_world_body(roll, pitch, yaw), cfg)
 
         # frame events up to this IMU stamp
-        while cfg.use_flow and fi < len(frames) and frames[fi][0] <= t_boot:
+        use_frames = cfg.use_flow or vp_gain > 0.0
+        while use_frames and fi < len(frames) and frames[fi][0] <= t_boot:
             t_f, path = frames[fi]
             fi += 1
             gray = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
             if gray is None:
+                continue
+            if vp_gain > 0.0:
+                vp = vp_roll_pitch(gray, att.roll, att.pitch)
+                if vp is not None and vp.quality >= cfg.att_vp_min_quality:
+                    att.roll += vp_gain * (vp.roll - vp_bias_r - att.roll)
+                    att.pitch += vp_gain * (vp.pitch - vp_bias_p - att.pitch)
+                    roll, pitch = att.roll, att.pitch
+                    res.vp_fixes += 1
+                else:
+                    res.vp_misses += 1
+            if not cfg.use_flow:
                 continue
             h = cfg.z_floor - float(kf.p[2])
             out = flow.process(gray, t_f, (roll, pitch, yaw), h)
