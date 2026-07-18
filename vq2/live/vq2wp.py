@@ -1079,12 +1079,27 @@ def fastgate_loop():
                 _cy = ((_b_ > 120) & (_g_ > 100) & (_b_ - _r_ > 40)
                        & (_g_ - _r_ > 20))
                 _n_ = int(_cy.sum())
-                if _n_ > 150:
+                if _n_ > int(os.environ.get('LINE_MIN_PX', '150')):
                     _ys, _xs = np.nonzero(_cy)
                     state['line_off'] = (float(_xs.mean()) - _w2 / 2.0) / _w2
                     state['line_row'] = (int(_h2 * 0.55)
                                          + float(_ys.mean())) / _h2
                     state['line_n'] = _n_
+                    # LINE HEAD (07-19, test15 postmortem): centroid-only
+                    # guidance has no lookahead -- the drone parked ON the
+                    # line (row 0.95+, count 10k->170) with nothing driving
+                    # progress along it. The head = mean x of the TOPMOST
+                    # band of line pixels (the farthest visible piece) =
+                    # where the line GOES; yaw steers at the head, roll
+                    # centers the centroid.
+                    _yt = float(_ys.min())
+                    _band = _ys <= _yt + 0.3 * max(1.0,
+                                                   float(_ys.max()) - _yt)
+                    if int(_band.sum()) >= 40:
+                        state['line_head_off'] = \
+                            (float(_xs[_band].mean()) - _w2 / 2.0) / _w2
+                    else:
+                        state['line_head_off'] = state['line_off']
                     state['line_wall'] = time.time()
             except Exception:
                 pass
@@ -2075,18 +2090,61 @@ while not aborted:
         # obliquely mid-dogleg must not steal the track or arm the punch --
         # vision control is allowed only once the staging point on the
         # gate's crossing normal is reached (head-on geometry, like gate 1).
-        _allow_track = (os.environ.get('MAPFOLLOW') != '1' or ticks == 0
-                        or (state.get('_mf_stage_done', False)
-                            # HEAD-ON CONFIRMATION (07-15, fg63): kinematic
-                            # DR speed error can fire 'staged' early/late --
-                            # release vision only when the hole also LOOKS
-                            # head-on, else keep the carrot.
-                            and _fgage < 0.4 and _fgw >= 45
-                            # 0.6, not 0.35 (fg64/65: DR speed error runs the
-                            # east leg ~1 m south of the gate line -- the hole
-                            # sits at 0.4-0.8 rad, visible but never passing a
-                            # strict gate; the pursuit converges 0.75 rad fine)
-                            and abs(state.get('fg_bear', (9.9, 9.9))[0]) < 0.6))
+        _lt_line_fresh = (os.environ.get('LINE_TRANSIT') == '1'
+                          and time.time() - state.get('line_wall', 0) < 0.4)
+        if os.environ.get('LINE_TRANSIT') == '1':
+            # LINE_TRANSIT vision release (v2, 07-19 test15 postmortem):
+            # v1 released at the staging thresholds (w>=45, |bear|<0.6) and
+            # the pursuit STOLE control from the line on oblique mid-transit
+            # holes (first sight at bear 0.83) -- two masters alternated at
+            # the freshness boundary and the drone weaved until both went
+            # stale. While the line is fresh it OWNS transit; vision takes
+            # over only terminal (big AND centered hole -- the line has
+            # already aimed us through it). Line lost -> old thresholds, so
+            # vision can still rescue.
+            _fgb_lt = state.get('fg_bear', (9.9, 9.9))
+            if _lt_line_fresh:
+                # v4 (test16/17 postmortems): BOTH flights chased the same
+                # fast-growing non-gate opening ~4 s post-G1 (b1 -> -0.36 =
+                # far ABOVE our flight height; G2 was ~68 deg off the nose
+                # at that moment -- an arch the line passes UNDER). A real
+                # gate approached ON the line at height sits near b1~0, so
+                # while the line is fresh vision also needs VERTICAL
+                # plausibility, and enough width to punch immediately.
+                _allow_track = (os.environ.get('MAPFOLLOW') != '1'
+                                or ticks == 0
+                                or (_fgage < 0.4
+                                    and _fgw >= float(os.environ.get(
+                                        'LT_VIS_W', '95'))
+                                    and abs(_fgb_lt[0]) < float(
+                                        os.environ.get('LT_VIS_B', '0.25'))
+                                    and abs(_fgb_lt[1]) < float(
+                                        os.environ.get('LT_VIS_BV', '0.2'))))
+            else:
+                # line lost: the original staging discipline owns release
+                # (stage_done + head-on) -- oblique mid-transit holes must
+                # not steal the track (fg50/51).
+                _allow_track = (os.environ.get('MAPFOLLOW') != '1'
+                                or ticks == 0
+                                or (state.get('_mf_stage_done', False)
+                                    and _fgage < 0.4 and _fgw >= 45
+                                    and abs(_fgb_lt[0]) < 0.6))
+        else:
+            _allow_track = (os.environ.get('MAPFOLLOW') != '1' or ticks == 0
+                            or (state.get('_mf_stage_done', False)
+                                # HEAD-ON CONFIRMATION (07-15, fg63):
+                                # kinematic DR speed error can fire 'staged'
+                                # early/late -- release vision only when the
+                                # hole also LOOKS head-on, else keep the
+                                # carrot.
+                                and _fgage < 0.4 and _fgw >= 45
+                                # 0.6, not 0.35 (fg64/65: DR speed error runs
+                                # the east leg ~1 m south of the gate line --
+                                # the hole sits at 0.4-0.8 rad, visible but
+                                # never passing a strict gate; the pursuit
+                                # converges 0.75 rad fine)
+                                and abs(state.get('fg_bear',
+                                                  (9.9, 9.9))[0]) < 0.6))
         _ctr = float(os.environ.get('FGP_PUNCH_CTR', '0.18'))
         _fgb = state.get('fg_bear', (9.9, 9.9))
         if (_allow_track and _fgage < 0.4 and _fgw >= 120
@@ -2100,6 +2158,16 @@ while not aborted:
         _punch_now = (_allow_track and _fgage < 0.4
                       and _fgw >= float(os.environ.get('FGP_PUNCH_W', '95'))
                       and abs(_fgb[0]) < _ctr and abs(_fgb[1]) < _ctr)
+        if _punch_now and os.environ.get('PN_PUNCH') == '1':
+            # E1 PN collision-course gate (07-15 handoff, re-applied 07-19
+            # after the DPVO rewrite wiped it; test24/25: a centered-only
+            # trigger either never fires (ctr 0.10) or fires unconverged
+            # into the frame (ctr 0.18)). Two bodies collide iff the LOS
+            # stops rotating: also require the bearing-RATE nulled --
+            # course locked, the terminal blind range is then harmless.
+            _bd_pn = state.get('_att_bd', (9.9, 9.9))
+            _pnr = float(os.environ.get('PN_LOSRATE', '0.12'))
+            _punch_now = (abs(_bd_pn[0]) < _pnr and abs(_bd_pn[1]) < _pnr)
         if _punch_now or (_fgage > 0.5 and now - state.get('_fg_close', 0) < 3.0):
             # GATE-TO-GATE (07-14, Alex): a close hole (w>=120) just left the
             # frame -> punch straight through it, then DROP the track and keep
@@ -2333,7 +2401,17 @@ while not aborted:
                         state['_mf_zerr'] = float(_pp[2]) \
                             - state.get('_mf_z0', float(_pp[2]))
                         _pp = state['_mf_p']
-                    if ticks >= 1 and not state.get('_mf_stage_done', False):
+                    if (ticks >= 1 and not state.get('_mf_stage_done', False)
+                            # LINE_TRANSIT: the line owns transit while it
+                            # is trackable (skip staging) -- but when it has
+                            # been lost >10 s (the near-gate extinction,
+                            # tests 16/18/20), fall back to the PROVEN
+                            # teardrop staging (the one historical gate-2
+                            # success, fg62 family) instead of a blind
+                            # carrot orbit.
+                            and (os.environ.get('LINE_TRANSIT') != '1'
+                                 or time.time() - state.get('line_wall', 0)
+                                 > 10.0)):
                         # STAGING VIA A FORWARD-ONLY LOOP (07-15, fg52/53):
                         # the chute exit (x~12.5) is PAST the staging x, and
                         # brake-turn-in-place destabilizes the est (rotation
@@ -2447,13 +2525,95 @@ while not aborted:
                             _dthr = max(-0.055, min(0.055, _dthr
                                         - float(os.environ.get('LINE_LOST_DZ',
                                                                '0.03'))))
+                    if (os.environ.get('LINE_TRANSIT') == '1' and ticks >= 1
+                            and _fgage < 0.4 and _fgw >= 60
+                            and abs(_fgb_lt[0]) < 0.3
+                            and -0.45 < _fgb_lt[1] < -0.05):
+                        # TERMINAL CLIMB (07-19, test20): the low transit
+                        # (line visible ahead) approaches the gate from
+                        # BELOW the aperture; when a laterally-centered
+                        # candidate hole shows moderately above the axis,
+                        # bias a climb so b1 closes toward the release
+                        # gate. The b1 floor (-0.45) keeps the high arch
+                        # (b1 ~ -0.72 at close range) from dragging us up.
+                        _dthr = max(-0.055, min(0.055, _dthr
+                                    + float(os.environ.get('LT_CLIMB',
+                                                           '0.035'))))
+                    _lt_on = 0
+                    _lt_age = time.time() - state.get('line_wall', 0)
+                    # DIRECTION PRIOR (07-19, test18: after a scan the drone
+                    # locked the line pointing BACK the way it came -- the
+                    # painted line has no arrow). v5 used bearing-to-gate
+                    # off the DR position and misfired mid-curve (test19:
+                    # DR under-rotates the track, the gate tripped while
+                    # the line-lock was GOOD). v6: pure gyro yaw (0.2 deg /
+                    # 415 deg measured) vs the fixed course heading of the
+                    # leg (judge anchors G1->G2: atan2(5.2,5.4) ~ 0.77
+                    # rad); backward-following is ~180 deg off, so a wide
+                    # +-100 deg window never trips on curvature.
+                    _lt_aligned = abs(wrap(
+                        state['yaw'] - float(os.environ.get(
+                            'LT_COURSE_YAW', '0.77')))) \
+                        < float(os.environ.get('LT_DIR_GATE', '1.75'))
+                    if (os.environ.get('LINE_TRANSIT') == '1' and ticks >= 1
+                            and state.get('line_n', 0) > 0
+                            and ((1.0 < _lt_age < 10.0)
+                                 or (_lt_age < 0.4 and not _lt_aligned))):
+                        # LINE-LOST SCAN (07-19, test16: line stale at t+38,
+                        # the DR carrot then walked a 70 s phantom orbit
+                        # around its imagined gate while the real drone
+                        # wandered). The line is painted through the WHOLE
+                        # course: hold position-ish, yaw-scan (toward the
+                        # gate side when misaligned), and let
+                        # LINE_LOST_DESCEND (E3 above) sink until it
+                        # reacquires; >10 s stale falls through to the
+                        # carrot as last resort.
+                        _yr_t = math.copysign(
+                            float(os.environ.get('LT_SCAN_YR', '0.18')),
+                            wrap(float(os.environ.get('LT_COURSE_YAW',
+                                                      '0.77'))
+                                 - state['yaw']) if not _lt_aligned else 1.0)
+                        _pb = 0.03      # brake-ish: scan in place, don't
+                                        # wander (test20 scans arced ~3 m)
+                        _rb = state.get('_att_ri', 0.0)
+                        _lt_on = 2
+                    elif (os.environ.get('LINE_TRANSIT') == '1'
+                            and ticks >= 1 and _lt_age < 0.4
+                            and _lt_aligned):
+                        # LINE_TRANSIT (07-19, queued in the test4
+                        # postmortem): the blind est/DR carrot owns the
+                        # lateral channel in transit and drifts (test4:
+                        # est walked a clean dogleg while the real track
+                        # hit the parked airplane). The painted line IS
+                        # the route: while it is fresh, yaw-to-line +
+                        # roll-centering REPLACE the carrot's lateral
+                        # commands -- never both at once (the fg75
+                        # failure); the carrot above remains the stale
+                        # fallback. Height stays with the E3 row consumer;
+                        # the fgpursuit/punch machinery owns terminal.
+                        # v2: yaw at the line HEAD (lookahead -- where the
+                        # line goes), roll centers the centroid. v1 yawed at
+                        # the centroid and parked on top of the line.
+                        _lo = float(state['line_off'])
+                        _lho = float(state.get('line_head_off', _lo))
+                        _yr_t = max(-0.35, min(0.35,
+                                float(os.environ.get('LT_KYAW', '0.9'))
+                                * _lho))
+                        _rb = max(-0.15, min(0.15,
+                                float(os.environ.get('LT_KLAT', '0.25'))
+                                * _lo)) + state.get('_att_ri', 0.0)
+                        _pb = -float(os.environ.get('LT_PITCH', '0.06'))
+                        _lt_on = 1
                     if now - state.get('_mf_log', 0) > 0.5:
                         state['_mf_log'] = now
                         jlog('mapfollow', ex=round(_exb, 2), ey=round(_eyb, 2),
                              rb=round(_rb, 3), pb=round(_pb, 3),
                              p=[round(float(x), 2) for x in _pp],
                              lr=round(state.get('line_row', -1.0), 3),
-                             ln=state.get('line_n', 0))
+                             ln=state.get('line_n', 0),
+                             lt=_lt_on,
+                             lo=round(state.get('line_off', 0.0), 3),
+                             lho=round(state.get('line_head_off', 0.0), 3))
             _rb = max(-0.22, min(0.22, _rb))
             _dthr = max(-0.055, min(0.055, _dthr))
             if now - state.get('_att_log', 0) > 0.5:
