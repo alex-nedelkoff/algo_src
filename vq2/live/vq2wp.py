@@ -2103,6 +2103,37 @@ while not aborted:
             # already aimed us through it). Line lost -> old thresholds, so
             # vision can still rescue.
             _fgb_lt = state.get('fg_bear', (9.9, 9.9))
+            # MAP-CONSISTENCY (07-19, test41 FRAMES: the drone hovered at
+            # the G2 RIBBON/banner wall converging on its openings while
+            # the real scoring gate -- the one the LINE runs through --
+            # sat lower and farther ahead. Wrong-structure holes are
+            # ~1.5 rad off the map bearing; DR+gyro give ~0.4 rad
+            # accuracy at this range): a terminal candidate must agree
+            # with the bearing to the next gate's MAP position.
+            _lt_map_ok = True
+            _gw_m = state.get('next_gate_w')
+            _mp_m = state.get('_mf_p')
+            if ticks >= 1 and _gw_m is not None and _mp_m is not None:
+                _eb_m = wrap(math.atan2(
+                    float(_gw_m[1]) - float(_mp_m[1]),
+                    float(_gw_m[0]) - float(_mp_m[0])) - state['yaw'])
+                _lt_map_ok = abs(wrap(_eb_m - _fgb_lt[0])) < float(
+                    os.environ.get('LT_MAP_B', '0.5'))
+            state['_lt_map_ok'] = _lt_map_ok
+            # LINE-MATCH (07-19, test45 FRAMES: the "dead-center w=113
+            # hole" the punch flew into was the NEGATIVE SPACE OF A LETTER
+            # on the sponsor banner -- the hole detector reads dark
+            # letterforms as apertures, and map/vertical checks cannot
+            # separate a banner glyph from the adjacent gate). The one
+            # geometric truth: the cyan racing line passes through the
+            # SCORING aperture. A terminal candidate must sit where the
+            # line's far head points.
+            _lh_m = state.get('line_head_off', 9.9)
+            _lt_line_match = (time.time() - state.get('line_wall', 0) < 0.6
+                              and abs(_lh_m * float(os.environ.get(
+                                  'LT_HEAD2RAD', '1.75')) - _fgb_lt[0])
+                              < float(os.environ.get('LT_LINE_MATCH',
+                                                     '0.28')))
             if _lt_line_fresh:
                 # v4 (test16/17 postmortems): BOTH flights chased the same
                 # fast-growing non-gate opening ~4 s post-G1 (b1 -> -0.36 =
@@ -2113,13 +2144,46 @@ while not aborted:
                 # plausibility, and enough width to punch immediately.
                 _allow_track = (os.environ.get('MAPFOLLOW') != '1'
                                 or ticks == 0
-                                or (_fgage < 0.4
+                                or (_fgage < 0.4 and _lt_map_ok
+                                    and _lt_line_match
                                     and _fgw >= float(os.environ.get(
                                         'LT_VIS_W', '95'))
                                     and abs(_fgb_lt[0]) < float(
                                         os.environ.get('LT_VIS_B', '0.25'))
-                                    and abs(_fgb_lt[1]) < float(
-                                        os.environ.get('LT_VIS_BV', '0.2'))))
+                                    # vertical window opens DOWNWARD too
+                                    # (test41 frames: hovering HIGH, the
+                                    # real gate is below the axis)
+                                    and -float(os.environ.get('LT_VIS_BV',
+                                                              '0.2'))
+                                    < _fgb_lt[1]
+                                    < float(os.environ.get('LT_VIS_BVDN',
+                                                           '0.35'))))
+                if _allow_track and ticks >= 1:
+                    # RELEASE DEBOUNCE (07-19, test42: a single noisy w=67
+                    # blip released the latch ~6 m out mid-transit; the
+                    # beeline at the gate hit scenery the LINE routes
+                    # around). Require the strict release to hold on two
+                    # consecutive detections before latching.
+                    _rl_w = state.get('_lt_rel_wall', 0.0)
+                    _rl_n = state.get('_lt_rel_n', 0)
+                    _rl_n = _rl_n + 1 if time.time() - _rl_w < 1.2 else 1
+                    state['_lt_rel_n'] = _rl_n
+                    state['_lt_rel_wall'] = time.time()
+                    if _rl_n < 2:
+                        _allow_track = False
+                    else:
+                        # TERMINAL LATCH (07-19, test36): braking near the
+                        # gate while the LINE branch still steered (the
+                        # line runs PAST the gate) slid the drone off the
+                        # hole, and ownership flapped at the release
+                        # thresholds. Once a candidate passes the strict
+                        # release TWICE, the pursuit OWNS terminal for
+                        # LT_TERM_S seconds -- hover, settle, punch;
+                        # fallbacks resume if it expires.
+                        state['_lt_term_wall'] = time.time()
+            if (ticks >= 1 and time.time() - state.get('_lt_term_wall', 0)
+                    < float(os.environ.get('LT_TERM_S', '6.0'))):
+                _allow_track = True
             else:
                 # line lost: the original staging discipline owns release
                 # (stage_done + head-on) -- oblique mid-transit holes must
@@ -2155,19 +2219,41 @@ while not aborted:
         # as a 2.5 s blind coast that the rightward push owns (fg26/27 both
         # slid just right of the post). Punch the moment the hole is big AND
         # centered, while still visually locked: no coast, minimal blind time.
+        # BELOW-HEIGHT PUNCH CONE (07-19, test28: the terminal climb lifted
+        # the drone to hole height and the 20-up camera clipped the hole at
+        # w=64 / ~4.5 m -- earliest blindness of the campaign; the fastgate
+        # memory's below-height approach is the fix). Asymmetric vertical:
+        # a hole up to FGP_PUNCH_BVUP ABOVE the axis is punchable (the
+        # punch's vertical steering climbs through it); below stays tight
+        # (top-bar strike, fg16).
+        _bvup = float(os.environ.get('FGP_PUNCH_BVUP', '0') or 0) or _ctr
+        # per-leg punch width (07-19, test34): lowering the width for the
+        # gate-2 hover-range punch ALSO fired gate 1's punch 4+ m out and
+        # destabilized the proven recipe -- G1 keeps FGP_PUNCH_W, later
+        # legs use FGP_PUNCH_W2 (default: same).
+        _pw = float(os.environ.get('FGP_PUNCH_W', '95'))
+        if ticks >= 1:
+            _pw = float(os.environ.get('FGP_PUNCH_W2', '0') or 0) or _pw
+        _bvdn = _ctr if ticks == 0 else float(
+            os.environ.get('FGP_PUNCH_BVDN', '0.35'))
         _punch_now = (_allow_track and _fgage < 0.4
-                      and _fgw >= float(os.environ.get('FGP_PUNCH_W', '95'))
-                      and abs(_fgb[0]) < _ctr and abs(_fgb[1]) < _ctr)
+                      and _fgw >= _pw
+                      and abs(_fgb[0]) < _ctr
+                      and -_bvup < _fgb[1] < _bvdn
+                      and (ticks == 0
+                           or os.environ.get('LINE_TRANSIT') != '1'
+                           or state.get('_lt_map_ok', True)))
         if _punch_now and os.environ.get('PN_PUNCH') == '1':
             # E1 PN collision-course gate (07-15 handoff, re-applied 07-19
             # after the DPVO rewrite wiped it; test24/25: a centered-only
             # trigger either never fires (ctr 0.10) or fires unconverged
             # into the frame (ctr 0.18)). Two bodies collide iff the LOS
-            # stops rotating: also require the bearing-RATE nulled --
-            # course locked, the terminal blind range is then harmless.
+            # stops rotating: require the LATERAL bearing-rate nulled (the
+            # push is lateral; vertical rate during a deliberate climb-
+            # through is convergence, not miss).
             _bd_pn = state.get('_att_bd', (9.9, 9.9))
             _pnr = float(os.environ.get('PN_LOSRATE', '0.12'))
-            _punch_now = (abs(_bd_pn[0]) < _pnr and abs(_bd_pn[1]) < _pnr)
+            _punch_now = abs(_bd_pn[0]) < _pnr
         if _punch_now or (_fgage > 0.5 and now - state.get('_fg_close', 0) < 3.0):
             # GATE-TO-GATE (07-14, Alex): a close hole (w>=120) just left the
             # frame -> punch straight through it, then DROP the track and keep
@@ -2190,11 +2276,32 @@ while not aborted:
                     # steered on the hole while visible, trim+hold after.
                     if time.time() - state.get('fg_wall', 0.0) < 0.3:
                         _pv = state['fg_bear']
+                        # carry the learned push integral through the punch
+                        # (07-19): the blind window is exactly when the
+                        # push owns the drone
+                        # D-term in the punch steering (07-19, tests
+                        # 29/30): the line meets the gate slightly from
+                        # the right, so the bearing sweeps THROUGH zero at
+                        # the punch moment -- steering on b alone lets the
+                        # sweep rate carry the drone past the post.
+                        _pbd = state.get('_att_bd', (0.0, 0.0))
                         state['_punch_rb'] = max(-0.22, min(0.22,
-                            0.4 * _pv[0] + state.get('_att_ri', 0.0)))
-                        state['_punch_dthr'] = max(-0.05, min(0.05, -0.15 * _pv[1]))
+                            0.4 * _pv[0]
+                            + float(os.environ.get('FGP_PUNCH_KD', '0.0'))
+                            * _pbd[0]
+                            + state.get('_att_ri', 0.0)))
+                        state['_punch_dthr'] = max(-0.06, min(0.06,
+                            -float(os.environ.get('FGP_PUNCH_KT', '0.15'))
+                            * _pv[1]))
+                    _ppitch = float(os.environ.get('ATT_PUNCH_PITCH',
+                                                   '-0.18'))
+                    if ticks >= 1:
+                        # per-leg punch pitch (test44: softening the shared
+                        # knob broke G1's crossing -- G1 keeps -0.18)
+                        _ppitch = float(os.environ.get('ATT_PUNCH_PITCH2',
+                                                       '0') or 0) or _ppitch
                     level_cmd(0, 0, state.get('_punch_dthr', 0.0),
-                              pitch_bias=float(os.environ.get('ATT_PUNCH_PITCH', '-0.18')),
+                              pitch_bias=_ppitch,
                               yr=_yrh,
                               roll_bias=state.get('_punch_rb',
                                                   state.get('_att_ri', 0.0)),
@@ -2215,6 +2322,15 @@ while not aborted:
             state['_fg_close'] = 0.0
             state['_fgp_vy'] = state['_fgp_vz'] = 0.0
             state['_fgp_ib'] = 0.0          # new gate, new disturbance integral
+            state['_att_ib'] = 0.0          # (ATT push integral likewise)
+            if os.environ.get('LINE_TRANSIT') == '1':
+                # 07-19 test37 (ib/ri trace): the "global" roll trim
+                # entered the G2 terminal at +0.18 -- learned on the
+                # PREVIOUS leg -- and dragged the hover rightward faster
+                # than the bearing integral could cancel (its cap). The
+                # disturbance field is per-LOCATION: relearn the trim on
+                # each new leg.
+                state['_att_ri'] = 0.0
             state.pop('_punch_rb', None); state.pop('_punch_dthr', None)
             state['_att_bd'] = (0.0, 0.0)   # new gate: derivative discontinuity
             state['_att_lastb'] = None      # (keep _att_ri -- the drift trim
@@ -2297,10 +2413,18 @@ while not aborted:
                 state['_att_rng'] = _rng_n
                 state['_att_lastw'] = _fw
                 state['_att_lastb'] = _b
-            _ari = state.get('_att_ri', 0.0)
-            _ari = max(-0.18, min(0.18,
-                       _ari + float(os.environ.get('ATT_KI', '0.5')) * _b[0] / CMD_HZ))
-            state['_att_ri'] = _ari
+            if _allow_track:
+                # 07-19 (test38 ib/ri trace): this trim integral used to
+                # adapt on ANY fresh hole -- during LINE_TRANSIT it ate the
+                # +0.6-0.8 rad bearings of holes the line legitimately
+                # passes by and wound to +0.18 full-scale in 1.5 s, then
+                # dragged every gate-2 hover rightward. Integrate only
+                # while the pursuit actually OWNS control.
+                _ari = state.get('_att_ri', 0.0)
+                _ari = max(-0.18, min(0.18,
+                           _ari + float(os.environ.get('ATT_KI', '0.5'))
+                           * _b[0] / CMD_HZ))
+                state['_att_ri'] = _ari
             if now - state.get('_fgp_log', 0) > 0.5:
                 state['_fgp_log'] = now
                 jlog('fgp', fwd=round(_fwd_dr, 2), bear=[round(_b[0], 3),
@@ -2352,6 +2476,22 @@ while not aborted:
             if _fgage < 0.4 and _allow_track:
                 _bd = state.get('_att_bd', (0.0, 0.0))
                 _bb = state['fg_bear']
+                # CLOSED-LOOP PUSH COMPENSATION (07-19, tests 23-27): the
+                # PD pursuit converges the hole then slides RIGHT past the
+                # aperture in the last 3-4 m (test27: 0.67 -> -0.03 rad,
+                # then w 64->42 while drifting off) -- the ~0.3 m/s gate-
+                # area push is a constant disturbance a PD loop can only
+                # hold with a steady-state error it cannot afford at 0.7 m
+                # aperture margin. Integrate the bearing residual while
+                # TRACKED (that IS the measured push), feed it to roll,
+                # and hold it UNDECAYED through the punch blind window
+                # (the velocity-mode pursuit has done exactly this with
+                # _fgp_ib since 07-15; ATTMODE never got it). Reset per
+                # gate with the other per-gate state.
+                # (the per-gate bearing integral formerly added here was a
+                # DUPLICATE of the _att_ri trim integral below, both keyed
+                # on ATT_KI -- removed 07-19; _att_ri, now ownership-gated
+                # and leg-reset, is the single push integral)
                 _rb = (float(os.environ.get('ATT_KP', '0.4')) * _bb[0]
                        + float(os.environ.get('ATT_KD', '0.25')) * _bd[0]
                        + state.get('_att_ri', 0.0))
@@ -2541,6 +2681,11 @@ while not aborted:
                                                            '0.035'))))
                     _lt_on = 0
                     _lt_age = time.time() - state.get('line_wall', 0)
+                    _lt_latched = (ticks >= 1
+                                   and time.time()
+                                   - state.get('_lt_term_wall', 0)
+                                   < float(os.environ.get('LT_TERM_S',
+                                                          '6.0')))
                     # DIRECTION PRIOR (07-19, test18: after a scan the drone
                     # locked the line pointing BACK the way it came -- the
                     # painted line has no arrow). v5 used bearing-to-gate
@@ -2556,6 +2701,7 @@ while not aborted:
                             'LT_COURSE_YAW', '0.77')))) \
                         < float(os.environ.get('LT_DIR_GATE', '1.75'))
                     if (os.environ.get('LINE_TRANSIT') == '1' and ticks >= 1
+                            and not _lt_latched
                             and state.get('line_n', 0) > 0
                             and ((1.0 < _lt_age < 10.0)
                                  or (_lt_age < 0.4 and not _lt_aligned))):
@@ -2579,7 +2725,7 @@ while not aborted:
                         _lt_on = 2
                     elif (os.environ.get('LINE_TRANSIT') == '1'
                             and ticks >= 1 and _lt_age < 0.4
-                            and _lt_aligned):
+                            and _lt_aligned and not _lt_latched):
                         # LINE_TRANSIT (07-19, queued in the test4
                         # postmortem): the blind est/DR carrot owns the
                         # lateral channel in transit and drifts (test4:
@@ -2603,6 +2749,28 @@ while not aborted:
                                 float(os.environ.get('LT_KLAT', '0.25'))
                                 * _lo)) + state.get('_att_ri', 0.0)
                         _pb = -float(os.environ.get('LT_PITCH', '0.06'))
+                        if (_fgage < 0.4
+                                and _fgw >= float(os.environ.get(
+                                    'LT_BRAKE_W', '58'))
+                                # 58, not 45 (test39: braking at w=45
+                                # (~6.4 m) stalled the drone OUTSIDE the
+                                # w=60 release -- it hovered there, never
+                                # released, never punched. Brake just
+                                # under the release width.)
+                                and state.get('_lt_map_ok', True)
+                                and abs(_fgb_lt[0]) < 0.4
+                                and -0.35 < _fgb_lt[1] < 0.4):
+                            # TERMINAL BRAKE (07-19, tests 27-32): every
+                            # terminal so far was a geometric fly-by --
+                            # the pursuit only got 0.2-2 s of authority
+                            # after release and could not null the LOS
+                            # sweep at line-follow speed (the punch then
+                            # fires mid-sweep and misses left). A
+                            # candidate gate hole ahead => drop transit
+                            # pitch: slow closing = seconds of steering =
+                            # a real collision course before the punch.
+                            _pb = -float(os.environ.get('LT_PITCH_NEAR',
+                                                        '0.0'))
                         _lt_on = 1
                     if now - state.get('_mf_log', 0) > 0.5:
                         state['_mf_log'] = now
@@ -2619,6 +2787,7 @@ while not aborted:
             if now - state.get('_att_log', 0) > 0.5:
                 state['_att_log'] = now
                 jlog('att', rb=round(_rb, 3), dthr=round(_dthr, 3),
+                     ib=round(state.get('_att_ib', 0.0), 3),
                      ri=round(state.get('_att_ri', 0.0), 3),
                      pb=round(_pb, 3),
                      rrate=round(state.get('_att_rrate', 0.0), 2),
