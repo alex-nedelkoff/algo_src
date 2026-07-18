@@ -76,7 +76,7 @@ def test_recovers_yaw_drift_with_pillar_factors():
 
     L = (8.0, 6.0, -7.0)
     pillars = [PillarFactor(k=k, ray_level=pillar_obs_from_truth(truth, k, L),
-                            cands=(L,)) for k in range(4, 30, 3)]
+                            cands=(L,), top=True) for k in range(4, 30, 3)]
     res = solve(t, x_dr, odom, [], pillars, [])
     err = np.linalg.norm(res.x[:, :2] - truth[:, :2], axis=1)
     # 9 sparse pillar obs vs 3 deg/s yaw drift: DR alone exceeds 0.5 m;
@@ -99,10 +99,39 @@ def test_twin_disambiguation_min_mixture():
     L_twin = (18.0, 8.0, -7.0)
     pillars = [PillarFactor(
         k=k, ray_level=pillar_obs_from_truth(truth, k, L_true),
-        cands=(L_true, L_twin)) for k in range(4, 30, 3)]
+        cands=(L_true, L_twin), top=True) for k in range(4, 30, 3)]
     res = solve(t, x_dr, odom, [], pillars, [])
     err = np.linalg.norm(res.x[:, :2] - truth[:, :2], axis=1)
     assert float(err.max()) < 0.6
+
+
+def test_lower_marking_no_phantom_bias():
+    """Alex's correction (2026-07-19): one physical pillar carries the
+    station number at multiple heights. A read of a LOWER marking (here
+    z=-3.5 on the same axis, map entry z=-7.0) back-projected with
+    elevation-range plants a phantom pillar displaced along the ray. With
+    top=False the factor must use azimuth only — the lower marking then
+    HELPS (bearing is height-independent) instead of corrupting."""
+    t, truth = make_truth()
+    odom = drifted_odom(truth, yaw_rate_err=3.0 * DEG)
+    x_dr = integrate(truth[0], odom, len(truth))
+    L_map = (8.0, 6.0, -7.0)              # map entry: top-panel z
+    L_low = (8.0, 6.0, -3.5)              # what the camera actually saw
+    obs = [(k, pillar_obs_from_truth(truth, k, L_low))
+           for k in range(4, 30, 3)]
+    # azimuth-only (correct handling): drift must be recovered
+    pil_az = [PillarFactor(k=k, ray_level=ray, cands=(L_map,), top=False)
+              for k, ray in obs]
+    res = solve(t, x_dr, odom, [], pil_az, [])
+    err_az = np.linalg.norm(res.x[:, :2] - truth[:, :2], axis=1)
+    assert float(err_az.max()) < 0.5
+    # old behavior (top=True on a non-top read): measurably worse — this
+    # is the phantom mechanism, kept as a tripwire that the flag matters
+    pil_bad = [PillarFactor(k=k, ray_level=ray, cands=(L_map,), top=True)
+               for k, ray in obs]
+    res_bad = solve(t, x_dr, odom, [], pil_bad, [])
+    err_bad = np.linalg.norm(res_bad.x[:, :2] - truth[:, :2], axis=1)
+    assert float(err_bad.max()) > float(err_az.max())
 
 
 def test_late_anchor_folds_retroactively():
@@ -145,7 +174,8 @@ def _run_sliding(t, truth, odom, ks, L, window_s):
                      f.sigma_p, f.sigma_yaw)
         if (i + 1) in ks:
             sl.push_pillar(t[i + 1],
-                           pillar_obs_from_truth(truth, i + 1, L), (L,))
+                           pillar_obs_from_truth(truth, i + 1, L), (L,),
+                           top=True)
     sl._solve(t[-1])
     ts, xs = sl.trajectory()
     rows = np.round((ts - t[0]) / 0.1).astype(int)   # time-align to truth
@@ -164,7 +194,8 @@ def test_sliding_machinery_matches_batch():
     ks = set(range(4, 40, 3))
     x_dr = integrate(truth[0], odom, len(truth))
     pil = [PillarFactor(k=k, ray_level=pillar_obs_from_truth(truth, k, L),
-                        cands=(L,)) for k in sorted(ks)]
+                        cands=(L,), sigma=1.0, top=True)   # match push_pillar
+           for k in sorted(ks)]
     batch = solve(t, x_dr, odom, [], pil, [])
     e_batch = np.linalg.norm(batch.x[:, :2] - truth[:, :2], axis=1)
     e_inf = _run_sliding(t, truth, odom, ks, L, window_s=999.0)

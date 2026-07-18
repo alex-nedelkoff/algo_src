@@ -18,10 +18,12 @@ Factors (all Huber-robustified):
     yaw delta from the DR chain (IMU+flow), sigma scaled by the interval's
     measured flow quality (information-driven, not clock-driven)
   * position unaries (gate anchors), capture-time-stamped
-  * pillar bearing+elevation-range factors: couple position AND yaw
-    jointly; DUPLICATE station numbers (aisle twins) enter as a
-    min-mixture — the solver keeps whichever twin fits the whole window,
-    no est-referenced pre-gate
+  * pillar factors, AZIMUTH-PRIMARY: couple position AND yaw jointly via
+    the height-independent bearing to the pillar axis; elevation-range is
+    added ONLY for identified TOP-panel reads (lower markings at unknown z
+    would plant phantom pillars). DUPLICATE station numbers (aisle twins)
+    enter as a min-mixture — the solver keeps whichever twin fits the
+    whole window, no est-referenced pre-gate
   * line-corridor unaries: controller-intent prior while line-following
     (lateral distance to the commanded line), the RELOC const-position
     trick generalized
@@ -68,13 +70,22 @@ class PosUnary:
 
 @dataclass
 class PillarFactor:
-    """One identity-read panel obs. ray_level = unit ray in the LEVEL frame
-    (roll/pitch applied, yaw NOT applied) at capture time. cands = all map
-    entries sharing the read number (aisle twins) as (3,) positions."""
+    """One identity-read panel obs, AZIMUTH-PRIMARY (2026-07-19): a pillar
+    is vertical, so the bearing to ANY of its markings (lit top panel, face
+    panels, mid-height station text) is height-independent — the azimuth
+    residual is always valid. Elevation-range is applied ONLY for reads
+    identifiably of the TOP panel (top=True): back-projecting a lower
+    marking at the top-panel z plants a phantom pillar displaced along the
+    view ray (the map-v2 22b/22c split).
+    ray_level = unit ray in the LEVEL frame (roll/pitch applied, yaw NOT
+    applied) at capture time. cands = all map entries sharing the read
+    number (aisle twins) as (3,) positions, z = top-panel height."""
     k: int
     ray_level: np.ndarray
     cands: tuple            # ((x,y,z), ...)
-    sigma: float = 0.8
+    sigma: float = 0.8      # m, tangential (azimuth residual x range)
+    top: bool = False
+    sigma_r: float = 1.5    # m, along-bearing (top reads only)
 
 
 @dataclass
@@ -114,27 +125,50 @@ def pillar_ray_level(u: float, v: float, roll: float, pitch: float) -> np.ndarra
 
 
 def _pillar_residual(xk, f: PillarFactor):
-    """min-mixture residual: for each twin candidate, implied position from
-    bearing+elevation-range at the state's yaw; residual = state - implied
-    (xy). Returns (best_res(2,), best_J_yaw(2,)) for the winning twin."""
+    """min-mixture residual over twin candidates, azimuth-primary.
+
+    Always: tangential residual r_t = rho * wrap(az_pred - az_meas) — the
+    lateral miss (m) of the measured bearing vs the pillar axis; valid for
+    any marking height. Only when f.top: radial residual
+    r_r = rho - rho_implied(elevation at the top-panel z).
+    Returns (score, r(n,), J(n,4) over [x,y,z,yaw]) for the winning twin,
+    with r and J already sigma-scaled."""
     x, y, z, yaw = xk
-    cy, sy = math.cos(yaw), math.sin(yaw)
     d = f.ray_level
-    dw = np.array([cy * d[0] - sy * d[1], sy * d[0] + cy * d[1], d[2]])
+    h = math.hypot(d[0], d[1])
+    if h < 0.05:
+        return None               # near-vertical ray: azimuth undefined
+    az_meas = yaw + math.atan2(d[1], d[0])
     best = None
     for L in f.cands:
-        if dw[2] > -0.05:
+        dxl, dyl = L[0] - x, L[1] - y
+        rho = math.hypot(dxl, dyl)
+        if not (1.0 < rho < 45.0):
             continue
-        s = (L[2] - z) / dw[2]
-        if not (1.5 < s < 45.0):
-            continue
-        imp = np.array([L[0] - s * dw[0], L[1] - s * dw[1]])
-        r = np.array([x, y]) - imp
+        e_az = _wrap(math.atan2(dyl, dxl) - az_meas)
+        if abs(e_az) > 0.5 * math.pi:
+            continue              # candidate behind the bearing
+        r_t = rho * e_az / f.sigma
+        # d az_pred/d(x,y) = (dyl, -dxl)/rho^2; d az_meas/d yaw = 1
+        Jt = np.array([dyl / rho, -dxl / rho, 0.0, -rho]) / f.sigma
+        if f.top and d[2] < -0.05:
+            s = (L[2] - z) / d[2]
+            if 1.5 < s < 45.0:
+                rho_imp = s * h
+                r_r = (rho - rho_imp) / f.sigma_r
+                # d rho/d(x,y) = -(dxl,dyl)/rho; d rho_imp/dz = -h/d[2]
+                Jr = np.array([-dxl / rho, -dyl / rho, h / d[2], 0.0]) \
+                    / f.sigma_r
+                r = np.array([r_t, r_r])
+                J = np.stack([Jt, Jr])
+            else:
+                continue          # top read with insane range: no vote
+        else:
+            r = np.array([r_t])
+            J = Jt.reshape(1, 4)
         n = float(np.linalg.norm(r))
         if best is None or n < best[0]:
-            # d(imp)/d(yaw): s * d(dw_xy)/dyaw (s is yaw-invariant)
-            ddw = np.array([-sy * d[0] - cy * d[1], cy * d[0] - sy * d[1]])
-            best = (n, r, s * ddw)
+            best = (n, r, J)
     return best
 
 
@@ -208,13 +242,8 @@ def solve(t: np.ndarray, x0: np.ndarray, odom: list, unaries: list,
             out = _pillar_residual(x[f.k], f)
             if out is None:
                 continue
-            n, r, dyaw = out
-            r = r / f.sigma
-            w = _huber_w(float(np.linalg.norm(r)), huber_delta)
-            J = np.zeros((2, 4))
-            J[0, 0] = J[1, 1] = 1.0 / f.sigma
-            # r = p_state - imp(yaw); d imp/d yaw = -s*ddw  =>  dr/dyaw = +s*ddw
-            J[:, 3] = dyaw / f.sigma
+            n, r, J = out          # already sigma-scaled
+            w = _huber_w(n, huber_delta)
             add(range(4 * f.k, 4 * f.k + 4), J, r, w)
 
         for f in yaws:
@@ -341,12 +370,13 @@ class SlidingSmoother:
         self._dirty = True
 
     def push_pillar(self, t_capture: float, ray_level, cands,
-                    sigma: float = 1.0) -> None:
+                    sigma: float = 1.0, top: bool = False,
+                    sigma_r: float = 1.5) -> None:
         k = self._k_at(t_capture)
         if k is None:
             return
         self.pillars.append(PillarFactor(k, np.asarray(ray_level, float),
-                                         tuple(cands), sigma))
+                                         tuple(cands), sigma, top, sigma_r))
         self._dirty = True
 
     def push_corridor(self, t_capture: float, a, b,
@@ -391,7 +421,8 @@ class SlidingSmoother:
                            f.sigma_p, f.sigma_yaw) for f in self.odom]
         una = [PosUnary(f.k - b, f.p, f.sigma, f.xy_only)
                for f in self.unaries]
-        pil = [PillarFactor(f.k - b, f.ray_level, f.cands, f.sigma)
+        pil = [PillarFactor(f.k - b, f.ray_level, f.cands, f.sigma,
+                            f.top, f.sigma_r)
                for f in self.pillars]
         cor = [LineCorridor(f.k - b, f.a, f.b, f.sigma)
                for f in self.corridors]

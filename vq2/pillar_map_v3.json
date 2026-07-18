@@ -1,0 +1,70 @@
+{
+  "version": "pillar-1",
+  "frame": "janahan-v1 datum (offline GateNet range scale; NOT the flight pad-lock datum - reconcile before flight use)",
+  "units": "m",
+  "z_panel": -7.16,
+  "note": "v3 (2026-07-19): one entry per PHYSICAL pillar. Alex correction: a pillar carries its station number at multiple heights; v2's same-number entries on a common view-ray family were one pillar seen via different markings (22b+22c collapsed here). Axis xy is the mapped quantity; only top_panel markings are safe elevation-range cues (azimuth-primary factors handle the rest).",
+  "landmarks": [
+    {
+      "id": "13a",
+      "number": "13",
+      "pos": [13.5, -9.44, -7.16],
+      "confidence": "observed",
+      "pos_sigma_m": 0.3,
+      "source": "pad-window survey (truth pose), tests 5/6/7 agree 0.00 m; number eye-verified 2026-07-17",
+      "markings": [{"kind": "top_panel", "z": -7.16}]
+    },
+    {
+      "id": "22a",
+      "number": "22",
+      "pos": [13.5, 5.18, -7.16],
+      "confidence": "observed",
+      "pos_sigma_m": 0.3,
+      "source": "pad-window survey (truth pose), test4; number eye-verified 2026-07-17. Gate-PnP unknown-z solves 2026-07-19 (tests 9/12/14, travel 6-9 m) agree within 1-1.5 m and see lower markings z ~ -5 to -6",
+      "markings": [{"kind": "top_panel", "z": -7.16},
+                   {"kind": "lower", "z": -5.5}]
+    },
+    {
+      "id": "22b",
+      "number": "22",
+      "pos": [23.13, 4.0, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 0.8,
+      "source": "v2 22b (far/top-panel reads, tests 6/11/12/14, spread 0.54) with v2 22c (20.24,3.35; close/lower-marking reads, tests 4/10/13) collapsed INTO it 2026-07-19: same bearing from the course line (delta 1.5 deg) = ONE pillar, multi-height markings (Alex). Axis kept at the far-read position: far reads see the lit TOP panel so their z assumption (and hence xy) is the valid one; 6-corpus A/B confirmed this beats a corpora-weighted average by ~0.8 m median approach",
+      "markings": [{"kind": "top_panel", "z": -7.16},
+                   {"kind": "lower", "z": null}]
+    },
+    {
+      "id": "19a",
+      "number": "19",
+      "pos": [22.09, -10.44, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 0.5,
+      "source": "9-corpus tick survey 2026-07-18: tests 4/6/11/12/14, spread 0.55 m (far reads = top panel, z assumption valid)",
+      "markings": [{"kind": "top_panel", "z": -7.16}]
+    },
+    {
+      "id": "23a",
+      "number": "23",
+      "pos": [18.98, 12.3, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 0.8,
+      "source": "day-3 2-corpus position; v2 8-corpus spread 1.40 suggested an unmapped twin - see quarantined 23b",
+      "markings": [{"kind": "top_panel", "z": -7.16}]
+    }
+  ],
+  "quarantined": [
+    {
+      "id": "23b",
+      "number": "23",
+      "pos": [24.03, 7.02, -7.16],
+      "reason": "candidate 23-twin from the gate-PnP unknown-z survey 2026-07-19 (tests 9/10, best-travel tracks 12.1/13.5 m, spread 0.85, marking z ~ -3.1). Mapping it REGRESSED the 6-corpus validation (test10 G1@tick 1.12 -> 3.28, median 1.21 -> 1.99): helps 11/12, hurts 9/10/13/14. Needs an independent position fix before promotion"
+    },
+    {
+      "id": "23q",
+      "number": "23",
+      "pos": [8.21, 7.51, -7.16],
+      "reason": "5-corpus cluster (tests 6/8/9/11/12) but every contributing track is geometry-degenerate (0.9-1.8 m travel): bearing-only solutions collapse toward the flight line - consistent-but-biased, do not map without independent range evidence"
+    }
+  ]
+}

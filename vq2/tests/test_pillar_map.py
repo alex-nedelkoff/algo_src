@@ -9,6 +9,7 @@ import pytest
 from vq2.map_ingest import load_pillar_map, pillar_map_by_number
 
 V1 = Path(__file__).resolve().parents[1] / "pillar_map_v1.json"
+V3 = Path(__file__).resolve().parents[1] / "pillar_map_v3.json"
 
 
 def test_shipped_v1_loads_with_twins():
@@ -18,6 +19,34 @@ def test_shipped_v1_loads_with_twins():
     assert len(by_num["22"]) == 2          # aisle twins are the point
     assert all(len(p) == 3 for ps in by_num.values() for p in ps)
     assert {lm.confidence for lm in lms} <= {"ticked", "observed", "inferred"}
+
+
+def test_shipped_v3_physical_pillars_with_markings():
+    """v3 semantics: one entry per PHYSICAL pillar (22b+22c collapsed);
+    markings[] carries per-height sub-features, top_panel z = z_panel."""
+    lms = load_pillar_map(V3)
+    by_id = {lm.id: lm for lm in lms}
+    assert "22c" not in by_id                  # collapsed into 22b
+    assert len(pillar_map_by_number(lms)["22"]) == 2   # 22a + collapsed 22b
+    tops = [m for m in by_id["22a"].markings if m.kind == "top_panel"]
+    assert tops and tops[0].z == -7.16
+    lower = [m for m in by_id["22b"].markings if m.kind == "lower"]
+    assert lower and lower[0].z is None        # unsurveyed lower marking OK
+    assert by_id["13a"].markings               # every pillar carries its top
+
+
+def test_markings_contract_fails_closed(tmp_path):
+    data = json.loads(V3.read_text())
+    data["landmarks"][0]["markings"] = [{"kind": "roof", "z": -7.0}]
+    p = tmp_path / "bad.json"
+    p.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="kind"):
+        load_pillar_map(p)
+    data = json.loads(V3.read_text())
+    data["landmarks"][0]["markings"] = [{"kind": "lower", "z": float("nan")}]
+    p.write_text(json.dumps(data).replace("NaN", "1e999"))
+    with pytest.raises(ValueError):
+        load_pillar_map(p)
 
 
 def test_quarantined_never_returned():

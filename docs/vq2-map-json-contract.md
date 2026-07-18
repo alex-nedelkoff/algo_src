@@ -89,3 +89,25 @@ Loader rules: `version == "pillar-1"`; `landmarks` non-empty; `id` unique;
 tick-anchored survey, observed = pad-window truth-pose survey, inferred =
 grid extrapolation). `quarantined` entries are carried for bookkeeping and
 NEVER returned as landmarks.
+
+### markings[] (v3 semantics, 2026-07-19)
+
+One physical pillar carries its station number at MULTIPLE heights (lit
+top panel, face panels, mid-height vertical text — Alex's correction).
+From map v3 on, a landmark entry is a PHYSICAL pillar: `pos` is the pillar
+axis xy with z = the top-panel height, and an optional `markings` list
+records the per-height sub-features:
+
+```json
+"markings": [
+  { "kind": "top_panel", "z": -7.16 },
+  { "kind": "lower", "z": -5.5 },
+  { "kind": "lower", "z": null }
+]
+```
+
+`kind` ∈ {`top_panel`, `lower`}; `z` finite or `null` (known-to-exist but
+unsurveyed). Same-number entries lying on a common view-ray family are ONE
+pillar — collapse them (v2's 22b+22c). Consumers: only `top_panel`
+markings justify elevation-range measurement models; any marking supports
+azimuth (the bearing to a vertical pillar is height-independent).

@@ -153,13 +153,23 @@ if __name__ == "__main__":
 
 
 @dataclass(frozen=True)
+class PillarMarking:
+    """One station-number marking on a physical pillar. A pillar carries
+    its number at MULTIPLE heights (lit top panel, face panels, mid-height
+    text — Alex 2026-07-19); only the top panel's z is a safe range cue."""
+    kind: str                       # "top_panel" | "lower"
+    z: float | None                 # measured height, None if not surveyed
+
+
+@dataclass(frozen=True)
 class PillarLandmark:
     id: str
     number: str
-    pos: tuple[float, float, float]
+    pos: tuple[float, float, float]   # pillar AXIS xy; z = top-panel height
     confidence: str
     pos_sigma_m: float
     source: str
+    markings: tuple = ()              # (PillarMarking, ...) — may be empty
 
 
 def load_pillar_map(path) -> list[PillarLandmark]:
@@ -196,10 +206,26 @@ def load_pillar_map(path) -> list[PillarLandmark]:
         if not (isinstance(sigma, (int, float)) and math.isfinite(sigma)
                 and sigma >= 0):
             raise ValueError(f"{where}: pos_sigma_m must be finite >= 0")
+        marks = []
+        raw_marks = entry.get("markings", [])
+        if not isinstance(raw_marks, list):
+            raise ValueError(f"{where}: markings must be a list")
+        for j, mk in enumerate(raw_marks):
+            kind = mk.get("kind")
+            if kind not in ("top_panel", "lower"):
+                raise ValueError(
+                    f"{where}.markings[{j}]: kind must be top_panel|lower")
+            z = mk.get("z")
+            if z is not None and not (isinstance(z, (int, float))
+                                      and math.isfinite(z)):
+                raise ValueError(
+                    f"{where}.markings[{j}]: z must be finite or null")
+            marks.append(PillarMarking(
+                kind=kind, z=None if z is None else float(z)))
         out.append(PillarLandmark(
             id=lid, number=num, pos=tuple(float(v) for v in pos),
             confidence=conf, pos_sigma_m=float(sigma),
-            source=str(entry.get("source", ""))))
+            source=str(entry.get("source", "")), markings=tuple(marks)))
     return out
 
 
