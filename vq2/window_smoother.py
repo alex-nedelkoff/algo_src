@@ -78,6 +78,15 @@ class PillarFactor:
 
 
 @dataclass
+class YawUnary:
+    """Absolute yaw measurement (e.g. gate-PnP R_cam_gate via the fitted
+    gate world frame — Phase C). Wrapped residual."""
+    k: int
+    yaw: float
+    sigma: float = 0.05
+
+
+@dataclass
 class LineCorridor:
     k: int
     a: np.ndarray           # (2,) segment start
@@ -132,7 +141,7 @@ def _pillar_residual(xk, f: PillarFactor):
 def solve(t: np.ndarray, x0: np.ndarray, odom: list, unaries: list,
           pillars: list, corridors: list, iters: int = 6,
           huber_delta: float = 1.0, prior_sigma: float = 0.5,
-          damping: float = 1e-3) -> SmootherResult:
+          damping: float = 1e-3, yaws: list = ()) -> SmootherResult:
     """Damped Gauss-Newton over states (N,4). x0 seeds and priors state 0
     (window anchoring; the online slider passes the previous solution)."""
     N = len(t)
@@ -206,6 +215,13 @@ def solve(t: np.ndarray, x0: np.ndarray, odom: list, unaries: list,
             J[0, 0] = J[1, 1] = 1.0 / f.sigma
             # r = p_state - imp(yaw); d imp/d yaw = -s*ddw  =>  dr/dyaw = +s*ddw
             J[:, 3] = dyaw / f.sigma
+            add(range(4 * f.k, 4 * f.k + 4), J, r, w)
+
+        for f in yaws:
+            r = np.array([_wrap(x[f.k][3] - f.yaw) / f.sigma])
+            w = _huber_w(abs(float(r[0])), huber_delta)
+            J = np.zeros((1, 4))
+            J[0, 3] = 1.0 / f.sigma
             add(range(4 * f.k, 4 * f.k + 4), J, r, w)
 
         for f in corridors:
