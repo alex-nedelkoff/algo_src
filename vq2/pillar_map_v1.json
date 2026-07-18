@@ -1,0 +1,55 @@
+{
+  "version": "pillar-1",
+  "frame": "janahan-v1 datum (offline GateNet range scale; NOT the flight pad-lock datum - reconcile before flight use)",
+  "units": "m",
+  "z_panel": -7.16,
+  "landmarks": [
+    {
+      "id": "13a",
+      "number": "13",
+      "pos": [13.5, -9.44, -7.16],
+      "confidence": "observed",
+      "pos_sigma_m": 0.3,
+      "source": "pad-window survey (truth pose), tests 5/6/7 agree 0.00 m; number eye-verified 2026-07-17"
+    },
+    {
+      "id": "22a",
+      "number": "22",
+      "pos": [13.5, 5.18, -7.16],
+      "confidence": "observed",
+      "pos_sigma_m": 0.3,
+      "source": "pad-window survey (truth pose), test4; number eye-verified 2026-07-17"
+    },
+    {
+      "id": "22b",
+      "number": "22",
+      "pos": [23.54, 4.29, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 0.6,
+      "source": "tick-anchored survey test4+test6 (kinematic de-rotation), OCR-vote '22', 2026-07-18"
+    },
+    {
+      "id": "19a",
+      "number": "19",
+      "pos": [22.41, -10.52, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 0.5,
+      "source": "tick-anchored survey test4+test6, cross-corpus spread 0.24 m, 2026-07-18"
+    },
+    {
+      "id": "23a",
+      "number": "23",
+      "pos": [18.98, 12.3, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 0.6,
+      "source": "tick-anchored survey test4+test6, spread 0.6 m after de-rotation, 2026-07-18"
+    }
+  ],
+  "quarantined": [
+    {
+      "number": "06|22",
+      "pos": [19.7, 4.0, -7.16],
+      "reason": "disputed OCR identity: '06' and third-'22' read clusters 1.0 m apart = one panel, conflicting reads; needs a close-pass read before it earns a landmark entry (including it degraded the harness, 2026-07-18)"
+    }
+  ]
+}

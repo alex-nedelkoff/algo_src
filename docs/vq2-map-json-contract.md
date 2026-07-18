@@ -52,3 +52,40 @@ Send corrections/extensions as a v2 proposal — the loader rejects unknown vers
 
 If the delivered map disagrees with a judge-verified anchor by > 1.0 m the loader
 flags it loudly — resolve before flight, the judge evidence wins.
+
+## Landmark extension (v1-pillar, 2026-07-18)
+
+Sibling file `pillar_map_*.json` for station-pillar landmarks (producer: the
+tick-anchored/pad-window survey pipeline; consumer: `vq2/map_ingest.py::
+load_pillar_map`). Pillars carry a lit 2-digit station-number panel at a
+shared height; numbers DUPLICATE across aisle twins, so `number` is not a
+key — `id` is.
+
+```json
+{
+  "version": "pillar-1",
+  "frame": "janahan-v1 datum (offline GateNet range scale; NOT the flight pad-lock datum — reconcile before flight use)",
+  "units": "m",
+  "z_panel": -7.16,
+  "landmarks": [
+    {
+      "id": "22b",
+      "number": "22",
+      "pos": [23.54, 4.29, -7.16],
+      "confidence": "ticked | observed | inferred",
+      "pos_sigma_m": 0.5,
+      "source": "free-text provenance (survey method, corpora, date)"
+    }
+  ],
+  "quarantined": [
+    { "number": "06|22", "pos": [19.7, 4.0, -7.16], "reason": "why it is not a landmark yet" }
+  ]
+}
+```
+
+Loader rules: `version == "pillar-1"`; `landmarks` non-empty; `id` unique;
+`number` = 1-2 digit string (duplicates allowed — twins); `pos` finite
+3-vector; same `confidence`/`pos_sigma_m` semantics as gates (ticked =
+tick-anchored survey, observed = pad-window truth-pose survey, inferred =
+grid extrapolation). `quarantined` entries are carried for bookkeeping and
+NEVER returned as landmarks.

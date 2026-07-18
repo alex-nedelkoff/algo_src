@@ -150,3 +150,63 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+@dataclass(frozen=True)
+class PillarLandmark:
+    id: str
+    number: str
+    pos: tuple[float, float, float]
+    confidence: str
+    pos_sigma_m: float
+    source: str
+
+
+def load_pillar_map(path) -> list[PillarLandmark]:
+    """Validated loader for the pillar-landmark map (contract: landmark
+    extension in docs/vq2-map-json-contract.md). Duplicate station numbers
+    are LEGAL (aisle twins) — `id` is the key. `quarantined` entries are
+    never returned. Fails closed on contract violations."""
+    data = json.loads(Path(path).read_text())
+    if data.get("version") != "pillar-1":
+        raise ValueError("pillar map version must be 'pillar-1'")
+    if data.get("units") != "m":
+        raise ValueError("pillar map units must be 'm'")
+    raw = data.get("landmarks")
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("landmarks must be a non-empty list")
+    out: list[PillarLandmark] = []
+    seen_ids: set[str] = set()
+    for i, entry in enumerate(raw):
+        where = f"landmarks[{i}]"
+        lid = entry.get("id")
+        if not isinstance(lid, str) or not lid or lid in seen_ids:
+            raise ValueError(f"{where}: id must be a unique non-empty string")
+        seen_ids.add(lid)
+        num = entry.get("number")
+        if (not isinstance(num, str) or not num.isdigit()
+                or not 1 <= len(num) <= 2):
+            raise ValueError(f"{where}: number must be a 1-2 digit string")
+        pos = _finite_vec3(entry.get("pos"), f"{where}.pos")
+        conf = entry.get("confidence")
+        if conf not in DEFAULT_SIGMA:
+            raise ValueError(f"{where}: confidence must be one of "
+                             f"{sorted(DEFAULT_SIGMA)}")
+        sigma = entry.get("pos_sigma_m", DEFAULT_SIGMA[conf])
+        if not (isinstance(sigma, (int, float)) and math.isfinite(sigma)
+                and sigma >= 0):
+            raise ValueError(f"{where}: pos_sigma_m must be finite >= 0")
+        out.append(PillarLandmark(
+            id=lid, number=num, pos=tuple(float(v) for v in pos),
+            confidence=conf, pos_sigma_m=float(sigma),
+            source=str(entry.get("source", ""))))
+    return out
+
+
+def pillar_map_by_number(landmarks) -> dict:
+    """{number: [(x, y, z), ...]} — the twins-aware shape the smoother's
+    pillar factors consume (min-mixture over same-number candidates)."""
+    by_num: dict = {}
+    for lm in landmarks:
+        by_num.setdefault(lm.number, []).append(lm.pos)
+    return by_num
