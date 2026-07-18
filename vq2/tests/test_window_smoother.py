@@ -136,6 +136,95 @@ def test_corridor_prior_bounds_lateral():
     assert float(np.abs(res.x[:, 1]).max()) < 0.5
 
 
+def _run_sliding(t, truth, odom, ks, L, window_s):
+    from vq2.window_smoother import SlidingSmoother
+    sl = SlidingSmoother(t[0], truth[0], window_s=window_s,
+                         resolve_every=0.2)
+    for i, f in enumerate(odom):
+        sl.push_odom(t[i + 1], f.dp_local, f.dyaw,
+                     f.sigma_p, f.sigma_yaw)
+        if (i + 1) in ks:
+            sl.push_pillar(t[i + 1],
+                           pillar_obs_from_truth(truth, i + 1, L), (L,))
+    sl._solve(t[-1])
+    ts, xs = sl.trajectory()
+    rows = np.round((ts - t[0]) / 0.1).astype(int)   # time-align to truth
+    return np.linalg.norm(xs[:, :2] - truth[rows, :2], axis=1)
+
+
+def test_sliding_machinery_matches_batch():
+    """With an infinite window the incremental path must reproduce the
+    batch solution — proves pushes/prior-carry/indexing add no error.
+    (A SHORT window is legitimately worse: drift older than the window is
+    hardened by marginalization — window-length physics, not machinery;
+    the real sizing decision is made on corpus replays.)"""
+    t, truth = make_truth(n=40)
+    odom = drifted_odom(truth, yaw_rate_err=2.0 * DEG)
+    L = (8.0, 6.0, -7.0)
+    ks = set(range(4, 40, 3))
+    x_dr = integrate(truth[0], odom, len(truth))
+    pil = [PillarFactor(k=k, ray_level=pillar_obs_from_truth(truth, k, L),
+                        cands=(L,)) for k in sorted(ks)]
+    batch = solve(t, x_dr, odom, [], pil, [])
+    e_batch = np.linalg.norm(batch.x[:, :2] - truth[:, :2], axis=1)
+    e_inf = _run_sliding(t, truth, odom, ks, L, window_s=999.0)
+    assert abs(float(np.median(e_inf)) - float(np.median(e_batch))) < 0.05
+    e_short = _run_sliding(t, truth, odom, ks, L, window_s=2.0)
+    assert float(np.median(e_short)) < 0.8   # documented short-window cost
+
+
+def test_sliding_late_anchor_retro_corrects():
+    """An anchor arriving 0.6 s after capture must correct the state that
+    SAW it (capture-time folding) and improve the head."""
+    from vq2.window_smoother import SlidingSmoother
+    t, truth = make_truth(n=30)
+    odom = drifted_odom(truth, yaw_rate_err=0.0)
+    for f in odom:
+        f.dp_local = f.dp_local * 0.85    # short odometry
+    sl = SlidingSmoother(t[0], truth[0], window_s=3.0, resolve_every=0.2)
+    for i, f in enumerate(odom):
+        sl.push_odom(t[i + 1], f.dp_local, f.dyaw, 0.15, 0.03)
+        if i + 1 == 20:                    # anchor captured at k=14,
+            sl.push_anchor(t[14], truth[14, :3], sigma=0.1)   # arrives late
+    _, head = sl.pose()
+    dr_head_err = abs(0.85 * truth[-1, 0] - truth[-1, 0])
+    assert abs(head[0] - truth[-1, 0]) < dr_head_err
+
+
+def test_sliding_window_bounded():
+    from vq2.window_smoother import SlidingSmoother
+    t, truth = make_truth(n=200)
+    odom = drifted_odom(truth)
+    sl = SlidingSmoother(t[0], truth[0], window_s=2.0)
+    for i, f in enumerate(odom):
+        sl.push_odom(t[i + 1], f.dp_local, f.dyaw)
+    assert len(sl.t) <= int(2.0 / 0.1) + 2
+    assert len(sl.odom) <= len(sl.t)
+
+
+def test_solve_time_budget():
+    """A representative window (30 states, mixed factors) must solve well
+    under the flight budget. Generous bound for CI noise; prints measured."""
+    import time
+    from vq2.window_smoother import SlidingSmoother
+    t, truth = make_truth(n=30)
+    odom = drifted_odom(truth)
+    L = (8.0, 6.0, -7.0)
+    sl = SlidingSmoother(t[0], truth[0], window_s=3.0,
+                         resolve_every=999.0)   # manual solve
+    for i, f in enumerate(odom):
+        sl.push_odom(t[i + 1], f.dp_local, f.dyaw)
+        if (i + 1) % 3 == 0:
+            sl.push_pillar(t[i + 1],
+                           pillar_obs_from_truth(truth, i + 1, L), (L,))
+            sl.push_corridor(t[i + 1], np.zeros(2), np.array([10.0, 0.0]))
+    t0 = time.perf_counter()
+    sl._solve(t[-1])
+    ms = (time.perf_counter() - t0) * 1000.0
+    print(f'solve: {ms:.1f} ms for {len(sl.t)} states')
+    assert ms < 100.0
+
+
 def test_health_triad_populated():
     t, truth = make_truth()
     odom = drifted_odom(truth)

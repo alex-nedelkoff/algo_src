@@ -147,10 +147,9 @@ def solve(t: np.ndarray, x0: np.ndarray, odom: list, unaries: list,
         def add(idx, J, r, w):
             nonlocal cost
             cost += w * float(r @ r)
-            for a, ia in enumerate(idx):
-                g[ia] += w * float(J[:, a] @ r)
-                for b, ib in enumerate(idx):
-                    H[ia, ib] += w * float(J[:, a] @ J[:, b])
+            idx = np.asarray(idx)
+            g[idx] += w * (J.T @ r)
+            H[np.ix_(idx, idx)] += w * (J.T @ J)
 
         # prior on state 0 (window anchor)
         r0 = x[0] - x0[0]
@@ -226,10 +225,18 @@ def solve(t: np.ndarray, x0: np.ndarray, odom: list, unaries: list,
             add(range(4 * f.k, 4 * f.k + 4), J, r, w)
 
         H[np.diag_indices_from(H)] += damping
+        # scipy Cholesky, NOT np.linalg.solve: this box's LAPACK gesv path
+        # is pathological (measured 72 ms vs 0.32 ms on a 124x124 system);
+        # H is SPD by construction (damped normal equations)
         try:
-            dx = np.linalg.solve(H, -g)
-        except np.linalg.LinAlgError:
-            break
+            import scipy.linalg as _sla
+            dx = _sla.cho_solve(_sla.cho_factor(H), -g)
+        except Exception:
+            H[np.diag_indices_from(H)] += 1e-2
+            try:
+                dx = np.linalg.solve(H, -g)
+            except np.linalg.LinAlgError:
+                break
         x = x + dx.reshape(N, 4)
         x[:, 3] = np.vectorize(_wrap)(x[:, 3])
         if abs(last_cost - cost) < 1e-6 * max(1.0, cost):
@@ -246,3 +253,135 @@ def solve(t: np.ndarray, x0: np.ndarray, odom: list, unaries: list,
         anchor_resid_med=float(np.median(anchor_res)) if anchor_res else 0.0,
         n_factors={'odom': len(odom), 'unary': len(unaries),
                    'pillar': len(pillars), 'corridor': len(corridors)})
+
+
+class SlidingSmoother:
+    """Online fixed-lag wrapper (T6c emit pattern): the HEAD pose is
+    available immediately at odometry rate (dead-reckoned from the last
+    solve); the window behind it is re-solved when absolute factors arrive
+    (or on a cadence), refining the recent past retroactively. The oldest
+    kept state carries a prior from the previous solution (naive
+    marginalization).
+
+    Measurements insert at CAPTURE time anywhere inside the window — a
+    0.5-1 s stale anchor lands on the state that saw it, not the present.
+    Callers encode measurement quality in per-push sigmas (information-
+    driven regimes: flow-inlier-scaled odometry sigma, controller-intent
+    corridor on/off).
+    """
+
+    def __init__(self, t0: float, x0, window_s: float = 3.0,
+                 dt: float = 0.1, resolve_every: float = 0.3,
+                 prior_sigma: float = 0.5):
+        self.dt = dt
+        self.window_s = window_s
+        self.resolve_every = resolve_every
+        self.prior_sigma = prior_sigma
+        self.t = [float(t0)]
+        self.x = [np.asarray(x0, float).copy()]
+        self.odom: list = []          # OdomFactor with ABSOLUTE indices
+        self.unaries: list = []
+        self.pillars: list = []
+        self.corridors: list = []
+        self._base = 0                # absolute index of self.t[0]
+        self._last_solve_t = float(t0)
+        self._dirty = False
+        self.last_result: SmootherResult | None = None
+
+    # ---------------------------------------------------------- pushes --
+    def _k_at(self, t: float) -> int | None:
+        """Absolute state index nearest capture time t, if in window."""
+        if t < self.t[0] - 0.5 * self.dt:
+            return None               # older than the window: dropped
+        i = int(np.clip(np.searchsorted(self.t, t), 0, len(self.t) - 1))
+        return self._base + i
+
+    def push_odom(self, t: float, dp_local, dyaw: float,
+                  sigma_p: float = 0.2, sigma_yaw: float = 0.03) -> None:
+        """Advance the head to time t with a local-frame delta. Emits a
+        dead-reckoned head state immediately."""
+        xi = self.x[-1]
+        cy, sy = math.cos(xi[3]), math.sin(xi[3])
+        dl = np.asarray(dp_local, float)
+        xj = np.array([xi[0] + cy * dl[0] - sy * dl[1],
+                       xi[1] + sy * dl[0] + cy * dl[1],
+                       xi[2] + dl[2], _wrap(xi[3] + dyaw)])
+        i_abs = self._base + len(self.t) - 1
+        self.t.append(float(t))
+        self.x.append(xj)
+        self.odom.append(OdomFactor(i_abs, i_abs + 1, dl, float(dyaw),
+                                    sigma_p, sigma_yaw))
+        self._slide()
+        if t - self._last_solve_t >= self.resolve_every and self._dirty:
+            self._solve(t)
+
+    def push_anchor(self, t_capture: float, p, sigma: float = 1.0,
+                    xy_only: bool = True) -> None:
+        k = self._k_at(t_capture)
+        if k is None:
+            return
+        self.unaries.append(PosUnary(k, np.asarray(p, float), sigma,
+                                     xy_only))
+        self._dirty = True
+
+    def push_pillar(self, t_capture: float, ray_level, cands,
+                    sigma: float = 1.0) -> None:
+        k = self._k_at(t_capture)
+        if k is None:
+            return
+        self.pillars.append(PillarFactor(k, np.asarray(ray_level, float),
+                                         tuple(cands), sigma))
+        self._dirty = True
+
+    def push_corridor(self, t_capture: float, a, b,
+                      sigma: float = 1.5) -> None:
+        k = self._k_at(t_capture)
+        if k is None:
+            return
+        self.corridors.append(LineCorridor(k, np.asarray(a, float),
+                                           np.asarray(b, float), sigma))
+        self._dirty = True
+
+    # ----------------------------------------------------------- state --
+    def pose(self):
+        """Head pose (dead-reckoned since the last solve)."""
+        return self.t[-1], self.x[-1].copy()
+
+    def trajectory(self):
+        return np.asarray(self.t), np.stack(self.x)
+
+    # -------------------------------------------------------- internal --
+    def _slide(self) -> None:
+        cut = self.t[-1] - self.window_s
+        n_drop = 0
+        while len(self.t) > 2 and self.t[n_drop] < cut:
+            n_drop += 1
+        if n_drop == 0:
+            return
+        self._base += n_drop
+        self.t = self.t[n_drop:]
+        self.x = self.x[n_drop:]
+        b = self._base
+        self.odom = [f for f in self.odom if f.i >= b]
+        self.unaries = [f for f in self.unaries if f.k >= b]
+        self.pillars = [f for f in self.pillars if f.k >= b]
+        self.corridors = [f for f in self.corridors if f.k >= b]
+
+    def _solve(self, now: float) -> None:
+        b = self._base
+        t_arr = np.asarray(self.t)
+        x0 = np.stack(self.x)
+        odom = [OdomFactor(f.i - b, f.j - b, f.dp_local, f.dyaw,
+                           f.sigma_p, f.sigma_yaw) for f in self.odom]
+        una = [PosUnary(f.k - b, f.p, f.sigma, f.xy_only)
+               for f in self.unaries]
+        pil = [PillarFactor(f.k - b, f.ray_level, f.cands, f.sigma)
+               for f in self.pillars]
+        cor = [LineCorridor(f.k - b, f.a, f.b, f.sigma)
+               for f in self.corridors]
+        res = solve(t_arr, x0, odom, una, pil, cor, iters=4,
+                    prior_sigma=self.prior_sigma)
+        self.x = [res.x[i].copy() for i in range(len(self.t))]
+        self.last_result = res
+        self._last_solve_t = now
+        self._dirty = False
