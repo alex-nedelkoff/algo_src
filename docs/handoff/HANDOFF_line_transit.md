@@ -1,29 +1,37 @@
-# HANDOFF — LINE_TRANSIT gate-2 campaign (2026-07-19 evening)
+# HANDOFF — LINE_TRANSIT gate-2 campaign (2026-07-19, GATE 2 TICKED)
 
-**Branch `vq2-estimation`, commit `1cf9408`** (vq2wp.py; deployed copy at
-`C:\Users\Administrator\vq2wp.py` = repo file with alexj→Administrator
-path rewrite — redeploy after any repo edit). 13 flights this session
-(fly_test15..27.bat in `C:\Users\Administrator`, corpora vq2_test15..27).
-G1 recipe INTACT: 12/13 ticks (one w=126 punch lottery miss, test21).
+**Branch `vq2-estimation`, commits `1cf9408` + `128bd52`** (vq2wp.py;
+deployed copy at `C:\Users\Administrator\vq2wp.py` = repo file with
+alexj→Administrator path rewrite — redeploy after any repo edit).
+33 flights this session (fly_test15..47.bat, corpora vq2_test15..47).
+G1 recipe: 17/19 post-tick-capable flights ticked G1.
 
-## Where it stands
+## ✅ GATE 2 TICKED — fly_test46, corpus vq2_test46
 
-**The transit problem is structurally solved; the tick is not yet.**
-Post-G1, line-guided flight now reliably delivers a centered G2 terminal
-shot: test23 fired a real punch AT the aperture (w=100, b=[0.08,−0.09])
-and near-missed; tests 24–27 isolated the remaining wall:
+**TICKS=2, LAND: mission complete.** G1 @5.9 s, G2 @16.2 s race clock.
+The G2 crossing was flown THROUGH under continuous pursuit steering
+(hole converged 0.19→−0.04 rad while w grew 40→173; no punch fired, no
+impact). vq2_test46 is the first-ever 2-tick corpus — bank it for the
+estimator work (its transit has tick-truth at BOTH ends).
 
-**THE LAST WALL = the known ~0.3 m/s rightward push in the final 3–4 m**
-(same wall as the 17-run fgpursuit campaign, now with clean telemetry on
-the G2 leg): test27 released vision at w=60 → pursuit converged the hole
-0.67→−0.03 rad over 3 s → then the bearing slid negative and w SHRANK
-64→42 = drone slipping right past the aperture before punch width.
-Punch-cone knobs don't fix it (0.10 never fires / 0.18 fires unconverged
-into the frame / PN correctly refuses a non-collision course). Next
-session: closed-loop push compensation in the ATT pursuit — e.g. a vy/roll
-feedforward learned from the LOS-rate residual during the tracked
-approach (the PN machinery already computes `_att_bd`), or the punch
-steering gain on b0 raised with the PN gate as safety.
+**Repeatability: 1/2** on the final config (test47 missed G2). That is
+the next campaign — the architecture is right, the variance is in the
+sweep/settle timing.
+
+## THE decisive discovery (test45 frames — look at them)
+
+**The fastgate hole detector reads LETTERFORMS on the orange sponsor
+banner as apertures.** test45 punched a dead-center "w=113 hole" that
+was the negative space of a letter (see vq2_test45 frames ~740-802: the
+camera fills with giant white glyphs, then solid orange). The banner
+stands adjacent to G2, so map-bearing and vertical checks CANNOT
+separate them. Half the campaign's "inexplicable slides" were terminal
+locks onto typography.
+
+**Fix = LINE-MATCH:** the cyan racing line passes through the SCORING
+aperture only. A terminal candidate must sit where the line's far head
+points (`|line_head_off * LT_HEAD2RAD − b0| < LT_LINE_MATCH`, defaults
+1.75/0.28). This gate turned the very next flight into the tick.
 
 ## The LINE_TRANSIT machinery (all env-gated, in vq2wp.py)
 
@@ -76,18 +84,46 @@ PN_PUNCH 1.
 - The judge tick lags the physical crossing ~0.75 s (measured on the
   estimator side, test10) — G2 tick timing analysis must account.
 
+## The terminal stack that ticked (tests 28–46, all measured; env in
+fly_test46.bat)
+
+1. **Ownership-gated push integral** — the `_att_ri` trim adapter used
+   to integrate the bearing of ANY fresh hole; during line-follow it ate
+   the +0.6–0.8 rad bearings of holes the line passes by, wound to
+   +0.18 FULL SCALE in 1.5 s, and dragged every hover sideways (test37/38
+   ib/ri traces). Now integrates only while the pursuit owns control,
+   and resets per leg (the "global trim" assumption is wrong across
+   legs). NOTE: a duplicate integral briefly existed keyed on the same
+   ATT_KI env — removed; `_att_ri` is the single push integral.
+2. **Terminal latch + 2-detection debounce** (LT_TERM_S 6 s): once a
+   candidate passes the strict release TWICE within 1.2 s, the pursuit
+   owns terminal — no line-steal, no threshold flapping. Single noisy
+   blips must not release: test42 beelined off the line's safe corridor
+   mid-transit and hit scenery.
+3. **Terminal brake at the release width** (LT_BRAKE_W 58, just under
+   LT_VIS_W): line pitch → 0 when the candidate appears; braking earlier
+   (45) stalls OUTSIDE release and the drone hovers uselessly (test39).
+4. **Map-consistency** (LT_MAP_B 0.5): candidate bearing must agree with
+   the DR+gyro bearing to the gate's map position.
+5. **LINE-MATCH** (see above) — the one that ticked it.
+6. **Below-height approach preserved**: asymmetric punch vertical cone
+   (FGP_PUNCH_BVUP 0.32 above), per-leg punch width (FGP_PUNCH_W2 85)
+   and pitch (ATT_PUNCH_PITCH2 −0.12). G1 keeps FGP_PUNCH_W 95 /
+   ATT_PUNCH_PITCH −0.18 — softening the shared knobs broke G1 twice
+   (test34 double-punch, test44 velocity runaway).
+7. PN collision-course gate on the LATERAL axis (PN_LOSRATE 0.12);
+   FGP_PUNCH_KD 0.30 D-term in punch steering.
+
 ## Next session, in order
 
-1. **Push compensation in the ATT pursuit terminal** (the one remaining
-   wall): feedforward from LOS-rate residual, or bearing-P gain up with
-   PN as the safety. Evidence base: test23 (punch near-miss),
-   test24/27 (rightward slide 64→42 px), test25 (unconverged punch → imp
-   6.1). Also consider velocity-mode punch for G2 (PUNCH_VYBIAS exists
-   and is already −0.3 for G1).
-2. If 2–3 more attempts don't tick: frame-dump review of a terminal
-   approach (vq2_test23/27 frames around the release) to measure the
-   actual lateral miss distance and direction.
-3. After the G2 tick: generalize — the same line machinery should carry
-   legs 3+ (LT_COURSE_YAW becomes per-leg; the map has the headings).
-4. Estimator track (separate handoff HANDOFF_estimator_pillars.md):
-   test12 outlier, Phase D productionization.
+1. **Repeatability campaign**: fly the test46 config 5×. Variance lives
+   in the sweep/settle timing (test47 missed). Candidate lever: extend
+   LT_TERM_S, or a second latch window after a missed first pass (the
+   drone survives misses now — timeouts, not crashes).
+2. Then generalize to legs 3+ (LT_COURSE_YAW per-leg from the map;
+   TICKS=3+; the line machinery is leg-agnostic).
+3. Estimator track (HANDOFF_estimator_pillars.md): test12 outlier,
+   Phase D — and vq2_test46 is the first corpus with tick-truth at BOTH
+   transit ends: re-run the smoother validation on it.
+4. Housekeeping: 33 corpora now on disk (vq2_test15..47, ~several GB);
+   prune the failed-run frame dirs if disk pressure returns.
