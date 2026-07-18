@@ -93,8 +93,15 @@ class Corpus:
 
     @property
     def flight_segment(self) -> Optional[Segment]:
-        """The last segment is the post-reset run in every corpus so far."""
-        return self.segments[-1] if self.segments else None
+        """The segment with the most IMU samples. ("Last segment" held until
+        fg62-style runs that END in a crash-triggered race reset — the reset
+        splits a short post-crash stub onto the tail (measured: vq2_test8
+        segments[-1] = 200 samples / 3.9 s while the flight is the long
+        segment before it; the same pathology made test1/test3 look
+        unusable). The flight is always the longest IMU stretch."""
+        if not self.segments:
+            return None
+        return max(self.segments, key=lambda s: len(s.imu))
 
 
 def load(root: str) -> Corpus:
