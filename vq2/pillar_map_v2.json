@@ -1,0 +1,57 @@
+{
+  "version": "pillar-1",
+  "frame": "janahan-v1 datum (offline GateNet range scale; NOT the flight pad-lock datum - reconcile before flight use)",
+  "units": "m",
+  "z_panel": -7.16,
+  "landmarks": [
+    {
+      "id": "13a",
+      "number": "13",
+      "pos": [13.5, -9.44, -7.16],
+      "confidence": "observed",
+      "pos_sigma_m": 0.3,
+      "source": "pad-window survey (truth pose), tests 5/6/7 agree 0.00 m; number eye-verified 2026-07-17"
+    },
+    {
+      "id": "22a",
+      "number": "22",
+      "pos": [13.5, 5.18, -7.16],
+      "confidence": "observed",
+      "pos_sigma_m": 0.3,
+      "source": "pad-window survey (truth pose), test4; number eye-verified 2026-07-17"
+    },
+    {
+      "id": "22b",
+      "number": "22",
+      "pos": [23.13, 4.0, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 0.5,
+      "source": "9-corpus tick survey 2026-07-18: tests 6/11/12/14, spread 0.54 m (v1 pos refined from 2-corpus 23.54,4.29)"
+    },
+    {
+      "id": "22c",
+      "number": "22",
+      "pos": [20.24, 3.35, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 1.3,
+      "source": "9-corpus tick survey 2026-07-18: tests 4/10/13, spread 1.28 m; identity resolved from v1 quarantine by 50/50 close-read '22' votes (zero '06') - third aisle twin ~3 m from 22b"
+    },
+    {
+      "id": "19a",
+      "number": "19",
+      "pos": [22.09, -10.44, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 0.5,
+      "source": "9-corpus tick survey 2026-07-18: tests 4/6/11/12/14, spread 0.55 m"
+    },
+    {
+      "id": "23a",
+      "number": "23",
+      "pos": [18.98, 12.3, -7.16],
+      "confidence": "ticked",
+      "pos_sigma_m": 0.8,
+      "source": "tick surveys: 8-corpus cluster centers (18.91,11.74) spread 1.40 suggests unmapped 23-twins mixing; keeping the day-3 2-corpus position with widened sigma until twins are separated"
+    }
+  ],
+  "quarantined": []
+}
