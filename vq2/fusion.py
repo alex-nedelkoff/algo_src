@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from . import corpus as corpus_mod
-from .camera import M_BODY_CAM, R_world_body
+from .camera import CX, CY, FX, M_BODY_CAM, R_world_body
 from .eskf import PosVelKF, accel_level
 from .estimators import accel_implied_attitude, is_at_rest
 from .flow_vel import FlowVelocity, Z_FLOOR
@@ -110,6 +110,33 @@ class FusionConfig:
     # gyro-chain prior; the ONLY absolute in-flight tilt reference we have.
     att_vp_gain: float = 0.0
     att_vp_min_quality: float = 0.5
+    # pillar-landmark anchoring (station-number pillars, panel tops at a
+    # shared height). Obs stream = precomputed jsonl (offline rig); each
+    # obs associated to a mapped pillar by bearing agreement becomes:
+    #   * a POSITION fix: p = L - s*d_w with s from the shared panel
+    #     height (z-neutral by construction -> respects obs-Z quarantine)
+    #   * a YAW trim from the azimuth residual — the only absolute yaw
+    #     source in the stack (gates/VP observe roll/pitch, never yaw)
+    pillar_obs_path: str = ""
+    pillar_map: tuple = ()        # ((number, x, y, z_panel), ...)
+    pillar_sigma_base: float = 0.5    # m at close range
+    pillar_sigma_per_m: float = 0.05  # + per metre of slant range
+    pillar_assoc_deg: float = 8.0     # bearing gate for association
+    pillar_yaw_gain: float = 0.0      # per-obs pull on att.yaw
+    pillar_yaw_max: float = 0.45      # rad: max accepted yaw residual —
+    #   wide on purpose: banked yaw error reaches tens of degrees and a
+    #   tight gate locks the error in (identity-certain obs earn the trust)
+    pillar_min_h: int = 6             # px: tiny panels have mushy centers
+    # phase gate: absolute aids (VP attitude + pillar fixes) activate at
+    # this boot time (0 = always on). Measured (2026-07-18): the approach
+    # leg is BEST with plain gates+flow (aids add bias there); the transit
+    # leg is where base DR collapses and the aids are the only rescue.
+    # In flight this is the G1 tick event (NOFIX-philosophy phase switch).
+    aids_on_t: float = 0.0
+    pillar_bearing_assoc: bool = False  # bearing-only assoc for un-read obs
+    #   (POISON with a sparse map — measured 8-9 m tick bias; keep off
+    #    until the pillar map is dense enough that the nearest candidate
+    #    is almost always the true one)
 
 
 @dataclass
@@ -122,6 +149,9 @@ class FusionResult:
     flow_rejects: int = 0
     vp_fixes: int = 0
     vp_misses: int = 0
+    pillar_fixes: int = 0
+    pillar_rejects: int = 0
+    pillar_events: list = field(default_factory=list)
     # per-flight VP bias measured on rest frames vs accel truth (rad);
     # None = calibration failed and VP correction was disabled (fail closed)
     vp_bias: tuple | None = None
@@ -323,6 +353,20 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
         e for e in _detection_events(c, off) if t_lo <= e[0] <= t_hi
     ] if off is not None else []
 
+    # pillar-panel obs stream (precomputed jsonl: sim_ns, x, y, w, h)
+    pillars = []
+    if cfg.pillar_obs_path and cfg.pillar_map and off is not None:
+        import json as _json
+        with open(cfg.pillar_obs_path) as _f:
+            for _line in _f:
+                d = _json.loads(_line)
+                t_p = d["sim_ns"] / 1e9 + off
+                if t_lo <= t_p <= t_hi and d["h"] >= cfg.pillar_min_h:
+                    pillars.append((t_p, d["x"] + d["w"] / 2.0,
+                                    d["y"] + d["h"] / 2.0,
+                                    d.get("num") or None))
+        pillars.sort(key=lambda e: e[0])
+
     # seed at the end of the first rest window -- unless that window runs to
     # the end of the recording (corpus is at-rest throughout, e.g. vq2_rec),
     # in which case seeding at its end leaves nothing left to integrate.
@@ -333,8 +377,9 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
     kf = PosVelKF()
     kf.reset_at_rest()
     flow = FlowVelocity()
-    fi = di = 0
+    fi = di = pi = 0
     last_us = s0.t_us
+    _assoc_cos = math.cos(math.radians(cfg.pillar_assoc_deg))
 
     # per-flight VP bias calibration on rest frames (accel attitude = truth
     # at rest on the noiseless sim IMU). The VP chain carries a systematic
@@ -389,7 +434,7 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
             gray = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
             if gray is None:
                 continue
-            if vp_gain > 0.0:
+            if vp_gain > 0.0 and t_f >= cfg.aids_on_t:
                 vp = vp_roll_pitch(gray, att.roll, att.pitch)
                 if vp is not None and vp.quality >= cfg.att_vp_min_quality:
                     att.roll += vp_gain * (vp.roll - vp_bias_r - att.roll)
@@ -408,6 +453,120 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
             v_w, sigma, ninl, ntr = out
             kf.update_velocity(v_w, sigma)
             res.flow_updates += 1
+
+        # pillar-panel events -> position fix + yaw trim
+        while pi < len(pillars) and pillars[pi][0] <= t_boot:
+            t_p, u, v, obs_num = pillars[pi]
+            pi += 1
+            if t_p < cfg.aids_on_t:
+                continue
+            r_cam = np.array([(u - CX) / FX, (v - CY) / FX, 1.0])
+            d_w = R_world_body(roll, pitch, yaw) @ (M_BODY_CAM @ r_cam)
+            d_w = d_w / np.linalg.norm(d_w)
+            if d_w[2] > -0.1:      # panel tops are above the camera
+                res.pillar_rejects += 1
+                continue
+            # associate: identity-first (obs carries an OCR-read number ->
+            # candidates = map entries with that number; station numbers
+            # DUPLICATE across aisle pairs, so bearing still disambiguates).
+            # Un-read obs fall back to bearing-only association, which is
+            # POISON against a sparse map (measured 8-9 m tick bias) —
+            # enable only when the map is dense.
+            cands = [e for e in cfg.pillar_map if e[0] == obs_num] \
+                if obs_num else (list(cfg.pillar_map)
+                                 if cfg.pillar_bearing_assoc else [])
+            # identity-certain + unique candidate: accept outright — the
+            # bearing gate's job is only to arbitrate DUPLICATE station
+            # numbers (and bearing-only fallback). Gating unique-identity
+            # fixes on a bearing computed from the broken estimate locks
+            # the error in (the est can never earn its fixes back).
+            best = None
+            # range-consistency floor scales with the filter's own position
+            # uncertainty: when P admits metres of doubt, distances computed
+            # from kf.p prove nothing — a fixed floor self-rejects exactly
+            # the fixes that would rescue a diverged filter (measured:
+            # 0 post-tick fixes with a hard 0.7 floor)
+            _punc = math.sqrt(max(0.0, kf.P[0, 0] + kf.P[1, 1]))
+            _rmin = 0.7 if _punc < 1.5 else (0.55 if _punc < 4.0 else 0.4)
+            if obs_num and len(cands) == 1:
+                # unique number — but the MAP may be missing this number's
+                # twin, so still require range consistency vs est distance
+                num, lx, ly, lz = cands[0]
+                to_l = np.array([lx, ly, lz]) - kf.p
+                dist = float(np.linalg.norm(to_l))
+                if dist >= 1.5 and d_w[2] < -0.1:
+                    s_i = (lz - kf.p[2]) / d_w[2]
+                    if s_i > 2.0 and min(s_i / dist, dist / s_i) >= _rmin:
+                        best = (1.0, num, np.array([lx, ly, lz]))
+            elif obs_num and len(cands) > 1:
+                # duplicate station numbers (aisle twins). Twins lie nearly
+                # collinear with the flight direction, so BEARINGS to both
+                # are almost identical — arbitrate by RANGE instead: the
+                # ray-range s_i (elevation geometry, est-independent per
+                # candidate z) vs distance-to-candidate degrades gracefully
+                # with est error (~5 m) against twin separation (~10 m).
+                # Wrong-twin fixes pinned the est at the pad (measured).
+                scored = []
+                for (num, lx, ly, lz) in cands:
+                    if d_w[2] > -0.1:
+                        continue
+                    s_i = (lz - kf.p[2]) / d_w[2]
+                    dist = float(np.linalg.norm(
+                        np.array([lx, ly, lz]) - kf.p))
+                    if s_i <= 2.0 or dist < 1.5:
+                        continue
+                    ratio = min(s_i / dist, dist / s_i)
+                    scored.append((ratio, num, np.array([lx, ly, lz])))
+                scored.sort(reverse=True, key=lambda e: e[0])
+                if scored and scored[0][0] >= _rmin and (
+                        len(scored) == 1
+                        or scored[0][0] - scored[1][0] >= 0.05):
+                    best = scored[0]
+            else:
+                n_in_gate = 0
+                for (num, lx, ly, lz) in cands:
+                    to_l = np.array([lx, ly, lz]) - kf.p
+                    dist = np.linalg.norm(to_l)
+                    if dist < 1.5:
+                        continue
+                    cosang = float(to_l @ d_w) / dist
+                    if cosang >= _assoc_cos:
+                        n_in_gate += 1
+                        if best is None or cosang > best[0]:
+                            best = (cosang, num, np.array([lx, ly, lz]))
+                if n_in_gate > 1:   # ambiguous duplicate
+                    best = None
+            if best is None:
+                res.pillar_rejects += 1
+                continue
+            _, num, L = best
+            # YAW FIRST: an identity-certain bearing to a known landmark is
+            # the only absolute yaw source in the stack, and a yaw error d
+            # biases the position implication by s*d (measured: ~8 m at the
+            # G1 tick from ~30 deg of banked yaw). Correct yaw, THEN
+            # recompute the ray, then position-fix with the fixed frame.
+            if cfg.pillar_yaw_gain > 0.0:
+                az_pred = math.atan2(L[1] - kf.p[1], L[0] - kf.p[0])
+                az_meas = math.atan2(d_w[1], d_w[0])
+                dyaw = (az_pred - az_meas + math.pi) % (2 * math.pi) - math.pi
+                if abs(dyaw) < cfg.pillar_yaw_max:
+                    att.yaw += cfg.pillar_yaw_gain * dyaw
+                    yaw = att.yaw
+                    d_w = R_world_body(roll, pitch, yaw) @ (M_BODY_CAM @ r_cam)
+                    d_w = d_w / np.linalg.norm(d_w)
+            s = (L[2] - kf.p[2]) / d_w[2]
+            if not (2.0 < s < 40.0):
+                res.pillar_rejects += 1
+                continue
+            p_imp = L - s * d_w        # z-neutral: p_imp[2] == kf.p[2]
+            sigma = cfg.pillar_sigma_base + cfg.pillar_sigma_per_m * s
+            ok = kf.update_position(p_imp, s, r_scale=sigma / (
+                kf.sigma_meas_base + kf.sigma_meas_per_m * s))
+            res.pillar_fixes += 1 if ok else 0
+            res.pillar_events.append({
+                "t_boot_s": t_p, "num": num, "rng": float(s),
+                "ok": bool(ok),
+                "miss_xy": float(np.linalg.norm((p_imp - kf.p)[:2]))})
 
         # detection events -> anchors (and optional position updates)
         while di < len(dets) and dets[di][0] <= t_boot:
