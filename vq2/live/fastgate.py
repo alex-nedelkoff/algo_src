@@ -5,11 +5,51 @@ not the PnP origin) + range from known hole width (1.5 m). Pure CPU/cv2.
 detect(img) -> list of (t_cam[x right, y down, z fwd], hole_w_px, score)
 Pinhole: fx=fy=320, cx=320, cy=180 (sim intrinsics INTR=[320,320,320,180]).
 """
+import math
 import numpy as np, cv2
 
 FX = FY = 320.0
 CX, CY = 320.0, 180.0
 HOLE_W_M = 1.5          # inner aperture width (course truth)
+
+_K = np.array([[FX, 0, CX], [0, FY, CY], [0, 0, 1.0]])
+_H2 = HOLE_W_M / 2
+_OBJ = np.array([[-_H2, -_H2, 0], [_H2, -_H2, 0],
+                 [_H2, _H2, 0], [-_H2, _H2, 0]], dtype=np.float64)
+
+
+def _quad_pose(cnt):
+    """GATE-RELATIVE POSE (07-19): fit a 4-corner quad to the hole
+    contour and solvePnP against the known 1.5 m square aperture.
+    Returns (obliquity_deg, lateral_m) or (None, None).
+    obliquity = |angle between camera LOS and the gate-plane normal|;
+    lateral = signed x of the camera in the GATE frame (m off-normal;
+    sign has a planar-PnP hemisphere ambiguity -- consumers use |.|).
+    Offline truth (scratchpad gaterel_test.py): test76 tick held
+    obl ~12-22 deg / |lat| <= 0.25; test90's oblique miss read
+    obl 17->32 deg and |lat| 0.36->0.9 GROWING for 3.5 s while raw
+    b0 sat 'converged' at +0.09 -- the bearing-servo blind spot."""
+    peri = cv2.arcLength(cnt, True)
+    quad = cv2.approxPolyDP(cnt, 0.03 * peri, True)
+    if len(quad) != 4 or not cv2.isContourConvex(quad):
+        return None, None
+    q = quad[:, 0, :].astype(np.float64)
+    srt = q[np.argsort(q[:, 1])]
+    top = srt[:2][np.argsort(srt[:2][:, 0])]
+    bot = srt[2:][np.argsort(srt[2:][:, 0])]
+    img_pts = np.array([top[0], top[1], bot[1], bot[0]])
+    try:
+        ok, rvec, tvec = cv2.solvePnP(_OBJ, img_pts, _K, None,
+                                      flags=cv2.SOLVEPNP_IPPE_SQUARE)
+    except cv2.error:
+        return None, None
+    if not ok:
+        return None, None
+    R, _ = cv2.Rodrigues(rvec)
+    nz = R @ np.array([0, 0, 1.0])
+    obl = abs(180.0 - abs(math.degrees(math.atan2(nz[0], nz[2]))))
+    pg = -R.T @ tvec.ravel()
+    return float(obl), float(pg[0])
 
 
 def detect(img, min_hole_px=8):
@@ -63,7 +103,8 @@ def detect(img, min_hole_px=8):
                 t_cam = np.array([(u - CX) / FX * z, (v - CY) / FY * z, z])
                 H, W = img.shape[:2]
                 clipped = fx_ <= 1 or fy_ <= 1 or fx_ + fw_ >= W - 2 or fy_ + fh_ >= H - 2
-                out.append((t_cam, float(hw_est), float(area), clipped))
+                out.append((t_cam, float(hw_est), float(area), clipped,
+                            None, None))
             continue
         hx, hy, hw, hh = cv2.boundingRect(cnts[best_hole[1]])
         # hole must be roughly square-ish and a sane fraction of the frame blob
@@ -81,7 +122,12 @@ def detect(img, min_hole_px=8):
         # range from the larger visible hole dimension (less clipped side)
         z = FX * HOLE_W_M / max(hw, hh)
         t_cam = np.array([(u - CX) / FX * z, (v - CY) / FY * z, z])
-        out.append((t_cam, float(hw), float(area), clipped))
+        # gate-relative pose for sizeable unclipped holes (sub-ms; the
+        # quad fit rides on the contour already in hand)
+        obl = lat = None
+        if not clipped and hw >= 25 and hh >= 25:
+            obl, lat = _quad_pose(cnts[best_hole[1]])
+        out.append((t_cam, float(hw), float(area), clipped, obl, lat))
     out.sort(key=lambda o: -o[1])                   # largest hole first
     return out
 

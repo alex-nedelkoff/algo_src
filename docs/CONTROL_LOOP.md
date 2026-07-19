@@ -118,3 +118,71 @@ bearings, and the loop turns them into rate commands.
   an env knob; the parked config is named in the handoff).
 - `docs/handoff/HANDOFF_line_transit.md` — the living campaign log:
   what is proven, what failed, and why.
+
+## Two control methods (how we decide WHERE to steer)
+
+The loop above is the actuator plumbing. On top of it the stack now
+has two distinct ways of turning what the camera sees into steering
+references. Both are live in the code; they answer different
+questions and are used together.
+
+### Method 1 — bearing servoing (IBVS): "point at the hole"
+
+The proven workhorse (every gate tick so far). Steer directly on the
+aperture's image bearings:
+
+    roll_bias  = Kp * b_lat + Kd * d(b_lat)/dt + trim
+    yaw_rate   = k * b_lat
+    thr_delta  = k * b_down
+    speed      = governor on range-rate (hole width -> range 290/w)
+
+Strengths: no state estimate anywhere, millisecond latency, robust to
+everything the estimator gets wrong. This is what pursues, settles,
+and punches.
+
+Blind spot (measured, not theoretical): **pointing at the hole is not
+the same as being on the gate's axis.** In corpus vq2_test90 the
+drone held b_lat = +0.09 "converged" for 3.5 s while physically
+sliding 0.9 m off the gate normal — the crossing came in 25 deg
+oblique and struck the frame. Bearing servoing cannot see that
+failure coming, by construction.
+
+### Method 2 — gate-relative pose (PBVS): "know where you are in the
+### gate's frame"
+
+`_quad_pose()` in `fastgate.py` (this branch): fit a 4-corner quad to
+the hole contour, `cv2.solvePnP(IPPE_SQUARE)` against the known
+1.5 m square aperture -> per detection:
+
+- **obliquity** (deg): angle between the line of sight and the gate
+  plane's normal — "how sideways would I cross right now";
+- **lateral** (m): the camera's offset from the gate's center axis —
+  a waypoint error in GATE coordinates, no global state needed.
+
+Each detection tuple is now `(t_cam, w_px, area, clipped, obl, lat)`;
+the flight loop EMAs the tracked candidate's values (`fg_obl_f`,
+`fg_lat_f`, signed `fg_lat_s`) under env `FG_POSE=1`. Cost: <1 ms on
+top of detect(). Caveat: planar PnP has a hemisphere sign ambiguity —
+resolved by temporal consistency; magnitudes are stable.
+
+Validation (offline truth in `vq2/tools/gaterel_offline.py`, run
+against recorded corpora): the ticked flight held obl 12-22 deg /
+|lat| <= 0.25 m through its terminal; the oblique miss read
+obl 17->32 deg and |lat| 0.36->0.9 m growing — cleanly separable, and
+visible seconds before impact. Flight-proven consumers (July 19
+flights 93-98): settle entry APPROVE/VETO on measured obliquity
+(binding when a fresh measurement exists), and an OFF-NORMAL ABORT
+(|lat| > 0.5 m or obl > 45 deg) that twice broke off doomed
+approaches the bearing rules could not see.
+
+### How they compose
+
+Bearing servoing FLIES (fast, estimator-free tracking of the hole);
+gate-relative pose JUDGES (is this approach geometrically sound?) and
+is beginning to STEER (a lateral term driving `fg_lat_s -> 0` in the
+settle — i.e. flying to a waypoint expressed in the gate's own frame,
+which is the practical answer to "can we just fly to a coordinate"
+when no trustworthy global position exists). Open item as of this
+commit: the lateral term does not yet overcome the known ~0.3 m/s
+gate-area push (starved when the hole clips out of frame near the
+gate) — the abort covers that gap in the meantime.
