@@ -1,6 +1,8 @@
 import numpy as np
+import cv2
 
-from vq2.pillars import GpuPillarReader, PillarRead, classify_top_reads
+from vq2.pillars import (GpuPillarReader, PillarRead, classify_top_reads,
+                         fit_station_text_pnp)
 
 
 def read(number, x, y, h=16):
@@ -46,4 +48,18 @@ def test_gpu_reader_rotates_boxes_back_and_keeps_unread_station_bearing():
     assert reads[0].t_capture == 3.5
     # x_orig = y_rot, y_orig = H - 1 - x_rot.
     assert (reads[0].x, reads[0].y, reads[0].w, reads[0].h) == (20.0, 79.0, 20.0, 10.0)
+    assert np.allclose(reads[0].quad_xy, [[20, 89], [20, 79], [40, 79], [40, 89]])
     assert reads[1].number is None
+
+
+def test_station_text_pnp_recovers_metric_camera_translation():
+    K = np.array([[226.0, 0.0, 320.0], [0.0, 226.0, 180.0], [0.0, 0.0, 1.0]])
+    rvec = np.array([0.10, -0.18, 0.04])
+    tvec = np.array([0.35, -0.12, 9.0])
+    obj = np.array([[-2.503 / 2, -.475 / 2, 0], [2.503 / 2, -.475 / 2, 0],
+                    [2.503 / 2, .475 / 2, 0], [-2.503 / 2, .475 / 2, 0]], float)
+    quad, _ = cv2.projectPoints(obj, rvec, tvec, K, None)
+    fit = fit_station_text_pnp(quad.reshape(4, 2), K)
+    assert fit is not None
+    assert np.allclose(fit.t_cam_text, tvec, atol=1e-5)
+    assert fit.reproj_rms_px < 1e-6

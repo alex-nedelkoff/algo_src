@@ -34,6 +34,7 @@ class PillarRead:
     number: str | None = None
     confidence: float = 1.0
     top: bool = False
+    quad_xy: np.ndarray | None = None  # detector quad, text reading order
 
     @property
     def center_u(self) -> float:
@@ -67,6 +68,71 @@ def classify_top_reads(
 
 _STATION_RE = re.compile(r"^station\s*([0-9]{1,2})$", re.IGNORECASE)
 
+# Measured station-text decal geometry from the VQ2 renderer's text-box GT.
+# This is the wide ``Station NN`` decal, not the smaller numeric placard.
+STATION_TEXT_WIDTH_M = 2.503
+STATION_TEXT_HEIGHT_M = 0.475
+
+
+@dataclass(frozen=True)
+class TextPnPFit:
+    """Camera-relative pose of the centre of a fitted station-text decal."""
+
+    rvec: np.ndarray             # text-plane -> camera Rodrigues vector
+    t_cam_text: np.ndarray       # text-panel centre in camera coordinates, m
+    reproj_rms_px: float
+
+
+def fit_station_text_pnp(
+    quad_xy,
+    camera_matrix,
+    dist_coeffs=None,
+    *,
+    width_m: float = STATION_TEXT_WIDTH_M,
+    height_m: float = STATION_TEXT_HEIGHT_M,
+) -> TextPnPFit | None:
+    """Fit a detected station-text quad to its known metric rectangle.
+
+    ``quad_xy`` must be in text-reading order (top-left, top-right,
+    bottom-right, bottom-left) after the clockwise image rotation used by the
+    GPU OCR reader has been mapped back to the original image.  Planar IPPE
+    returns the physically valid, lowest-reprojection solution.  The result is
+    deliberately camera-relative: converting it to a mapped pillar landmark
+    requires a surveyed text-panel offset, which the current map contract does
+    not yet carry.
+    """
+    import cv2
+
+    image = np.asarray(quad_xy, dtype=np.float64)
+    K = np.asarray(camera_matrix, dtype=np.float64)
+    if image.shape != (4, 2) or K.shape != (3, 3):
+        raise ValueError("quad_xy must be (4,2) and camera_matrix must be (3,3)")
+    if width_m <= 0.0 or height_m <= 0.0:
+        raise ValueError("text dimensions must be positive")
+    object_points = np.array([
+        [-width_m / 2.0, -height_m / 2.0, 0.0],
+        [ width_m / 2.0, -height_m / 2.0, 0.0],
+        [ width_m / 2.0,  height_m / 2.0, 0.0],
+        [-width_m / 2.0,  height_m / 2.0, 0.0],
+    ], dtype=np.float64)
+    ok, rvecs, tvecs, _ = cv2.solvePnPGeneric(
+        object_points, image, K, dist_coeffs, flags=cv2.SOLVEPNP_IPPE,
+    )
+    if not ok:
+        return None
+    candidates = []
+    for rvec, tvec in zip(rvecs, tvecs):
+        tvec = np.asarray(tvec, dtype=np.float64).reshape(3)
+        if tvec[2] <= 0.0:
+            continue
+        projected, _ = cv2.projectPoints(object_points, rvec, tvec, K, dist_coeffs)
+        rms = float(np.sqrt(np.mean(np.sum((projected.reshape(4, 2) - image) ** 2, axis=1))))
+        candidates.append((rms, np.asarray(rvec, dtype=np.float64).reshape(3), tvec))
+    if not candidates:
+        return None
+    rms, rvec, tvec = min(candidates, key=lambda row: row[0])
+    return TextPnPFit(rvec=rvec, t_cam_text=tvec, reproj_rms_px=rms)
+
 
 class GpuPillarReader:
     """GPU text detector/OCR adapter for the simulator's vertical station text.
@@ -97,15 +163,13 @@ class GpuPillarReader:
         self.low_text = float(low_text)
 
     @staticmethod
-    def _cw_box_to_original(box, original_height: int) -> tuple[float, float, float, float]:
-        """Map a clockwise-rotated EasyOCR quad into original x/y bounds."""
+    def _cw_quad_to_original(box, original_height: int) -> np.ndarray:
+        """Map a clockwise-rotated EasyOCR quad into original x/y points."""
         quad = np.asarray(box, dtype=float)
         if quad.shape != (4, 2):
             raise ValueError("OCR box must be four 2D points")
         # OpenCV clockwise rotation: x_rot = H - 1 - y, y_rot = x.
-        x = quad[:, 1]
-        y = original_height - 1.0 - quad[:, 0]
-        return float(x.min()), float(y.min()), float(x.max() - x.min()), float(y.max() - y.min())
+        return np.column_stack((quad[:, 1], original_height - 1.0 - quad[:, 0]))
 
     def read(self, image_bgr, t_capture: float) -> list[PillarRead]:
         """Detect station text and return PnL-ready reads for one BGR frame."""
@@ -126,10 +190,12 @@ class GpuPillarReader:
             # uncertain: it is a valid bearing-only PnL observation.
             if not str(text).strip().lower().startswith("station"):
                 continue
-            x, y, w, h = self._cw_box_to_original(box, height)
+            quad = self._cw_quad_to_original(box, height)
+            x, y = quad.min(axis=0)
+            w, h = quad.max(axis=0) - (x, y)
             reads.append(PillarRead(
                 t_capture=float(t_capture), x=x, y=y, w=w, h=h,
                 number=None if match is None else match.group(1),
-                confidence=float(confidence),
+                confidence=float(confidence), quad_xy=quad,
             ))
         return classify_top_reads(reads)
