@@ -12,7 +12,10 @@ the production rule from the pillar-estimator handoff.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import re
 from typing import Iterable
+
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -60,3 +63,73 @@ def classify_top_reads(
                 is_top = is_top or read.y == min(other.y for other in stack)
         result[i] = replace(read, top=is_top)
     return result
+
+
+_STATION_RE = re.compile(r"^station\s*([0-9]{1,2})$", re.IGNORECASE)
+
+
+class GpuPillarReader:
+    """GPU text detector/OCR adapter for the simulator's vertical station text.
+
+    The camera sees ``Station NN`` lettering vertically.  The image is rotated
+    clockwise before EasyOCR runs, then each text box is transformed back to
+    original OpenCV coordinates.  A recognition such as ``Station24`` is a
+    *candidate* identity; callers must perform temporal voting and map
+    association before allowing it to influence the smoother.
+
+    EasyOCR is intentionally imported only when this optional GPU producer is
+    instantiated, so offline geometry and unit tests do not require it.
+    """
+
+    def __init__(self, reader=None, *, gpu: bool = True,
+                 text_threshold: float = 0.35, low_text: float = 0.20):
+        if reader is None:
+            try:
+                import easyocr
+            except ImportError as error:
+                raise RuntimeError(
+                    "GpuPillarReader requires easyocr; install it in the "
+                    "flight environment"
+                ) from error
+            reader = easyocr.Reader(["en"], gpu=gpu, verbose=False)
+        self.reader = reader
+        self.text_threshold = float(text_threshold)
+        self.low_text = float(low_text)
+
+    @staticmethod
+    def _cw_box_to_original(box, original_height: int) -> tuple[float, float, float, float]:
+        """Map a clockwise-rotated EasyOCR quad into original x/y bounds."""
+        quad = np.asarray(box, dtype=float)
+        if quad.shape != (4, 2):
+            raise ValueError("OCR box must be four 2D points")
+        # OpenCV clockwise rotation: x_rot = H - 1 - y, y_rot = x.
+        x = quad[:, 1]
+        y = original_height - 1.0 - quad[:, 0]
+        return float(x.min()), float(y.min()), float(x.max() - x.min()), float(y.max() - y.min())
+
+    def read(self, image_bgr, t_capture: float) -> list[PillarRead]:
+        """Detect station text and return PnL-ready reads for one BGR frame."""
+        import cv2
+
+        if image_bgr is None or len(image_bgr.shape) != 3:
+            raise ValueError("image_bgr must be an HxWxC image")
+        height = int(image_bgr.shape[0])
+        rotated = cv2.rotate(image_bgr, cv2.ROTATE_90_CLOCKWISE)
+        rows = self.reader.readtext(
+            rotated, detail=1, paragraph=False,
+            text_threshold=self.text_threshold, low_text=self.low_text,
+        )
+        reads = []
+        for box, text, confidence in rows:
+            match = _STATION_RE.fullmatch(str(text).strip())
+            # Keep a recognized station-text region even if its digits are
+            # uncertain: it is a valid bearing-only PnL observation.
+            if not str(text).strip().lower().startswith("station"):
+                continue
+            x, y, w, h = self._cw_box_to_original(box, height)
+            reads.append(PillarRead(
+                t_capture=float(t_capture), x=x, y=y, w=w, h=h,
+                number=None if match is None else match.group(1),
+                confidence=float(confidence),
+            ))
+        return classify_top_reads(reads)
