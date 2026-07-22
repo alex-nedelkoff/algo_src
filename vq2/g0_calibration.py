@@ -45,7 +45,9 @@ def _geometry_residual(log_focal: np.ndarray, H: np.ndarray, cx: float, cy: floa
 
 
 def fit_g0_aperture(image_xy, *, cx: float = 319.5, cy: float = 179.5,
-                    initial_focal_px: float = 226.0) -> CalibrationFit:
+                    initial_focal_px: float = 226.0,
+                    min_focal_px: float = 50.0,
+                    max_focal_px: float = 2_000.0) -> CalibrationFit:
     """Fit ``fx, fy`` from four aperture corners in TL, TR, BR, BL order.
 
     A single planar square only constrains focal lengths after the principal
@@ -56,13 +58,31 @@ def fit_g0_aperture(image_xy, *, cx: float = 319.5, cy: float = 179.5,
     if image.shape != (4, 2) or not np.all(np.isfinite(image)):
         raise ValueError("image_xy must be four finite corners in TL,TR,BR,BL order")
     H = _homography(image)
+    H = H / H[2, 2]
+    if np.linalg.norm(H[2, :2]) < 1e-6:
+        raise ValueError(
+            "G0 aperture view is ill-conditioned for free fx/fy; use it to "
+            "compare declared models or add an oblique known-aperture view"
+        )
+    if not 0.0 < min_focal_px < max_focal_px:
+        raise ValueError("focal bounds must be positive and ordered")
     result = least_squares(
         _geometry_residual, np.log([initial_focal_px, initial_focal_px]),
-        args=(H, cx, cy), xtol=1e-13, ftol=1e-13, gtol=1e-13,
+        args=(H, cx, cy), bounds=(np.log([min_focal_px, min_focal_px]),
+                                  np.log([max_focal_px, max_focal_px])),
+        xtol=1e-13, ftol=1e-13, gtol=1e-13,
     )
     if not result.success:
         raise ValueError(f"focal fit failed: {result.message}")
     fx, fy = np.exp(result.x)
+    # A nearly fronto-parallel square has insufficient perspective to identify
+    # free fx/fy.  A bound-hitting answer is evidence of that degeneracy, not
+    # an unusually wide camera.
+    if min(fx, fy) <= min_focal_px * 1.01 or max(fx, fy) >= max_focal_px / 1.01:
+        raise ValueError(
+            "G0 aperture view is ill-conditioned for free fx/fy; use it to "
+            "compare declared models or add an oblique known-aperture view"
+        )
     K = np.array([[fx, 0., cx], [0., fy, cy], [0., 0., 1.]])
     ok, rvec, tvec = cv2.solvePnP(_OBJECT_3D, image, K, None, flags=cv2.SOLVEPNP_ITERATIVE)
     if not ok or tvec[2, 0] <= 0:
@@ -78,11 +98,19 @@ def compare_hypotheses(image_xy, *, cx: float = 319.5, cy: float = 179.5,
     """Return fitted and historic-model evidence without approving either."""
     image = np.asarray(image_xy, float)
     H = _homography(image)
-    fitted = fit_g0_aperture(image, cx=cx, cy=cy)
+    try:
+        fitted = fit_g0_aperture(image, cx=cx, cy=cy)
+        fitted_row = None
+    except ValueError as error:
+        fitted = None
+        fitted_row = {"id": "fitted", "available": False, "reason": str(error)}
     rows = []
     for name, focal in (("fitted", None), ("mapping-226", 226.0), ("legacy-320", 320.0)):
-        if focal is None:
+        if focal is None and fitted is not None:
             fit = fitted
+        elif focal is None:
+            rows.append(fitted_row)
+            continue
         else:
             K = np.array([[focal, 0., cx], [0., focal, cy], [0., 0., 1.]])
             ok, rvec, tvec = cv2.solvePnP(_OBJECT_3D, image, K, None, flags=cv2.SOLVEPNP_ITERATIVE)

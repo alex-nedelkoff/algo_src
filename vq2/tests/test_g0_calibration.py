@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import pytest
 
 from vq2.g0_calibration import _OBJECT_3D, compare_hypotheses, fit_g0_aperture
 
@@ -25,3 +26,13 @@ def test_compares_historic_models_without_approving_a_model():
     assert [row["id"] for row in report["models"]] == ["fitted", "mapping-226", "legacy-320"]
     assert report["approved"] is False
     assert abs(report["models"][1]["depth_delta_m"]) < 1e-5
+
+
+def test_frontoparallel_aperture_refuses_free_focal_fit_but_compares_models():
+    K = np.array([[320., 0., 319.5], [0., 320., 179.5], [0., 0., 1.]])
+    image = _project(K, np.zeros(3), np.array([0., 0., 10.595]))
+    with pytest.raises(ValueError, match="ill-conditioned"):
+        fit_g0_aperture(image)
+    report = compare_hypotheses(image, certified_depth_m=10.595)
+    assert report["models"][0]["available"] is False
+    assert report["models"][1]["id"] == "mapping-226"
