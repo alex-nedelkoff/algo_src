@@ -1,6 +1,92 @@
 # HANDOFF — feat/vo-loop: VO into the smoother (2026-07-21)
 
 ═══════════════════════════════════════════════════════════════════
+## ⭐ COR-147 SUB-TASK — livelog p_est TIMESTAMP JOIN (branch
+##   feat/vo-loop-pest, banked 2026-07-22)
+═══════════════════════════════════════════════════════════════════
+
+**Scope:** the `p_est` reference-join blocker only (offline data plumbing +
+scoring). Branch `feat/vo-loop-pest` (worktree `algo_src-vo-pest`, forked from
+`feat/vo-loop`). NOT pushed — Alex pushes. Env `monorace`. Full suite: 187 pass
+/ 11 skip (added 9 join tests; nothing broke).
+
+### THE SCHEMA (measured on test95-99/46/140 livelog.jsonl — trust this)
+- EVERY livelog record carries `t` = flight-LOOP WALL clock (float s). The naive
+  carry-forward ignored this shared clock.
+- `ns` = frame CAPTURE time (sim ns, SAME namespace as jpg filenames /
+  frames_dedup `sim_ns`) — logged ONLY on `obs*` rows (obs, obs_nofix,
+  obs_wronggate, obs_ident[_fail]). `t_cam` on `obs` is a 3-VECTOR (gate range),
+  NOT a time — do not use it.
+- Estimator POSITION = 3-vector `p` on `kf_upd` / `mapfollow` / `tick_fix` /
+  `mfdr_seed` (reset-NED). **`att.p_est` and `att.pb` are SCALARS** (an x-axis
+  projection, NOT a position) — the old code's `len(p)>=3` guard silently
+  skipped `att`, so the reference was ALWAYS built from `kf_upd.p` etc. `att` is
+  now explicitly excluded (POS_KINDS).
+
+### THE JOIN (vq2/tools/livelog_join.py — the deliverable)
+- Loop-iteration linkage (measured): within one iteration the loop reads a frame
+  (capture `ns`), runs the obs, updates the KF, and logs `kf_upd`(pos)+`obs`(ns)
+  sharing `t` to <1 ms. `obs*` rows are the ONLY place the loop clock `t` and the
+  capture clock `ns` co-occur → they calibrate a monotone t→ns transform.
+- Each position row's `t` is mapped onto the CAPTURE axis via that transform:
+  exact frame `ns` when a same-iteration obs exists (16/26 rows in test95),
+  linear interp of ns(t) otherwise. No extrapolation → prelude/tail excluded.
+  Anchors deduped-by-t + greedy strictly-increasing (kills obs_wronggate+
+  obs_nofix tie frames and rare stale frames).
+- WHY the old carry-forward was wrong: it stamped each position with the LAST-
+  SEEN ns = the PREVIOUS iteration's frame (position is logged just before its
+  own iteration's obs). Off by ~one loop iteration: measured median |interp −
+  carryfwd| = 0.37–0.67 s across the 7 corpora (max several s in fast segments)
+  — larger than a keyframe interval.
+
+### MEASURED (vq2/tools/vo_replay.py, pre-tick approach leg, NEW join)
+Scoring scope FIX: a single 2D-rotation Procrustes fit is only valid on a
+segment WITHOUT a big heading change. The gate-1 right turn breaks it, so
+whole-flight numbers were garbage (test95 raw cos −0.14). Default scoring is now
+the PRE-TICK straight approach leg (motion-start → first tick_fix/gate_tick);
+`--full-flight` opts out.
+
+  corpus  n_legs  raw xy-dir cos  endpoint drift  fit scale(unit→m)
+  test95    8        +0.87           11%             0.520
+  test96    8        +0.93           12%             0.403
+  test97    7        +0.86            7%             0.540
+  test98    1        +0.95         (0%, n=1 degen)   0.935
+  test99    8        +0.85           18%             0.558
+  test46    7        +0.86            8%             0.632
+  test140   3        +0.99            1%             0.661
+
+- VO-vs-p_est xy DIRECTION agreement (whole approach leg): +0.85..+0.99 on 6/7
+  corpora (test98 pre-tick collapses to n=1 usable leg — too few moving ref
+  intervals in a short/fast approach; use --full-flight or a longer window).
+- A/B PROOF the join matters (same VO steps, only the timestamp join varies):
+  test46 pre-tick raw cos 0.26 (carryfwd) → 0.86 (newjoin); endpoint 38%→8%.
+  test96 endpoint 74%(cf, whole-flight)→9%(newjoin). On the clean leg the join
+  is unambiguously better; on the turn-polluted whole flight both are noisy.
+
+### WHAT'S UNBLOCKED / WHAT REMAINS ASSUMED
+- UNBLOCKED (mechanics): p_est is now precisely on the VO capture-time axis, so
+  per-corpus VO↔p_est fit-scale (unit→m) and drift over the clean approach leg
+  are computable. Phase 2 scale A/B (climb-cal vs GNSCALE) can use these as one
+  yardstick each corpus.
+- STILL SOFT (honest): (1) p_est is DR, not truth — drift/scale here is RELATIVE
+  divergence of two imperfect tracks, NOT absolute VO error. (2) Per-LEG residual
+  is ~100% (0.5 s legs ≈ VO interp noise) → score over the whole leg / long
+  baselines, never per-leg. (3) Per-session monocular scale scatter is real
+  (fit scale 0.40–0.66 across corpora) — N matters, do not conclude A vs B from
+  n=1–2. (4) Fit scale is only as good as p_est; the map-relative geometry
+  (14° turn, datum-free) remains the stronger scale/soundness check.
+- RECOMMENDATION: run Phase 2 A/B with p_est fit-scale as a SECONDARY corroborant
+  and the map-relative geometry / truth_crossings as the PRIMARY decider. Ask
+  Alex whether p_est-referenced drift is an acceptable A/B tiebreaker or whether
+  A/B must be judged purely map-relative.
+
+### PICKUP POINT
+`vq2/tools/livelog_join.py` (join), `vq2/tools/vo_replay.py` (rewired + drift
+metric, `--full-flight`), `vq2/tests/test_livelog_join.py` (9 tests). Next: feed
+the per-corpus fit-scale into the Phase 2 climb-cal-vs-GNSCALE compare on the
+same 7 corpora, decide the primary yardstick with Alex.
+
+═══════════════════════════════════════════════════════════════════
 ## ⭐⭐ START HERE — SESSION BANKED 2026-07-22 (COR-147)
 ═══════════════════════════════════════════════════════════════════
 

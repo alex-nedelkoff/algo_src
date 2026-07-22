@@ -2,8 +2,9 @@
 
 corpus frames -> MonoVO -> per-keyframe VoSteps -> integrated UNIT-scale
 trajectory. Reports VO health, a truth-by-construction forward-motion check,
-and (when livelog.jsonl yields an estimator reference via carry-forward ns)
-the globally-aligned direction agreement between VO and the estimator path.
+and (when livelog.jsonl yields an estimator reference via the capture-time
+join in vq2.tools.livelog_join) the globally-aligned direction agreement and
+relative drift between VO and the estimator path.
 
 CAVEAT: the estimator path is NOT ground truth — it is the DR estimate this
 project exists to correct, and standalone monocular VO integration drifts
@@ -30,6 +31,7 @@ import numpy as np
 import cv2
 
 from vq2.live.vo_cv import MonoVO, VoStep
+from vq2.tools.livelog_join import load_estimator_reference
 
 
 def load_frame_order(corpus: str):
@@ -53,53 +55,6 @@ def load_frame_order(corpus: str):
     return out
 
 
-# livelog record kinds whose `p` field is an estimator position (no `ns`)
-_POS_KINDS = ("kf_upd", "mapfollow", "mfdr_seed", "tick_fix")
-
-
-def load_reference(corpus: str):
-    """Estimator reference trajectory (sim_ns, xyz) from livelog.jsonl.
-
-    livelog is a heterogeneous, time-ordered stream: position records
-    (`att.p_est`, `kf_upd.p`, ...) carry NO timestamp, while `obs*` records
-    carry `ns`. So we CARRY FORWARD the last-seen `ns` onto each position
-    record (the flight loop emits obs then the estimator update, so the
-    last-seen ns bounds the position time from below; sparsity of gate obs
-    makes this loose by up to ~0.5s — fine for coarse direction agreement).
-
-    Returns (ns[M], xyz[M,3]) with strictly increasing unique ns, or None.
-    """
-    lp = os.path.join(corpus, "livelog.jsonl")
-    if not os.path.exists(lp):
-        return None
-    last_ns = None
-    ts, ps = [], []
-    for line in open(lp):
-        try:
-            d = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        ns = d.get("ns")
-        if isinstance(ns, (int, float)):
-            last_ns = int(ns)
-        p = d.get("p_est")
-        if p is None and (d.get("kind") in _POS_KINDS):
-            p = d.get("p")
-        if isinstance(p, list) and len(p) >= 3 and last_ns is not None:
-            ts.append(last_ns)
-            ps.append([float(x) for x in p[:3]])
-    if len(ts) < 3:
-        return None
-    ts = np.array(ts)
-    ps = np.array(ps, dtype=float)
-    # collapse carry-forward duplicates: keep the LAST position per unique ns
-    uniq, idx = np.unique(ts, return_index=False), {}
-    for i, t in enumerate(ts):
-        idx[t] = i
-    keep = np.array([idx[t] for t in uniq])
-    return uniq, ps[keep]
-
-
 def integrate(steps):
     """Chain unit-scale VoSteps into a body-frame trajectory (arbitrary scale).
     Each step contributes t_body_unit rotated by the accumulated heading."""
@@ -118,6 +73,10 @@ def main():
     ap.add_argument("corpus")
     ap.add_argument("--max", type=int, default=100000)
     ap.add_argument("--kf-flow", type=float, default=9.0)
+    ap.add_argument("--full-flight", action="store_true",
+                    help="score the whole flight; default scores the pre-tick "
+                         "straight approach leg (single-rotation fit is only "
+                         "valid before the gate-1 turn).")
     args = ap.parse_args()
 
     frames = load_frame_order(args.corpus)[: args.max]
@@ -155,8 +114,10 @@ def main():
     print(f"fwd-motion check     : +x dominant {fwd_dom:.0%}, +x>0 {fwd_pos:.0%} "
           f"(|t| axis mean {np.abs(tb).mean(axis=0).round(2)})")
 
-    ref = load_reference(args.corpus)
+    ref = load_estimator_reference(args.corpus, pre_tick_only=not args.full_flight)
     if ref is not None:
+        scope = "whole flight" if args.full_flight else "pre-tick approach leg"
+        print(f"estimator ref scope  : {scope} (n={len(ref[0])} p_est samples)")
         _compare_to_reference(steps, traj, ref)
     else:
         print("no estimator reference (livelog absent/sparse) — health-only")
@@ -219,6 +180,29 @@ def _compare_to_reference(steps, traj, ref):
           f"aligned={wmean_a:+.2f} (yaw offset {math.degrees(theta):+.0f} deg)")
     print(f"  aligned agreement  : n={len(cos_a)}, frac>0.7={np.mean(cos_a > 0.7):.2f}, "
           f"frac>0.5={np.mean(cos_a > 0.5):.2f}")
+
+    # DRIFT: VO is unit-scale, so recover the single best-fit metric scale on the
+    # SAME (aligned) displacement set (weighted least squares), then measure how
+    # far the scaled VO track drifts from the estimator track. NOTE both tracks
+    # are dead-reckoning-ish (estimator = DR, VO = un-loop-closed integration),
+    # so this is RELATIVE divergence between two imperfect tracks, NOT absolute
+    # VO error against truth. Reported per the join-aligned motion window only.
+    denom = np.sum(wts * np.sum(D_vo_a ** 2, axis=1))
+    if denom <= 0:
+        return
+    scale = float(np.sum(wts * np.sum(D_vo_a * D_ref, axis=1)) / denom)
+    D_vo_s = scale * D_vo_a
+    leg_len = np.linalg.norm(D_ref, axis=1)
+    leg_res = np.linalg.norm(D_vo_s - D_ref, axis=1)
+    leg_drift = leg_res / leg_len                      # per-leg fractional drift
+    wmed_drift = float(np.percentile(leg_drift, 50))
+    # cumulative endpoint drift over the covered window / estimator path length
+    ref_path = float(np.sum(leg_len))
+    endpoint_res = float(np.linalg.norm(np.sum(D_vo_s - D_ref, axis=0)))
+    cum_drift = endpoint_res / ref_path if ref_path > 0 else float("nan")
+    print(f"VO-vs-est drift      : fit scale={scale:.3f} (unit->m), "
+          f"per-leg |resid|/|leg| med={wmed_drift:.0%}, "
+          f"endpoint {endpoint_res:.2f}m / {ref_path:.1f}m path = {cum_drift:.0%}")
 
 
 if __name__ == "__main__":
