@@ -225,7 +225,11 @@ class GpuKLTGraph:
                 self._forward()
         torch.cuda.current_stream().wait_stream(s)
         self._graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self._graph):
+        # thread_local capture: the DEFAULT 'global' mode errors on ANY CUDA
+        # op in ANY thread during capture, which crashes a co-resident GateNet
+        # detector thread (and can poison the shared context). thread_local
+        # only guards this thread, letting GateNet keep inferring during capture.
+        with torch.cuda.graph(self._graph, capture_error_mode="thread_local"):
             self._forward()
 
     def set_prev(self, gray: np.ndarray) -> None:
