@@ -8,6 +8,9 @@ static-hover IMU yaw change -> Station-text PnP and pillar-edge evidence.
 
 This handoff intentionally stops before camera-intrinsics/FoV calibration.
 
+> **Update — intrinsics/FoV audit completed:** the remaining map-build work is
+> gated on calibration; details are in the dedicated section below.
+
 ## Decisions
 
 - **Do not use DPVO.** It is not viable in this environment and is not on the
@@ -78,6 +81,41 @@ centreline as a pillar axis.
   inconsistent yaw/time association, or unstable edge geometry.
 - Same station number is not a unique landmark: preserve multiple candidates
   until geometric association rules out aisle twins.
+
+## Camera intrinsics / FoV gate (completed audit, calibration pending)
+
+Do **not** repeat the configuration search.  It found two incompatible camera
+models at 640x360:
+
+- Mapping/GateNet canonical path: `fx=fy=226.0`, `cx=319.5`, `cy=179.5`,
+  with a 20-degree upward camera tilt (`vq2/camera.py`, GateNet PnP, and
+  current DPVO-route configuration).
+- Legacy control/probe paths: `fx=fy=320.0`, `cx=320.0`, `cy=180.0`.
+
+The fresh stationary G0 reference was captured specifically for calibration:
+
+`C:\Users\Administrator\Documents\Codex\2026-07-21\go\work\g0_calibration_20260722_0205`
+
+It has 111 receive-only, fresh-reset G0 frames.  Example frame:
+`frames/1784684954586219300.jpg`.
+
+The current 226-pixel GateNet solve on a stationary G0 frame gives roughly
+11.18 m while Janahan's G0 datum records 10.595 m.  This is evidence of a
+possible scale/calibration discrepancy, **not** a focal-length calibration:
+re-solving GateNet PnP under a different focal length is circular because its
+depth is produced using that same assumed focal length.
+
+Required calibration procedure:
+
+1. Use the stationary G0 image and manually/localize the four known 1.5 m
+   aperture corners.
+2. Fit `fx, fy` (and verify `cx, cy`) against the certified 10.595 m G0 depth,
+   with reprojection residuals for the 226 and 320 hypotheses.
+3. Record the selected model and uncertainty, then consolidate every mapping
+   consumer on it.  Legacy control code may retain a separately justified
+   model only if it is explicitly documented as a different camera path.
+4. Only after this calibration may text-panel poses be transformed and fused
+   in reset-NED; otherwise scale and vertical uncertainty are unbounded.
 
 ## Relevant commits
 
