@@ -57,16 +57,19 @@ class MonoVO:
     get a VoStep back on each keyframe boundary (else None)."""
 
     def __init__(self, kf_flow_px: float = 9.0, min_inliers: int = 30,
-                 min_tracked: int = 40, ransac_thresh_px: float = 1.0):
+                 min_tracked: int = 40, ransac_thresh_px: float = 1.0,
+                 gpu: bool = False):
         self.kf_flow_px = kf_flow_px
         self.min_inliers = min_inliers
         self.min_tracked = min_tracked
         self.ransac_thresh_px = ransac_thresh_px
+        self.gpu = gpu             # GPU (CUDA-graph) optical flow, frees the CPU
         self._kf_img = None         # keyframe image
         self._kf_pts = None         # (N,1,2) features detected in the keyframe
         self._kf_t = None
         self._cur_pts = None        # keyframe features tracked into the latest frame
         self._prev_img = None       # latest frame (for incremental KLT)
+        self._klt = None            # GpuKLTGraph, lazily built on first keyframe
 
     def _set_keyframe(self, t, img):
         self._kf_img = img
@@ -74,6 +77,26 @@ class MonoVO:
         self._kf_pts = cv2.goodFeaturesToTrack(img, mask=None, **_FEAT)
         self._cur_pts = self._kf_pts
         self._prev_img = img
+        if self.gpu:
+            if self._klt is None:
+                from .gpu_klt import GpuKLTGraph
+                self._klt = GpuKLTGraph(img.shape[0], img.shape[1],
+                                        max_n=_FEAT["maxCorners"])
+            self._klt.set_prev(img)
+
+    def _flow(self, gray):
+        """Per-frame optical flow: (p1 (N,1,2), status_bool (N,)) or (None,None).
+        GPU path replays the CUDA graph (CPU ~free); CPU path is cv2 (thread-
+        pooled). The graph pads N->max_n internally, so the caller's point
+        shrinking is unchanged across backends."""
+        if self.gpu:
+            p1, st = self._klt.track(self._cur_pts, gray)
+            return p1, st.astype(bool)
+        p1, st, _ = cv2.calcOpticalFlowPyrLK(self._prev_img, gray, self._cur_pts,
+                                             None, **_LK)
+        if p1 is None:
+            return None, None
+        return p1, st.reshape(-1).astype(bool)
 
     def step(self, t: float, gray: np.ndarray) -> VoStep | None:
         """Offline convenience: track + (inline) solve. Returns a VoStep when a
@@ -99,11 +122,10 @@ class MonoVO:
 
         # incremental KLT from the previous frame keeps tracks stable across
         # the whole keyframe interval; keyframe correspondence is (kf_pts, cur)
-        p1, st, _ = cv2.calcOpticalFlowPyrLK(self._prev_img, gray, self._cur_pts, None, **_LK)
+        p1, st = self._flow(gray)
         if p1 is None:
             self._set_keyframe(t, gray)
             return None
-        st = st.reshape(-1).astype(bool)
         kf_pts = self._kf_pts[st]
         cur_pts = p1[st]
         self._kf_pts = kf_pts

@@ -85,3 +85,56 @@ def test_real_corpus_motion_window_is_healthy():
     assert len(steps) >= 5, f"too few keyframes: {len(steps)}"
     med_inl = np.median([s.n_inliers for s in steps])
     assert med_inl >= 30, f"unhealthy inliers: {med_inl}"
+
+
+def _cuda_available():
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _cuda_available(), reason="no CUDA device")
+def test_gpu_klt_graph_matches_cv2():
+    """CUDA-graph GPU KLT must agree with cv2 to sub-pixel on real motion."""
+    import glob
+    from vq2.live.gpu_klt import GpuKLTGraph
+    corpus = r"C:\Users\Administrator\vq2_test46"
+    if not os.path.isdir(os.path.join(corpus, "frames")):
+        pytest.skip("corpus absent")
+    ns = sorted(int(os.path.splitext(os.path.basename(p))[0])
+                for p in glob.glob(os.path.join(corpus, "frames", "*.jpg")))[380:440]
+    imgs = [cv2.imread(os.path.join(corpus, "frames", f"{n}.jpg"), cv2.IMREAD_GRAYSCALE) for n in ns]
+    fp = dict(maxCorners=600, qualityLevel=0.01, minDistance=7, blockSize=7)
+    lk = dict(winSize=(21, 21), maxLevel=3,
+              criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
+    pts = cv2.goodFeaturesToTrack(imgs[0], mask=None, **fp)
+    klt = GpuKLTGraph(imgs[0].shape[0], imgs[0].shape[1], max_n=pts.shape[0])
+    agree = []
+    for i in range(1, len(imgs)):
+        klt.set_prev(imgs[i - 1])                    # prev BEFORE track (i-1 -> i)
+        p1g, stg = klt.track(pts, imgs[i])
+        p1c, stc, _ = cv2.calcOpticalFlowPyrLK(imgs[i - 1], imgs[i], pts, None, **lk)
+        both = stc.reshape(-1).astype(bool) & stg.astype(bool)
+        if both.sum() > 10:
+            agree.append(np.median(np.linalg.norm(
+                p1c[both].reshape(-1, 2) - p1g[both].reshape(-1, 2), axis=1)))
+    assert np.median(agree) < 0.5, f"GPU KLT disagrees with cv2: {np.median(agree):.2f}px"
+
+
+@pytest.mark.skipif(not _cuda_available(), reason="no CUDA device")
+def test_gpu_monovo_produces_healthy_keyframes():
+    """MonoVO(gpu=True) must produce forward-dominant keyframes like the CPU path."""
+    import glob
+    corpus = r"C:\Users\Administrator\vq2_test46"
+    if not os.path.isdir(os.path.join(corpus, "frames")):
+        pytest.skip("corpus absent")
+    ns = sorted(int(os.path.splitext(os.path.basename(p))[0])
+                for p in glob.glob(os.path.join(corpus, "frames", "*.jpg")))[380:700]
+    imgs = [cv2.imread(os.path.join(corpus, "frames", f"{n}.jpg"), cv2.IMREAD_GRAYSCALE) for n in ns]
+    vo = MonoVO(kf_flow_px=9.0, gpu=True)
+    steps = [s for i, im in enumerate(imgs) if (s := vo.step(i * 0.033, im)) is not None]
+    assert len(steps) >= 5
+    assert np.median([s.n_inliers for s in steps]) >= 30
+    assert np.mean([np.argmax(np.abs(s.t_body_unit)) == 0 for s in steps]) > 0.5
