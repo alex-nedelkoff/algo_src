@@ -183,6 +183,11 @@ print('takeoff done, tilt %.1f deg vz %.2f vx %.2f' % (math.degrees(tilt()), sta
 # the same loop drives vx->vx_ref instead.
 VCREEP = float(os.environ.get('VCREEP', '0.7'))
 CREEP_S = float(os.environ.get('CREEP_S', '22.0'))
+# Hover-only survey mode: turn in place before any forward creep so a
+# side-pillar can be brought toward the camera centre while the launch gate
+# remains in view.  Defaults preserve the historical straight-capture run.
+YAW_SCAN_RATE = float(os.environ.get('YAW_SCAN_RATE', '0.0'))
+YAW_SCAN_S = float(os.environ.get('YAW_SCAN_S', '0.0'))
 
 def creep_cmd(vx_ref):
     roll_ref = max(-0.25, min(0.25, -K_V * state['vy_b']))
@@ -196,6 +201,7 @@ def creep_cmd(vx_ref):
 
 blocks = [
     ('settle', 2.0, lambda t: (0, 0, 0, HOVER)),
+    ('yaw_scan', YAW_SCAN_S, lambda t: (0, 0, YAW_SCAN_RATE, HOVER)),
     ('creep',  CREEP_S, None),   # None -> creep_cmd path below
     ('settle', 2.0, lambda t: (0, 0, 0, HOVER)),
 ]
