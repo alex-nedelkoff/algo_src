@@ -1,7 +1,97 @@
 # HANDOFF — feat/vo-loop: VO into the smoother (2026-07-21)
 
 ═══════════════════════════════════════════════════════════════════
-## ⭐ UPDATE 2026-07-22 — DPVO IS DEAD IN-VM; OpenCV VO IS THE PATH
+## ⭐⭐ START HERE — SESSION BANKED 2026-07-22 (COR-147)
+═══════════════════════════════════════════════════════════════════
+
+Branch `feat/vo-loop` (worktree `C:\Users\Administrator\algo_src-vo`, pushes
+to origin = algo_src-alex). Linear: **COR-147**. Env: conda `monorace`
+(`C:\Users\Administrator\miniconda3\envs\monorace\python.exe`). All work below
+is committed + pushed; 14 tests pass (`python -m pytest vq2/tests -q`).
+
+### THE ARCHITECTURE (decided this session, with Alex)
+Estimator = **map-based absolute localization** (gate PnP + pillar-azimuth
+against a KNOWN offline map) as the drift-free backbone, with **monocular VO
+as the relative bridge** between/through detections. **No IMU** — with a good
+map + continuous landmark visibility, per-frame resection observes full pose,
+so IMU is insurance, not a requirement (and the un-modelled "push" is only
+visible to vision anyway). VO is unit-scale; gate crossings give metric scale.
+Both sources lower to `SlidingSmoother` factors via the `vq2/relpose.py`
+contract — the pillar-PnP branch (Alex) feeds the SAME contract.
+
+### WHAT'S BUILT (all committed, flight-validated where noted)
+1. **Measurement contract** `vq2/relpose.py` — `LandmarkRelPose`, `OdomDelta`
+   (+`to_factor`). The shared seam for both branches. (trunk `9ec4a9a3`)
+2. **Monocular VO** `vq2/live/vo_cv.py` — `MonoVO`: KLT + essential-matrix,
+   **keyframe-by-parallax** (median flow >= kf_flow, NOT adjacency), emits
+   `VoStep`/`OdomDelta` (body-frame unit dir + dyaw, scale_locked=False). Uses
+   the real `vq2.camera` model (FX=226, cam->body M_BODY_CAM). Front-end/back-
+   end split: `track()` (real-time) + `solve_job()` (threadable). `gpu=True`
+   swaps in CUDA-graph optical flow. Solve caps: `max_solve_pts=200`,
+   `ransac_prob=0.99`.
+3. **GPU optical flow** `vq2/live/gpu_klt.py` — torch pyramidal LK. `GpuKLTGraph`
+   captures the fixed-shape LK as a CUDA graph, one launch: 6.7ms wall, 0.00ms
+   CPU-busy (100% freed), 0.02px vs cv2.
+4. **Live threaded consumer** `vq2/live/vo_live.py` (`LiveVO`) + hook
+   `vq2/live/vo_live_hook.py` (`start_vo_live`, gated `VO_LIVE=1`). Evict-oldest
+   queue under backpressure.
+5. **Association** `vq2/live/vo_association.py` — `calibrate_scale` (metric
+   scale from a known gate leg), inlier-weighted sigma, `feed_smoother` ->
+   `SlidingSmoother.push_odom`.
+6. **Offline tools** `vq2/tools/vo_replay.py` (VO health + estimator-agreement
+   with livelog carry-forward-ns join), `vo_fusion_demo.py`, `vo_live_replay.py`
+   (real-time cadence validator). Scratch probes in `scratch/vo_*.py`.
+7. **Deployed hook**: 4 gated lines in `C:\Users\Administrator\vq2wp.py` after
+   cam_loop starts (VO_LIVE off by default — safe for other flights).
+
+### KEY MEASURED FACTS (trust these; each earned)
+- **VO is sound** (two truth-anchored checks): 86% forward-dominant on a clean
+  transit; reproduces the map's surveyed gate-1 right turn within **14 deg**
+  (residual = judge-tick ~2s lag + VO drift, NOT VO error).
+- **Map-as-reference works**, and beats the estimator (p_est is DR, not truth).
+  Datum/scale sidestepped via RELATIVE geometry (turn angle, length ratios).
+- **Vagon box = 2 physical cores**; the sim (DCGame/Unreal) alone holds ~one
+  (86% load). This is THE constraint.
+- **CUDA-graph GPU tracking holds real-time** where CPU can't: front-end
+  submit p50 6.8 / p90 15ms, 0% over the 33ms budget (CPU: 17/37, 12% over).
+- **Solve optimization validated in flight** (votest2): subsample+prob+throttle
+  +evict-oldest took solve p50 300ms-1s -> **36-70ms**, p90 2.1s -> ~420ms,
+  drops -> 0. VO correct live: 76% fwd-dominant, +x 0.90, inliers 85.
+
+### OPEN ISSUES / LIMITATIONS (honest)
+- **GPU CUDA-graph capture is NOT flight-safe yet.** Default `global` capture
+  mode crashed the co-resident GateNet detector thread mid-flight ("operation
+  not permitted when stream is capturing") -> pad-lock fail -> abort.
+  `thread_local` (now set) helps but capture is fundamentally unsafe against
+  concurrent CUDA that ALLOCATES (GateNet startup autotune). votest1 worked by
+  timing luck. **FIX NEEDED: capture the graph in a GateNet-idle window** (or
+  eager-capture at known 640x360 before autotune). Until then fly `VO_GPU=0`.
+- With CPU tracking the **front-end is the bottleneck** in flight (track p50
+  32-36ms, over budget), worsened by concurrent load. GPU tracking (12-15ms)
+  is the fix once flight-safe.
+- **Datum reconciliation** (Janahan map reset-NED vs flight pad-lock) is the
+  load-bearing prerequisite for Step B quantitative use. Relative geometry is
+  datum-free; absolute anchoring is not.
+- Only 2 ticked gates on tick flights => the 2D VO->map alignment is fully
+  determined, so gate-offset is not an independent check (turn-angle is).
+
+### NEXT (pick one)
+- **(a) Flight-safe GPU capture** — capture in a GateNet-idle window; then GPU
+  front-end (12-15ms) + solve opts (36-70ms) combine = fully real-time live VO.
+- **(b) Step B: map-localization backbone** — per-frame gate PnP + pillar
+  azimuth against the map + online scale from gate crossings, CPU tracking as
+  the working baseline. This is the actual product estimator.
+
+### RUNBOOK
+- Fly VO smoke: `fly_votest2.bat` (VO_GPU=0 reliable; STRAIGHTTEST fwd 8s). VO
+  log -> `VO_LOG` (vo_votest*.jsonl). **Straight test lands the drone ~6m
+  downrange -> RESTART the sim (menu/relaunch) to re-home before each flight**
+  (a race hard-reset does NOT reposition it).
+- Shared machine: a Codex agent has also been active here. Screenshot the sim
+  state before flying; do not grab the sim window from active human/agent use.
+
+═══════════════════════════════════════════════════════════════════
+## UPDATE 2026-07-22 — DPVO IS DEAD IN-VM; OpenCV VO IS THE PATH
 ═══════════════════════════════════════════════════════════════════
 
 **DECISION (Alex): swap the VO source from DPVO to an in-VM OpenCV
