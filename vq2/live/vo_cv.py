@@ -76,7 +76,23 @@ class MonoVO:
         self._prev_img = img
 
     def step(self, t: float, gray: np.ndarray) -> VoStep | None:
-        """gray: (H,W) uint8. Returns a VoStep when a keyframe closes, else None."""
+        """Offline convenience: track + (inline) solve. Returns a VoStep when a
+        keyframe closes, else None. For live use call track()/solve_job() so the
+        essential-matrix solve runs off the real-time hot path."""
+        job = self.track(t, gray)
+        if job is None:
+            return None
+        return self.solve_job(job)
+
+    def track(self, t: float, gray: np.ndarray) -> dict | None:
+        """FRONT-END (real-time, ~10ms): KLT track + keyframe management. When a
+        keyframe closes, resets the keyframe HERE and returns an immutable solve
+        job (copied arrays) — the caller/back-end owns the solve. Returns None
+        while accumulating baseline or (re)seeding a keyframe. gray: (H,W) uint8.
+
+        Thread-safety: all mutable tracking state lives on this object and is
+        touched only by track(); the returned job is a private copy, so a
+        back-end thread can solve_job() it while the front-end keeps tracking."""
         if self._kf_img is None or self._kf_pts is None or len(self._kf_pts) < self.min_tracked:
             self._set_keyframe(t, gray)
             return None
@@ -95,10 +111,11 @@ class MonoVO:
         self._prev_img = gray
 
         n_tracked = len(cur_pts)
+        kf_t = self._kf_t
         if n_tracked < self.min_tracked:
-            step = self._solve(t, kf_pts, cur_pts, n_tracked)   # last-chance solve
-            self._set_keyframe(t, gray)
-            return step
+            job = self._make_job(kf_t, t, kf_pts, cur_pts, n_tracked, None)
+            self._set_keyframe(t, gray)                          # last-chance close
+            return job
 
         q0 = kf_pts.reshape(-1, 2)
         q1 = cur_pts.reshape(-1, 2)
@@ -106,11 +123,22 @@ class MonoVO:
         if median_flow < self.kf_flow_px:
             return None                                          # accumulate baseline
 
-        step = self._solve(t, kf_pts, cur_pts, n_tracked, median_flow)
+        job = self._make_job(kf_t, t, kf_pts, cur_pts, n_tracked, median_flow)
         self._set_keyframe(t, gray)                              # close the keyframe
-        return step
+        return job
 
-    def _solve(self, t, kf_pts, cur_pts, n_tracked, median_flow=None):
+    @staticmethod
+    def _make_job(kf_t, t, kf_pts, cur_pts, n_tracked, median_flow):
+        return dict(kf_t=kf_t, t=t, kf_pts=kf_pts.copy(), cur_pts=cur_pts.copy(),
+                    n_tracked=n_tracked, median_flow=median_flow)
+
+    def solve_job(self, job: dict) -> VoStep | None:
+        """BACK-END (~50ms, threadable): essential-matrix + recoverPose on a
+        track() job. Pure function of the job — no shared state."""
+        return self._solve(job["kf_t"], job["t"], job["kf_pts"], job["cur_pts"],
+                            job["n_tracked"], job["median_flow"])
+
+    def _solve(self, kf_t, t, kf_pts, cur_pts, n_tracked, median_flow=None):
         q0 = kf_pts.reshape(-1, 2).astype(np.float32)
         q1 = cur_pts.reshape(-1, 2).astype(np.float32)
         if median_flow is None:
@@ -135,7 +163,7 @@ class MonoVO:
             return None
         t_body_unit = t_body / n
         dyaw = _wrap(math.atan2(R_body[1, 0], R_body[0, 0]))
-        return VoStep(t0=self._kf_t, t1=t, R_body=R_body, t_body_unit=t_body_unit,
+        return VoStep(t0=kf_t, t1=t, R_body=R_body, t_body_unit=t_body_unit,
                       dyaw=dyaw, n_inliers=int(n_inl), n_tracked=int(n_tracked),
                       median_flow_px=float(median_flow))
 
