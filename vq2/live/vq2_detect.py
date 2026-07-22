@@ -1,7 +1,9 @@
 """Run the of-record GateNet multi-instance pipeline over recorded VQ2 frames."""
 import sys, os, json, glob, time
-sys.path.insert(0, r'C:\Users\alexj\Documents\algo_src_main')
-sys.path.insert(0, r'C:\Users\alexj')   # patched module copies (same order as vq2wp.py)
+MAIN_REPO = os.environ.get('VQ2_MAIN_REPO', r'C:\Users\Administrator\Documents\algo_src_main')
+if os.path.isdir(MAIN_REPO):
+    sys.path.insert(0, MAIN_REPO)
+sys.path.insert(0, os.environ.get('VQ2_DEPLOY_ROOT', r'C:\Users\Administrator'))
 import numpy as np
 import cv2
 import torch
@@ -13,10 +15,11 @@ from scripts.dcl import vq1_detect_overlay as OV
 from perception.training import train_gatenet as TG
 from perception.decode import associate as AS
 
-CKPT = r'C:\Users\alexj\gatenet_b2_cov.pt'
-CFG = r'C:\Users\alexj\Documents\algo_src_main\configs\perception\gatenet_b2_multi_pb_cov.yaml'
-FRAMES_DIR = sys.argv[1] if len(sys.argv) > 1 else r'C:\Users\alexj\vq2_motion\frames'
-OUT = os.path.join(os.path.dirname(FRAMES_DIR), 'detections.jsonl')
+CKPT = os.environ.get('GATENET_CKPT', r'C:\Users\Administrator\gatenet_b2_cov.pt')
+CFG = os.environ.get('GATENET_CFG', os.path.join(
+    MAIN_REPO, 'configs', 'perception', 'gatenet_b2_multi_pb_cov.yaml'))
+FRAMES_DIR = sys.argv[1] if len(sys.argv) > 1 else r'C:\Users\Administrator\vq2_motion\frames'
+OUT = os.environ.get('VQ2_DETECT_OUT', os.path.join(os.path.dirname(FRAMES_DIR), 'detections.jsonl'))
 
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 lm = OV.load_model(CKPT, CFG, dev)
