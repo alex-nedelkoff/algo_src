@@ -83,6 +83,64 @@ class TextPnPFit:
     reproj_rms_px: float
 
 
+@dataclass(frozen=True)
+class PillarEdgeFit:
+    """Image-space support for a physical pillar around a text observation."""
+    left_line: tuple[float, float, float, float]
+    right_line: tuple[float, float, float, float]
+    center_u: float
+    width_px: float
+    quality: float
+
+
+def fit_pillar_edges(image_bgr, read: PillarRead, *,
+                     horizontal_margin_px: float = 45.0,
+                     vertical_margin_px: float = 90.0,
+                     min_span_px: float = 32.0) -> PillarEdgeFit | None:
+    """Fit a Manhattan-vertical pillar silhouette around an OCR text box.
+
+    OCR supplies association; Canny/Hough only accepts a left/right pair that
+    brackets it.  The caller should de-roll the image when attitude is large.
+    """
+    import cv2
+    if image_bgr is None or image_bgr.ndim < 2 or read.w <= 0 or read.h <= 0:
+        return None
+    h_img, w_img = image_bgr.shape[:2]
+    x0 = max(0, int(np.floor(read.x - horizontal_margin_px)))
+    x1 = min(w_img, int(np.ceil(read.x + read.w + horizontal_margin_px)))
+    y0 = max(0, int(np.floor(read.y - vertical_margin_px)))
+    y1 = min(h_img, int(np.ceil(read.y + read.h + vertical_margin_px)))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    gray = cv2.cvtColor(image_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    lines = cv2.HoughLinesP(cv2.Canny(gray, 45, 135), 1, np.pi / 180.0,
+                            threshold=24, minLineLength=max(20, int(min_span_px)),
+                            maxLineGap=10)
+    if lines is None:
+        return None
+    candidates = []
+    ym = read.y + read.h / 2.0
+    for ax1, ay1, ax2, ay2 in lines.reshape(-1, 4):
+        gx1, gy1, gx2, gy2 = map(float, (ax1 + x0, ay1 + y0, ax2 + x0, ay2 + y0))
+        dx, dy = gx2 - gx1, gy2 - gy1
+        span = float(np.hypot(dx, dy))
+        if span < min_span_px or abs(dy) < 2.0 * abs(dx):
+            continue
+        xx = gx1 + (ym - gy1) * dx / dy
+        candidates.append((xx, span, (gx1, gy1, gx2, gy2)))
+    left = [row for row in candidates if row[0] <= read.x + 2.0]
+    right = [row for row in candidates if row[0] >= read.x + read.w - 2.0]
+    if not left or not right:
+        return None
+    l = max(left, key=lambda q: q[1] - .15 * abs(q[0] - read.x))
+    r = max(right, key=lambda q: q[1] - .15 * abs(q[0] - (read.x + read.w)))
+    width = r[0] - l[0]
+    if width < max(read.w, 6.0) or width > read.w + 2.0 * horizontal_margin_px:
+        return None
+    quality = min(1.0, (l[1] + r[1]) / max(2.0 * min_span_px, 2.0 * read.h))
+    return PillarEdgeFit(l[2], r[2], (l[0] + r[0]) / 2.0, width, quality)
+
+
 def fit_station_text_pnp(
     quad_xy,
     camera_matrix,

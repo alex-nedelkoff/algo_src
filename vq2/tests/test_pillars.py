@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 
 from vq2.pillars import (GpuPillarReader, PillarRead, classify_top_reads,
-                         fit_station_text_pnp)
+                         fit_pillar_edges, fit_station_text_pnp)
 
 
 def read(number, x, y, h=16):
@@ -63,3 +63,14 @@ def test_station_text_pnp_recovers_metric_camera_translation():
     assert fit is not None
     assert np.allclose(fit.t_cam_text, tvec, atol=1e-5)
     assert fit.reproj_rms_px < 1e-6
+
+
+def test_pillar_edge_fit_brackets_text_with_vertical_boundaries():
+    image = np.zeros((220, 240, 3), np.uint8)
+    cv2.line(image, (70, 20), (70, 205), (255, 255, 255), 3)
+    cv2.line(image, (150, 20), (150, 205), (255, 255, 255), 3)
+    fit = fit_pillar_edges(image, PillarRead(0.0, 92, 80, 35, 65, "22"))
+    assert fit is not None
+    assert abs(fit.center_u - 110) < 6
+    assert abs(fit.width_px - 80) < 10
+    assert fit.quality > 0.8
