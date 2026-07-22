@@ -1,4 +1,64 @@
-# HANDOFF — feat/vo-loop: VO (DPVO) into the smoother (2026-07-21)
+# HANDOFF — feat/vo-loop: VO into the smoother (2026-07-21)
+
+═══════════════════════════════════════════════════════════════════
+## ⭐ UPDATE 2026-07-22 — DPVO IS DEAD IN-VM; OpenCV VO IS THE PATH
+═══════════════════════════════════════════════════════════════════
+
+**DECISION (Alex): swap the VO source from DPVO to an in-VM OpenCV
+monocular VO. DPVO stays OFFLINE-only, on a box where it runs.** The
+`OdomDelta` contract makes the source swappable — the smoother side is
+unchanged.
+
+**Why DPVO is dead here (measured, root-caused — do NOT retry online
+DPVO on Vagon):**
+- CUDA works (A10G passthrough, torch 2.3.1+cu121, `cuda_corr` imports
+  AND executes — frame 0 ran, 2.4 GB allocated, 35% util).
+- But DPVO's **lietorch CUDA extension access-violates on first kernel
+  execution** (SE3 `inv()` in `lietorch/group_ops.py:14`, hit via
+  `motion_probe → reproject`). `smoke_lietorch.py` (DPVO's own test)
+  imports OK then SEGFAULTs the instant a lietorch op runs. Exit 139.
+- Signature = ABI mismatch (extension built against a different
+  torch/CUDA than dpvo231's) OR a build-provenance issue from the
+  laptop port. Not worth grinding: a rebuild MIGHT fix it but the
+  decision is to move on.
+- The `dpvo231` conda env now has a FULL working DPVO dep set
+  (torch_scatter, numba, pypose, kornia, evo, plyfile, matplotlib,
+  numpy<2, opencv 4.11) — usable for OFFLINE DPVO on a working box.
+
+**Why OpenCV VO is viable (measured on real corpora):**
+- KLT (`goodFeaturesToTrack` + `calcOpticalFlowPyrLK`) + essential-
+  matrix (`findEssentialMat` RANSAC + `recoverPose`) runs clean in-VM,
+  no segfault, ~500 features tracked/frame, 0 NaN, 0 E-failures.
+- CRITICAL LESSON (cost me several probes): **corpus frames 0..~360
+  are the PAD-STATIC PRELUDE** (drone waits for GO; median flow 0.0px).
+  Sampling there makes VO look degenerate (recoverPose ~1 inlier).
+  ALWAYS find the motion window first (scan median flow; test46 flight
+  = frames ~380..1100). `scratch/vo_motionscan.py` does this.
+- On the MOTION window, recoverPose is healthy and scales with
+  baseline (test46, inliers p50/p90 of ~500 feats):
+    stride 1 (1.7px flow): 13/115  | stride 5 (8.6px): 164/313
+    stride 3 (5.2px):      80/241  | stride 8 (12.6px):177/328
+- ⇒ **The VO front-end MUST keyframe by parallax**, not adjacency:
+  accumulate frames until median flow ≈ 8-13px (cf DPVO
+  KEYFRAME_THRESH=15px), then solve the relative pose. Emit ONE
+  `OdomDelta` per keyframe pair, `scale_locked=False` (monocular =
+  direction only; reuse the DPVO scale machinery — climb-cal /
+  GNSCALE — to scale later).
+
+**Env note:** the vq2/VO runtime env is `monorace` (cv2 5.0.0, numpy 2).
+cv2 5.0 vs 4.11 gave IDENTICAL VO results (A/B'd) — version is not a
+factor. Scratch probes: `scratch/vo_cv_smoke.py`, `vo_baseline.py`,
+`vo_motionscan.py`, `vo_probe.py`.
+
+**NEXT (pick up here):** build `vq2/live/vo_cv.py` — a keyframe-by-flow
+monocular VO emitting `OdomDelta` — then the offline replay harness
+(Phase 1 below), validating VO-only smoother drift vs the `p_est`
+reference in `livelog.jsonl`. Frame↔time link: jpg filename IS the
+`sim_ns`; order via `frames_dedup.jsonl`.
+
+The DPVO-specific plan below is SUPERSEDED for the online path; its
+scale-strategy and replay-harness structure still apply to the OpenCV
+VO. Everything else (contract, discipline, phase gates) stands.
 
 ═══════════════════════════════════════════════════════════════════
 ## MISSION
