@@ -58,11 +58,18 @@ class MonoVO:
 
     def __init__(self, kf_flow_px: float = 9.0, min_inliers: int = 30,
                  min_tracked: int = 40, ransac_thresh_px: float = 1.0,
-                 gpu: bool = False):
+                 gpu: bool = False, max_solve_pts: int = 200,
+                 ransac_prob: float = 0.99):
         self.kf_flow_px = kf_flow_px
         self.min_inliers = min_inliers
         self.min_tracked = min_tracked
         self.ransac_thresh_px = ransac_thresh_px
+        # solve-cost caps (matter on CPU-starved boxes): subsample the
+        # correspondences fed to RANSAC, and a looser prob = fewer iterations.
+        # ~halves solve CPU vs (600 pts, 0.999) while keeping inliers > gate.
+        self.max_solve_pts = max_solve_pts
+        self.ransac_prob = ransac_prob
+        self._rng = np.random.default_rng(0)
         self.gpu = gpu             # GPU (CUDA-graph) optical flow, frees the CPU
         self._kf_img = None         # keyframe image
         self._kf_pts = None         # (N,1,2) features detected in the keyframe
@@ -167,8 +174,14 @@ class MonoVO:
             median_flow = float(np.median(np.linalg.norm(q1 - q0, axis=1)))
         if len(q0) < 8:
             return None
+        # subsample to bound RANSAC cost under CPU contention (n_tracked still
+        # reports the full tracked count for health)
+        if len(q0) > self.max_solve_pts:
+            idx = self._rng.choice(len(q0), self.max_solve_pts, replace=False)
+            q0, q1 = q0[idx], q1[idx]
         E, mask = cv2.findEssentialMat(q1, q0, K, method=cv2.RANSAC,
-                                       prob=0.999, threshold=self.ransac_thresh_px)
+                                       prob=self.ransac_prob,
+                                       threshold=self.ransac_thresh_px)
         if E is None or E.shape != (3, 3):
             return None
         n_inl, R, t_cam, _ = cv2.recoverPose(E, q1, q0, K, mask=mask.copy())

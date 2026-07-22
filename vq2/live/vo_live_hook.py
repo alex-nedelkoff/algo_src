@@ -28,10 +28,14 @@ from .vo_live import LiveVO
 
 
 def start_vo_live(state, log_path: str | None = None, gpu: bool | None = None,
-                  kf_flow_px: float = 9.0):
+                  kf_flow_px: float | None = None):
     """Spawn the live VO thread. Returns the thread (daemon)."""
     if gpu is None:
         gpu = os.environ.get("VO_GPU", "1") == "1"
+    if kf_flow_px is None:
+        # higher live default (fewer keyframes -> fewer CPU solves) than the
+        # offline 9px; wider baselines are also better-conditioned.
+        kf_flow_px = float(os.environ.get("VO_KFFLOW", "13"))
     log_path = log_path or os.environ.get("VO_LOG", r"C:\Users\Administrator\vo_live.jsonl")
     t = threading.Thread(target=_run, args=(state, log_path, gpu, kf_flow_px),
                          name="vo-live", daemon=True)

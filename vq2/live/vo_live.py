@@ -73,7 +73,14 @@ class LiveVO:
         try:
             self._q.put_nowait(job)
         except queue.Full:
-            self.stats.dropped += 1        # back-end behind: skip, widen baseline
+            # back-end behind: evict the OLDEST (stale) job and keep this fresh
+            # one, so emitted deltas stay low-latency rather than seconds stale.
+            try:
+                self._q.get_nowait()
+                self.stats.dropped += 1
+                self._q.put_nowait(job)
+            except (queue.Empty, queue.Full):
+                self.stats.dropped += 1
 
     def _backend(self) -> None:
         while not self._stop.is_set():
