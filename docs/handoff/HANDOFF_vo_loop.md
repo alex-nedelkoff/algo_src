@@ -1,6 +1,242 @@
 # HANDOFF — feat/vo-loop: VO into the smoother (2026-07-21)
 
 ═══════════════════════════════════════════════════════════════════
+## ⭐ COR-147 SUB-TASK — livelog p_est TIMESTAMP JOIN (branch
+##   feat/vo-loop-pest, banked 2026-07-22)
+═══════════════════════════════════════════════════════════════════
+
+**Scope:** the `p_est` reference-join blocker only (offline data plumbing +
+scoring). Branch `feat/vo-loop-pest` (worktree `algo_src-vo-pest`, forked from
+`feat/vo-loop`). NOT pushed — Alex pushes. Env `monorace`. Full suite: 187 pass
+/ 11 skip (added 9 join tests; nothing broke).
+
+### THE SCHEMA (measured on test95-99/46/140 livelog.jsonl — trust this)
+- EVERY livelog record carries `t` = flight-LOOP WALL clock (float s). The naive
+  carry-forward ignored this shared clock.
+- `ns` = frame CAPTURE time (sim ns, SAME namespace as jpg filenames /
+  frames_dedup `sim_ns`) — logged ONLY on `obs*` rows (obs, obs_nofix,
+  obs_wronggate, obs_ident[_fail]). `t_cam` on `obs` is a 3-VECTOR (gate range),
+  NOT a time — do not use it.
+- Estimator POSITION = 3-vector `p` on `kf_upd` / `mapfollow` / `tick_fix` /
+  `mfdr_seed` (reset-NED). **`att.p_est` and `att.pb` are SCALARS** (an x-axis
+  projection, NOT a position) — the old code's `len(p)>=3` guard silently
+  skipped `att`, so the reference was ALWAYS built from `kf_upd.p` etc. `att` is
+  now explicitly excluded (POS_KINDS).
+
+### THE JOIN (vq2/tools/livelog_join.py — the deliverable)
+- Loop-iteration linkage (measured): within one iteration the loop reads a frame
+  (capture `ns`), runs the obs, updates the KF, and logs `kf_upd`(pos)+`obs`(ns)
+  sharing `t` to <1 ms. `obs*` rows are the ONLY place the loop clock `t` and the
+  capture clock `ns` co-occur → they calibrate a monotone t→ns transform.
+- Each position row's `t` is mapped onto the CAPTURE axis via that transform:
+  exact frame `ns` when a same-iteration obs exists (16/26 rows in test95),
+  linear interp of ns(t) otherwise. No extrapolation → prelude/tail excluded.
+  Anchors deduped-by-t + greedy strictly-increasing (kills obs_wronggate+
+  obs_nofix tie frames and rare stale frames).
+- WHY the old carry-forward was wrong: it stamped each position with the LAST-
+  SEEN ns = the PREVIOUS iteration's frame (position is logged just before its
+  own iteration's obs). Off by ~one loop iteration: measured median |interp −
+  carryfwd| = 0.37–0.67 s across the 7 corpora (max several s in fast segments)
+  — larger than a keyframe interval.
+
+### MEASURED (vq2/tools/vo_replay.py, pre-tick approach leg, NEW join)
+Scoring scope FIX: a single 2D-rotation Procrustes fit is only valid on a
+segment WITHOUT a big heading change. The gate-1 right turn breaks it, so
+whole-flight numbers were garbage (test95 raw cos −0.14). Default scoring is now
+the PRE-TICK straight approach leg (motion-start → first tick_fix/gate_tick);
+`--full-flight` opts out.
+
+  corpus  n_legs  raw xy-dir cos  endpoint drift  fit scale(unit→m)
+  test95    8        +0.87           11%             0.520
+  test96    8        +0.93           12%             0.403
+  test97    7        +0.86            7%             0.540
+  test98    1        +0.95         (0%, n=1 degen)   0.935
+  test99    8        +0.85           18%             0.558
+  test46    7        +0.86            8%             0.632
+  test140   3        +0.99            1%             0.661
+
+- VO-vs-p_est xy DIRECTION agreement (whole approach leg): +0.85..+0.99 on 6/7
+  corpora (test98 pre-tick collapses to n=1 usable leg — too few moving ref
+  intervals in a short/fast approach; use --full-flight or a longer window).
+- A/B PROOF the join matters (same VO steps, only the timestamp join varies):
+  test46 pre-tick raw cos 0.26 (carryfwd) → 0.86 (newjoin); endpoint 38%→8%.
+  test96 endpoint 74%(cf, whole-flight)→9%(newjoin). On the clean leg the join
+  is unambiguously better; on the turn-polluted whole flight both are noisy.
+
+### WHAT'S UNBLOCKED / WHAT REMAINS ASSUMED
+- UNBLOCKED (mechanics): p_est is now precisely on the VO capture-time axis, so
+  per-corpus VO↔p_est fit-scale (unit→m) and drift over the clean approach leg
+  are computable. Phase 2 scale A/B (climb-cal vs GNSCALE) can use these as one
+  yardstick each corpus.
+- STILL SOFT (honest): (1) p_est is DR, not truth — drift/scale here is RELATIVE
+  divergence of two imperfect tracks, NOT absolute VO error. (2) Per-LEG residual
+  is ~100% (0.5 s legs ≈ VO interp noise) → score over the whole leg / long
+  baselines, never per-leg. (3) Per-session monocular scale scatter is real
+  (fit scale 0.40–0.66 across corpora) — N matters, do not conclude A vs B from
+  n=1–2. (4) Fit scale is only as good as p_est; the map-relative geometry
+  (14° turn, datum-free) remains the stronger scale/soundness check.
+- RECOMMENDATION: run Phase 2 A/B with p_est fit-scale as a SECONDARY corroborant
+  and the map-relative geometry / truth_crossings as the PRIMARY decider. Ask
+  Alex whether p_est-referenced drift is an acceptable A/B tiebreaker or whether
+  A/B must be judged purely map-relative.
+
+### PICKUP POINT
+`vq2/tools/livelog_join.py` (join), `vq2/tools/vo_replay.py` (rewired + drift
+metric, `--full-flight`), `vq2/tests/test_livelog_join.py` (9 tests). Next: feed
+the per-corpus fit-scale into the Phase 2 climb-cal-vs-GNSCALE compare on the
+same 7 corpora, decide the primary yardstick with Alex.
+
+═══════════════════════════════════════════════════════════════════
+## ⭐ COR-147 PHASE 2 — SCALE STRATEGY A/B (branch feat/vo-loop-pest,
+##   banked 2026-07-23)
+═══════════════════════════════════════════════════════════════════
+
+**Decision applied:** map-relative / gate-PnP = PRIMARY, p_est-fit = SECONDARY.
+Tool: `vq2/tools/vo_scale.py` (pure estimators + CLI), tests
+`vq2/tests/test_vo_scale.py` (6). Suite 193 pass / 11 skip.
+
+  A  climb-cal  = ||Δp_KF|| / ||Δp_VO|| over the early climb window (legacy).
+  B  gate-scale = median(Δrange / VO-chord) over the gate-PnP range-closing run.
+
+### RESULT — B (gate-scale) WINS on 6 corpora; A is structurally non-viable.
+Per-corpus scale (unit->m), s_pest = pre-tick p_est-fit (SECONDARY truth):
+
+  corpus   A climb   B gate   s_pest   A/pest   B/pest
+  test95    4.418     0.491    0.520    8.50     0.94
+  test96    4.198     0.316    0.403   10.42     0.78
+  test97    4.567     0.319    0.540    8.46     0.59
+  test98     n/a       n/a     0.935    n/a      n/a   (climb + gate both absent)
+  test99    5.091     0.264    0.558    9.12     0.47
+  test46    4.089     0.266    0.632    6.47     0.42
+  test140    n/a      0.206    0.661    n/a      0.31   (climb disp 0.43m < gate)
+  A available/viable: 0/7   B available: 6/7   both A&B produced: 5
+
+- **A is WRONG by ~10x** (A/pest 6.5–10.4 => 550–940% scale error on the clean
+  leg). ROOT CAUSE (measured): this MonoVO keyframes by PARALLAX, and the near-
+  vertical low-parallax climb closes **0–3 keyframes** (of 103–294 total) in the
+  3–4 s / ~1 m climb window across ALL 7 corpora. So climb-cal divides a real
+  ~0.9 m KF climb by an INTERPOLATION ARTIFACT (d_vo≈0.19 units) — not a real VO
+  measurement. Legacy climb-cal worked for DPVO (dense per-frame poses); it does
+  NOT transfer to a parallax-keyframed MonoVO. Not a tuning bug — forcing
+  keyframes in the climb would only add degenerate low-parallax solves.
+- **B is real and correct-order**: 16–79 real keyframes over a 7.1–7.5 m gate-PnP
+  range closing; scale 0.21–0.49, matching the p_est SECONDARY within 6–69%
+  (B/pest 0.31–0.94). B is anchored to the SURVEYED gate range = the PRIMARY
+  map-relative reference. **Gate met: B wins on ≥5 corpora (6/7).**
+
+### OPERATIONAL ASYMMETRY (decisive, measured)
+Gate 1 is flown BLIND (NOFIX=1): pre-tick obs sit at a CONSTANT ~6.2 m gate-1
+range (no closing to scale against) and the gate-1 approach is `obs_nofix`. The
+only range-CLOSING PnP is the **gate-2 approach, POST the gate-1 tick**. So B is
+structurally unavailable until after gate 1, and A (the only pre-gate-1 option)
+does not work. => Nothing scales the MonoVO on the gate-1 approach from these
+corpora. Live, scale must come from the gate-2 leg (B) or elsewhere.
+
+### DEEPER FINDING FOR ALEX (this changes the scale model)
+Even B is NOT a single global metric scale. MonoVO discards per-keyframe
+translation magnitude (unit-only) and keyframes by parallax => integrated path
+length ∝ KEYFRAME COUNT, not metres. Scale (m/unit) therefore varies with each
+segment's parallax rate (speed/depth). Evidence: test46 gate-2 scale 0.27 vs its
+own gate-1 (p_est) scale 0.63 — ~2x, same flight, different cruise. Implication:
+the DPVO-era "calibrate once, FREEZE at first update" model is WRONG for this
+MonoVO. Two clean fixes (Alex's call): (1) carry a per-keyframe magnitude on the
+OdomDelta (recovered depth/baseline) so the stream is metric up to ONE global
+scale, then Sim3-estimate that scale as a smoother STATE; or (2) keep unit
+deltas but re-derive scale CONTINUOUSLY from live gate-range (B) per segment
+rather than freezing.
+
+### DECISION NEEDED FROM ALEX
+1. Adopt B (gate-scale, continuous) as the MonoVO scale path and RETIRE climb-cal
+   for the OpenCV VO? (climb-cal stays valid only for dense-pose DPVO.)
+2. Is the scale-non-globality worth fixing now via per-keyframe magnitude on the
+   OdomDelta contract (a `vq2/relpose.py` change — trunk-first, out of this
+   branch), or defer and live with per-segment gate-scale?
+
+### PICKUP POINT
+`vq2/tools/vo_scale.py` (estimators A/B + p_est-fit + CLI),
+`vq2/tests/test_vo_scale.py`. Run: `python -m vq2.tools.vo_scale <corpus...>`.
+See Phase 2b below for the resolution.
+
+═══════════════════════════════════════════════════════════════════
+## ⭐ COR-147 PHASE 2b — GATE-ANCHORED SCALE, incl. SINGLE-VIEW gate-1
+##   (branch feat/vo-loop-pest, banked 2026-07-23)
+═══════════════════════════════════════════════════════════════════
+
+**Alex's calls applied:** (1) adopt gate-scale, RETIRE climb-cal for the OpenCV
+VO; (2) fix scale-non-globality using KNOWN gate dimensions as the metric anchor.
+
+### STEP 1 — vo_cv.py magnitude handling (VERIFIED, decides the design)
+`vo_cv._solve`: recoverPose's up-to-scale translation is RE-NORMALIZED
+(`t_body_unit = t_body/|t_body|`); there is NO triangulation, NO shared 3D points
+across keyframes, NO scale propagation. => each OdomDelta is UNIT per keyframe
+pair, magnitude mathematically unobservable AND discarded, ZERO cross-keyframe
+scale link. **"Lock one scalar" is NOT viable** — it makes only the first pair
+metric; the chain drifts because each pair's true length varies with parallax.
+Global metric scale would need per-keyframe magnitude (triangulation/Sim3 + a
+relpose.py field) — AVOIDED here via per-gate re-anchoring.
+
+### STEP 2 — single-view gate-1 anchor (Alex's idea — WORKS)
+A known-size (1.5 m) gate seen ONCE at absolute PnP range R defines a metric
+baseline WITHOUT range closing: from that view the drone flies to CROSS the gate
+(range->0 at the tick), so it travels ~R. scale = R / ||VO(tick) - VO(pad view)||.
+`obs.t_cam` is already an absolute-metric PnP camera-frame gate position (gate
+size 1.5 m, `gates3d.py`; gate-1 range ~6.28 m == surveyed pad-lock). This scales
+the BLIND gate-1 leg that B (range-closing) structurally cannot reach.
+
+### RESULT (test95-99/46/140, scale unit->m)
+  corpus   A climb  B gate2  g1 view  s_pest   g1/B   g1/pest
+  test95    4.418    0.491    0.266    0.520   0.542   0.512
+  test96    4.198    0.316    0.266    0.403   0.843   0.660
+  test97    4.567    0.319    0.280    0.540   0.879   0.519
+  test98     n/a      n/a     0.290    0.935    n/a    0.311
+  test99    5.091    0.264    0.366    0.558   1.386   0.656
+  test46    4.089    0.266    0.272    0.632   1.020   0.430
+  test140    n/a     0.206    0.306    0.661   1.480   0.463
+  gate-1 single-view available: 7/7  |  gate-2 B: 6/7  |  climb-A viable: 0/7
+
+- **The gate-1 leg IS NOW SCALED on 7/7 corpora** (single-view anchor, 0.27-0.37).
+  B-alone reached 0/7 gate-1 legs (blind approach). This closes the Phase-2 gap.
+- **Two independent gate anchors AGREE**: gate-1 single-view vs gate-2 range-close
+  ratio median **0.949** [0.542..1.480] (n=6) — NO systematic bias; they measure
+  the same underlying scale. The ±48% per-corpus spread is the residual non-
+  globality (unit-per-keyframe), which PER-GATE RE-ANCHORING absorbs (each leg
+  uses its own gate => ~0 error at its anchor).
+- vs PRIMARY (gate/map): both anchors ARE the primary metric (surveyed 1.5 m gate
+  + 6.28 m pad range). vs SECONDARY (p_est-fit 0.40-0.66): gate anchors are ~half
+  (g1/pest 0.31-0.66) — p_est is DR and biases the scale HIGH; the two absolute
+  gate anchors agreeing with each other is the stronger evidence, so trust ~0.3.
+
+### CONTRACT (relpose.py) — NO change needed for the chosen scheme
+Per-gate re-anchoring keeps OdomDelta unit (scale_locked=False); the association
+layer applies the CURRENT leg's gate-anchored scale. A relpose.py per-keyframe-
+magnitude field is needed ONLY if Alex wants ONE globally-consistent scale
+instead of per-leg — that is a trunk-first change touching COR-148 and was NOT
+made here. Given gate1/gate2 agree at median 0.95, per-leg re-anchoring is
+sufficient; the global-scale contract change is NOT recommended now.
+
+### INTRINSICS caveat (out of lane — COR-148)
+All scales use the canonical `vq2.camera` fx=226 model (not re-solved). The gate
+anchors agreeing at median 0.95 says intrinsics are not the DOMINANT residual
+here, but any absolute-scale bias common to all views (e.g. fx=226 vs 320, or the
+11.18 vs 10.595 m gate-depth discrepancy COR-148 is calibrating) would scale ALL
+gate anchors together and would NOT show up in the g1/g2 ratio. Flagging, not
+fixing.
+
+### DECISION NEEDED FROM ALEX
+- Confirm per-gate re-anchoring (no relpose.py change) as the scale path, and
+  that ~0.3 (gate-anchored) not ~0.5 (p_est) is the scale to carry into Phase 3.
+- If a single global scale is later required, that needs the relpose.py
+  per-keyframe-magnitude field (trunk-first) — say the word.
+
+### PICKUP POINT
+`vq2/tools/vo_scale.py`: `gate1_anchor_scale` + `load_gate1_anchor` (gate-1
+single-view), `gate_scale` (gate-2 B), `climb_cal_scale` (retired, documents its
+failure), CLI prints the table. `vq2/tests/test_vo_scale.py` (9 tests). Suite 196
+pass / 11 skip. NEXT (Phase 3, live, NEW flag): wire per-gate gate-anchored scale
+into `vq2/live/vo_association.calibrate_scale` -> smoother push; do NOT disturb
+the legacy DPVO path. Not pushed — Alex pushes.
+
+═══════════════════════════════════════════════════════════════════
 ## ⭐⭐ START HERE — SESSION BANKED 2026-07-22 (COR-147)
 ═══════════════════════════════════════════════════════════════════
 
