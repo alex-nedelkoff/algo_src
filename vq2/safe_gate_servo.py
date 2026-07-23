@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import cv2
+import numpy as np
+
+from aigp.gate_detect import DEFAULT_PARAMS, red_mask
+
 
 @dataclass(frozen=True)
 class GateObservation:
@@ -16,6 +21,45 @@ class GateObservation:
     v: float
     width_px: float
     height_px: float
+
+
+def detect_aperture_gate(bgr: np.ndarray, params: dict | None = None) -> GateObservation | None:
+    """Return the largest square red frame that contains a substantial dark hole.
+
+    The ordinary HSV detector is deliberately broad and accepts red signs.  A
+    calibration capture needs a gate aperture specifically, so solid red
+    components and red components without a nested hole are rejected here.
+    """
+    p = dict(DEFAULT_PARAMS)
+    if params:
+        p.update(params)
+    contours, hierarchy = cv2.findContours(red_mask(bgr, p), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    if hierarchy is None:
+        return None
+    candidates: list[tuple[float, GateObservation]] = []
+    for i, contour in enumerate(contours):
+        if hierarchy[0][i][3] != -1:
+            continue
+        area = float(cv2.contourArea(contour))
+        x, y, w, h = cv2.boundingRect(contour)
+        if area < p["min_area_px"] or w <= 0 or h <= 0:
+            continue
+        if abs(w / float(h) - 1.0) > p["square_tol"] or (y + h / 2.0) > p["max_v_frac"] * bgr.shape[0]:
+            continue
+        best_hole = 0.0
+        hole_box = None
+        child = hierarchy[0][i][2]
+        while child != -1:
+            hole_area = float(cv2.contourArea(contours[child]))
+            if hole_area > best_hole:
+                best_hole = hole_area
+                hole_box = cv2.boundingRect(contours[child])
+            child = hierarchy[0][child][0]
+        if hole_box is None or best_hole < 0.05 * area:
+            continue
+        hx, hy, hw, hh = hole_box
+        candidates.append((area, GateObservation(hx + hw / 2.0, hy + hh / 2.0, float(w), float(h))))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 @dataclass(frozen=True)

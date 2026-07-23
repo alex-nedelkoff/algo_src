@@ -1,4 +1,7 @@
-from vq2.safe_gate_servo import GateObservation, SafeGateServo
+import cv2
+import numpy as np
+
+from vq2.safe_gate_servo import GateObservation, SafeGateServo, detect_aperture_gate
 
 
 def obs(u=320, w=60, v=180):
@@ -37,3 +40,13 @@ def test_ignores_small_red_component_before_initial_acquisition():
 def test_yaw_direction_matches_empirical_legacy_sign():
     cmd = SafeGateServo(stable_required=99).step(obs(u=352))
     assert cmd.yaw_rate_rad_s < 0.0
+
+
+def test_aperture_detector_rejects_solid_red_sign_and_returns_hole_center():
+    image = np.zeros((360, 640, 3), dtype=np.uint8)
+    cv2.rectangle(image, (30, 30), (110, 110), (0, 0, 255), -1)  # solid sign
+    cv2.rectangle(image, (250, 90), (370, 210), (0, 0, 255), -1)
+    cv2.rectangle(image, (275, 115), (345, 185), (0, 0, 0), -1)
+    got = detect_aperture_gate(image)
+    assert got is not None
+    assert (got.u, got.v) == (310.5, 150.5)

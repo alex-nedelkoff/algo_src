@@ -9,8 +9,7 @@ import socket, struct, time, json, os, math, threading
 import cv2
 import numpy as np
 from pymavlink import mavutil
-from aigp.gate_detect import detect_gate
-from vq2.safe_gate_servo import GateObservation, SafeGateServo
+from vq2.safe_gate_servo import SafeGateServo, detect_aperture_gate
 
 OUT = os.environ.get('RECORD', 'C:/Users/alexj/vq2_accept')
 os.makedirs(OUT + '/frames', exist_ok=True)
@@ -28,7 +27,7 @@ print('hb ok', flush=True)
 
 state = {'acc': (0.0, 0.0, -9.81), 'gyr': (0.0, 0.0, 0.0), 't_us': 0,
          'roll': 0.0, 'pitch': 0.0, 'vz_up': 0.0, 'vx_b': 0.0, 'vy_b': 0.0, 'collision': None, 'stop': False, 'flying': False,
-         'frame': None, 'frame_ns': None}
+         'frame': None, 'frame_ns': None, 'collision_seq': 0}
 log_mav = open(OUT + '/mavlink.jsonl', 'w')
 log_cmd = open(OUT + '/cmds.jsonl', 'w')
 
@@ -79,6 +78,7 @@ def rx_loop():
             state['acc'], state['gyr'], state['t_us'] = acc, gyr, us
         elif t == 'COLLISION':
             state['collision'] = d
+            state['collision_seq'] += 1
 
 def cam_loop():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -138,10 +138,18 @@ print('armed (gyro-only attitude from here)', flush=True)
 def tilt():
     return math.sqrt(state['roll']**2 + state['pitch']**2)
 
+last_collision_seq = state['collision_seq']
 def hard_collision():
+    # Treat each incoming event once.  Looking only at the latest message let a
+    # threat-1 environment contact overwrite a preceding threat-2 hit before
+    # the control loop could abort.
+    global last_collision_seq
+    if state['collision_seq'] == last_collision_seq:
+        return False
+    last_collision_seq = state['collision_seq']
     c = state['collision']
     if not c: return False
-    if c.get('threat_level', 0) >= 2 and c.get('horizontal_minimum_delta', 0) > 2.5:
+    if c.get('threat_level', 0) >= 2:
         return True
     return False
 
@@ -233,10 +241,9 @@ for name, dur, fn in blocks:
             observation = None
             new_frame = image is not None and ns != servo_last_ns
             if new_frame:
-                det = detect_gate(image)
+                det = detect_aperture_gate(image)
                 servo_last_ns = ns
-                if det is not None:
-                    observation = GateObservation(det.u, det.v, det.w_px, det.h_px)
+                observation = det
                 servo_cmd = servo.step(observation)
                 servo_last_wall = time.time()
             # Reuse only a recent frame's command; camera stalls fail closed.
