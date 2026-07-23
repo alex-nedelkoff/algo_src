@@ -8,8 +8,25 @@ import json
 import math
 from typing import Iterable
 
+# Single source of the camera intrinsic (vq2/camera.py). Support both the vq2
+# package layout and being run as a bare script from vq2/live (the standalone
+# bridge fallback path in dpvo_odom_bridge).
+try:
+    from vq2.camera import FULL_INTRINSICS as _CAM_INTRINSICS
+except ImportError:  # pragma: no cover - script-relative fallback
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(
+        0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    )
+    from vq2.camera import FULL_INTRINSICS as _CAM_INTRINSICS
+
 
 Intrinsics = tuple[float, float, float, float]
+
+# Full-resolution intrinsic shared by every DPVO client (bridge, replay,
+# tick-calibrate); scaled per requested input size via scale_intrinsics.
+FULL_INTRINSICS: Intrinsics = _CAM_INTRINSICS
 
 
 @dataclass(frozen=True)
@@ -18,7 +35,7 @@ class DpvoSessionConfig:
     width: int = 640
     height: int = 360
     stride: int = 2
-    intrinsics: Intrinsics = (226.0, 226.0, 319.5, 179.5)
+    intrinsics: Intrinsics = FULL_INTRINSICS
     cuda_fraction: float = 0.48
     # DPVO keyframe-graph bounds. Defaults match dpvo config/default.yaml so an
     # unset config reproduces stock behaviour; smaller windows cap per-frame BA

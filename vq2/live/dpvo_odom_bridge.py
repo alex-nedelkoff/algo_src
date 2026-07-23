@@ -23,6 +23,7 @@ try:
         session_message,
     )
     from .dpvo_route import (
+        FULL_INTRINSICS,
         DpvoSessionConfig,
         RouteObservation,
         TickRebasedRoute,
@@ -39,6 +40,7 @@ except ImportError:
         session_message,
     )
     from dpvo_route import (
+        FULL_INTRINSICS,
         DpvoSessionConfig,
         RouteObservation,
         TickRebasedRoute,
@@ -50,7 +52,6 @@ except ImportError:
 PORT = int(os.environ.get("DPVO_BRIDGE_PORT", "9099"))
 MODEL = os.environ.get("DPVO_MODEL_WIN", r"C:\Users\alexj\DPVO\dpvo.pth")
 FULL_SIZE = (640, 360)
-FULL_INTRINSICS = (226.0, 226.0, 319.5, 179.5)
 
 
 def prewarm_abort_reason(state: dict) -> str | None:

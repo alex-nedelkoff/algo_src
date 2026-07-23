@@ -19,13 +19,13 @@ from .live.dpvo_bridge_protocol import (
     session_message,
 )
 from .live.dpvo_route import (
+    FULL_INTRINSICS,
     DpvoSessionConfig,
     calibration_identity,
     scale_intrinsics,
 )
 
 
-FULL_INTRINSICS = (226.0, 226.0, 319.5, 179.5)
 FULL_SIZE = (640, 360)
 
 

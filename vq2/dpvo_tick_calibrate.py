@@ -10,6 +10,7 @@ from pathlib import Path
 import struct
 
 from .live.dpvo_route import (
+    FULL_INTRINSICS,
     DpvoSessionConfig,
     calibration_identity,
     fit_tick_scale,
@@ -21,7 +22,6 @@ RACE_STATUS = struct.Struct("<BQqqIq")
 # Full-resolution camera model; intrinsics scale with the requested input size
 # exactly as dpvo_bridge_replay does, so the calibration identity matches the
 # poses produced at that resolution.
-FULL_INTRINSICS = (226.0, 226.0, 319.5, 179.5)
 FULL_SIZE = (640, 360)
 
 

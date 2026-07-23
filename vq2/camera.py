@@ -16,6 +16,11 @@ FX = FY = 226.0  # px; GateNet PnP default (vq2/gatenet/postprocess.py)
 CX, CY = (W - 1) / 2.0, (H - 1) / 2.0
 CAM_TILT = math.radians(20.0)
 
+# Single source of the pinhole intrinsic for every mapping/estimator consumer.
+# (fx, fy, cx, cy) @ (W, H). DPVO bridge/route, GateNet PnP, fusion, vq2wp and
+# the offline tools derive from these — do not re-hardcode the numbers.
+FULL_INTRINSICS = (FX, FY, CX, CY)
+
 _ct, _st = math.cos(CAM_TILT), math.sin(CAM_TILT)
 _CZ = np.array([_ct, 0.0, -_st])
 _CY = np.array([_st, 0.0, _ct])

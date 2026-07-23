@@ -382,6 +382,14 @@ RANGE_RATIO_MIN = 0.55          # identity gate (see det_loop comment)
 RANGE_AFF_B = 2.7
 RANGE_AFF_K = 0.75
 
+# Single-sourced pinhole intrinsic (see vq2/camera.py). Deploy layout ships
+# flat modules (from eskf import ...), repo/test layout is the vq2 package;
+# support both. NOTE: deploy must now copy camera.py flat alongside vq2wp.py.
+try:
+    from camera import FX as CAM_FX, FY as CAM_FY, CX as CAM_CX, CY as CAM_CY
+except ImportError:  # package/repo context
+    from vq2.camera import FX as CAM_FX, FY as CAM_FY, CX as CAM_CX, CY as CAM_CY
+
 # camera axes in body frame (nose camera, 20 deg up -- flight-validated 07-06)
 ct, st = math.cos(CAM_TILT), math.sin(CAM_TILT)
 C_Z = np.array([ct, 0.0, -st])
@@ -908,8 +916,8 @@ def _det_loop():
                 for k_ in range(min(len(best[2]), len(_cmap))):
                     if best[3][k_] < 0.5 or rel_[k_, 2] <= 0.2:
                         continue
-                    uv_ = np.array([rel_[k_, 0] / rel_[k_, 2] * 226.0 + 319.5,
-                                    rel_[k_, 1] / rel_[k_, 2] * 226.0 + 179.5])
+                    uv_ = np.array([rel_[k_, 0] / rel_[k_, 2] * CAM_FX + CAM_CX,
+                                    rel_[k_, 1] / rel_[k_, 2] * CAM_FY + CAM_CY])
                     tol_ = 60.0 * 11.0 / max(rng_meas, 3.0)  # angular-constant
                     if np.linalg.norm(uv_ - best[2][k_]) < tol_:
                         n_match += 1
@@ -937,8 +945,8 @@ def _det_loop():
                     for k_ in range(min(len(best[2]), len(_cmap))):
                         if rel_[k_, 2] <= 0.2:
                             dists_.append(None); continue
-                        uv_ = np.array([rel_[k_, 0] / rel_[k_, 2] * 226.0 + 319.5,
-                                        rel_[k_, 1] / rel_[k_, 2] * 226.0 + 179.5])
+                        uv_ = np.array([rel_[k_, 0] / rel_[k_, 2] * CAM_FX + CAM_CX,
+                                        rel_[k_, 1] / rel_[k_, 2] * CAM_FY + CAM_CY])
                         dists_.append(round(float(np.linalg.norm(uv_ - best[2][k_])), 1))
                     jlog('obs_ident_fail', ns=ns, n_match=n_match,
                          miss=round(miss, 2), rng=round(rng_meas, 1),

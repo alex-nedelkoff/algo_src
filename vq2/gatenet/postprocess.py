@@ -18,6 +18,8 @@ from scipy.ndimage import label as connected_components
 from scipy.ndimage import maximum_filter
 from scipy.spatial.distance import cdist
 
+from .. import camera
+
 
 def parabolic_refine(heatmap: np.ndarray, x: int, y: int) -> tuple[float, float]:
     """Sub-pixel refinement via parabolic fitting around a peak.
@@ -140,7 +142,7 @@ def extract_gate_observations(
     confidence_threshold: float = 0.3,
     nms_size: int = 3,
     gate_physical_size: float = 1.5,
-    fx: float = 226.0,
+    fx: float = camera.FX,  # single-sourced GateNet PnP focal (vq2/camera.py)
     sigma_base: float = 2.0,
     refine_method: str = "gaussian",
 ) -> dict:

@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from . import corpus as corpus_mod
-from .camera import CX, CY, FX, M_BODY_CAM, R_world_body
+from .camera import CX, CY, FX, FY, M_BODY_CAM, R_world_body
 from .eskf import PosVelKF, accel_level
 from .estimators import accel_implied_attitude, is_at_rest
 from .flow_vel import FlowVelocity, Z_FLOOR
@@ -622,8 +622,8 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                 for k in range(min(len(d_corners), len(_cmap))):
                     if d_vis[k] < cfg.ident_min_vis or not zok[k]:
                         continue
-                    uv = np.array([rel[k, 0] / rel[k, 2] * 226.0 + 319.5,
-                                   rel[k, 1] / rel[k, 2] * 226.0 + 179.5])
+                    uv = np.array([rel[k, 0] / rel[k, 2] * FX + CX,
+                                   rel[k, 1] / rel[k, 2] * FY + CY])
                     tol = cfg.ident_px * 11.0 / max(rng, 3.0)  # angular-constant
                     if np.linalg.norm(uv - d_corners[k]) < tol:
                         n_match += 1
@@ -633,8 +633,8 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                     for k in range(min(len(d_corners), len(_cmap))):
                         if d_vis[k] < cfg.ident_min_vis or not zok[k]:
                             continue
-                        uvp = np.array([rel[k, 0] / rel[k, 2] * 226.0 + 319.5,
-                                        rel[k, 1] / rel[k, 2] * 226.0 + 179.5])
+                        uvp = np.array([rel[k, 0] / rel[k, 2] * FX + CX,
+                                        rel[k, 1] / rel[k, 2] * FY + CY])
                         tol = cfg.ident_px * 11.0 / max(rng, 3.0)
                         if np.linalg.norm(d_corners[k] - uvp) >= tol:
                             continue
@@ -650,7 +650,7 @@ def run_fusion(root: str, cfg: FusionConfig) -> FusionResult:
                         dot = float(np.sum(Pc[:, 0] * Dc[:, 0] + Pc[:, 1] * Dc[:, 1]))
                         if dot > 1.0:
                             droll_img = math.atan2(cross, dot)
-                            dpitch_img = float((D_uv - P_uv).mean(axis=0)[1]) / 226.0
+                            dpitch_img = float((D_uv - P_uv).mean(axis=0)[1]) / FY
                             if abs(droll_img) < 0.06 and abs(dpitch_img) < 0.06:
                                 att.roll += cfg.att_vision_gain * ATT_VIS_SIGN_R * droll_img
                                 att.pitch += cfg.att_vision_gain * ATT_VIS_SIGN_P * dpitch_img
