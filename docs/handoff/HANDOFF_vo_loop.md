@@ -87,6 +87,79 @@ the per-corpus fit-scale into the Phase 2 climb-cal-vs-GNSCALE compare on the
 same 7 corpora, decide the primary yardstick with Alex.
 
 ═══════════════════════════════════════════════════════════════════
+## ⭐ COR-147 PHASE 2 — SCALE STRATEGY A/B (branch feat/vo-loop-pest,
+##   banked 2026-07-23)
+═══════════════════════════════════════════════════════════════════
+
+**Decision applied:** map-relative / gate-PnP = PRIMARY, p_est-fit = SECONDARY.
+Tool: `vq2/tools/vo_scale.py` (pure estimators + CLI), tests
+`vq2/tests/test_vo_scale.py` (6). Suite 193 pass / 11 skip.
+
+  A  climb-cal  = ||Δp_KF|| / ||Δp_VO|| over the early climb window (legacy).
+  B  gate-scale = median(Δrange / VO-chord) over the gate-PnP range-closing run.
+
+### RESULT — B (gate-scale) WINS on 6 corpora; A is structurally non-viable.
+Per-corpus scale (unit->m), s_pest = pre-tick p_est-fit (SECONDARY truth):
+
+  corpus   A climb   B gate   s_pest   A/pest   B/pest
+  test95    4.418     0.491    0.520    8.50     0.94
+  test96    4.198     0.316    0.403   10.42     0.78
+  test97    4.567     0.319    0.540    8.46     0.59
+  test98     n/a       n/a     0.935    n/a      n/a   (climb + gate both absent)
+  test99    5.091     0.264    0.558    9.12     0.47
+  test46    4.089     0.266    0.632    6.47     0.42
+  test140    n/a      0.206    0.661    n/a      0.31   (climb disp 0.43m < gate)
+  A available/viable: 0/7   B available: 6/7   both A&B produced: 5
+
+- **A is WRONG by ~10x** (A/pest 6.5–10.4 => 550–940% scale error on the clean
+  leg). ROOT CAUSE (measured): this MonoVO keyframes by PARALLAX, and the near-
+  vertical low-parallax climb closes **0–3 keyframes** (of 103–294 total) in the
+  3–4 s / ~1 m climb window across ALL 7 corpora. So climb-cal divides a real
+  ~0.9 m KF climb by an INTERPOLATION ARTIFACT (d_vo≈0.19 units) — not a real VO
+  measurement. Legacy climb-cal worked for DPVO (dense per-frame poses); it does
+  NOT transfer to a parallax-keyframed MonoVO. Not a tuning bug — forcing
+  keyframes in the climb would only add degenerate low-parallax solves.
+- **B is real and correct-order**: 16–79 real keyframes over a 7.1–7.5 m gate-PnP
+  range closing; scale 0.21–0.49, matching the p_est SECONDARY within 6–69%
+  (B/pest 0.31–0.94). B is anchored to the SURVEYED gate range = the PRIMARY
+  map-relative reference. **Gate met: B wins on ≥5 corpora (6/7).**
+
+### OPERATIONAL ASYMMETRY (decisive, measured)
+Gate 1 is flown BLIND (NOFIX=1): pre-tick obs sit at a CONSTANT ~6.2 m gate-1
+range (no closing to scale against) and the gate-1 approach is `obs_nofix`. The
+only range-CLOSING PnP is the **gate-2 approach, POST the gate-1 tick**. So B is
+structurally unavailable until after gate 1, and A (the only pre-gate-1 option)
+does not work. => Nothing scales the MonoVO on the gate-1 approach from these
+corpora. Live, scale must come from the gate-2 leg (B) or elsewhere.
+
+### DEEPER FINDING FOR ALEX (this changes the scale model)
+Even B is NOT a single global metric scale. MonoVO discards per-keyframe
+translation magnitude (unit-only) and keyframes by parallax => integrated path
+length ∝ KEYFRAME COUNT, not metres. Scale (m/unit) therefore varies with each
+segment's parallax rate (speed/depth). Evidence: test46 gate-2 scale 0.27 vs its
+own gate-1 (p_est) scale 0.63 — ~2x, same flight, different cruise. Implication:
+the DPVO-era "calibrate once, FREEZE at first update" model is WRONG for this
+MonoVO. Two clean fixes (Alex's call): (1) carry a per-keyframe magnitude on the
+OdomDelta (recovered depth/baseline) so the stream is metric up to ONE global
+scale, then Sim3-estimate that scale as a smoother STATE; or (2) keep unit
+deltas but re-derive scale CONTINUOUSLY from live gate-range (B) per segment
+rather than freezing.
+
+### DECISION NEEDED FROM ALEX
+1. Adopt B (gate-scale, continuous) as the MonoVO scale path and RETIRE climb-cal
+   for the OpenCV VO? (climb-cal stays valid only for dense-pose DPVO.)
+2. Is the scale-non-globality worth fixing now via per-keyframe magnitude on the
+   OdomDelta contract (a `vq2/relpose.py` change — trunk-first, out of this
+   branch), or defer and live with per-segment gate-scale?
+
+### PICKUP POINT
+`vq2/tools/vo_scale.py` (estimators A/B + p_est-fit + CLI),
+`vq2/tests/test_vo_scale.py`. Run: `python -m vq2.tools.vo_scale <corpus...>`.
+Next: once Alex rules on the scale model, wire the chosen scale into
+`vq2/live/vo_association.calibrate_scale` / the smoother push (Phase 3, live),
+behind a NEW flag; do NOT disturb the legacy DPVO path.
+
+═══════════════════════════════════════════════════════════════════
 ## ⭐⭐ START HERE — SESSION BANKED 2026-07-22 (COR-147)
 ═══════════════════════════════════════════════════════════════════
 
