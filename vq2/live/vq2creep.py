@@ -6,7 +6,11 @@ creep -- the exact blind-leg regime the VIO acceptance gate needs vision-locked
 data for. Gate 1 is dead ahead of spawn at ~11 m; yaw held at spawn heading.
 """
 import socket, struct, time, json, os, math, threading
+import cv2
+import numpy as np
 from pymavlink import mavutil
+from aigp.gate_detect import detect_gate
+from vq2.safe_gate_servo import GateObservation, SafeGateServo
 
 OUT = os.environ.get('RECORD', 'C:/Users/alexj/vq2_accept')
 os.makedirs(OUT + '/frames', exist_ok=True)
@@ -23,7 +27,8 @@ m.wait_heartbeat(timeout=8)
 print('hb ok', flush=True)
 
 state = {'acc': (0.0, 0.0, -9.81), 'gyr': (0.0, 0.0, 0.0), 't_us': 0,
-         'roll': 0.0, 'pitch': 0.0, 'vz_up': 0.0, 'vx_b': 0.0, 'vy_b': 0.0, 'collision': None, 'stop': False, 'flying': False}
+         'roll': 0.0, 'pitch': 0.0, 'vz_up': 0.0, 'vx_b': 0.0, 'vy_b': 0.0, 'collision': None, 'stop': False, 'flying': False,
+         'frame': None, 'frame_ns': None}
 log_mav = open(OUT + '/mavlink.jsonl', 'w')
 log_cmd = open(OUT + '/cmds.jsonl', 'w')
 
@@ -92,6 +97,9 @@ def cam_loop():
             data = b''.join(f[i] for i in range(total))
             if len(data) == jsize:
                 open(f'{OUT}/frames/{ns}.jpg', 'wb').write(data)
+                image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+                if image is not None:
+                    state['frame'], state['frame_ns'] = image, ns
                 meta.write(json.dumps({'sim_ns': ns, 'fid': fid, 'rx_wall': time.time()}) + '\n')
                 seen.add(ns)
             del frames[fid]
@@ -188,6 +196,12 @@ CREEP_S = float(os.environ.get('CREEP_S', '22.0'))
 # remains in view.  Defaults preserve the historical straight-capture run.
 YAW_SCAN_RATE = float(os.environ.get('YAW_SCAN_RATE', '0.0'))
 YAW_SCAN_S = float(os.environ.get('YAW_SCAN_S', '0.0'))
+VISION_SERVO = os.environ.get('VISION_SERVO', '0') == '1'
+SERVO_S = float(os.environ.get('SERVO_S', '8.0'))
+servo = SafeGateServo()
+servo_last_ns = None
+servo_cmd = None
+servo_last_wall = 0.0
 
 def creep_cmd(vx_ref):
     roll_ref = max(-0.25, min(0.25, -K_V * state['vy_b']))
@@ -203,6 +217,7 @@ blocks = [
     ('settle', 2.0, lambda t: (0, 0, 0, HOVER)),
     ('yaw_scan', YAW_SCAN_S, lambda t: (0, 0, YAW_SCAN_RATE, HOVER)),
     ('creep',  CREEP_S, None),   # None -> creep_cmd path below
+    ('vision_servo', SERVO_S if VISION_SERVO else 0.0, None),
     ('settle', 2.0, lambda t: (0, 0, 0, HOVER)),
 ]
 aborted = False
@@ -213,7 +228,30 @@ for name, dur, fn in blocks:
         if tilt() > TILT_ABORT: land(f'tilt abort in {name}'); aborted = True; break
         if abs(state['vx_b']) > 6.0 or abs(state['vy_b']) > 6.0: land(f'velocity runaway in {name}'); aborted = True; break
         if hard_collision(): land(f'collision in {name}: {state["collision"]}'); aborted = True; break
-        if fn is None:
+        if name == 'vision_servo':
+            image, ns = state['frame'], state['frame_ns']
+            observation = None
+            new_frame = image is not None and ns != servo_last_ns
+            if new_frame:
+                det = detect_gate(image)
+                servo_last_ns = ns
+                if det is not None:
+                    observation = GateObservation(det.u, det.v, det.w_px, det.h_px)
+                servo_cmd = servo.step(observation)
+                servo_last_wall = time.time()
+            # Reuse only a recent frame's command; camera stalls fail closed.
+            if not new_frame and time.time() - servo_last_wall > 0.12:
+                servo_cmd = servo.step(None)
+            cmd = servo_cmd or servo.step(None)
+            # The yaw authority is deliberately smaller than the prior survey scan.
+            # Capture only; a loss/identity failure holds level and stops advancing.
+            if cmd.accepted:
+                roll_ref = max(-0.25, min(0.25, -K_V * state['vy_b']))
+                pitch_ref = max(-0.12, min(0.12, K_V * (state['vx_b'] - cmd.forward_m_s)))
+                rr = sign_r * (KP * (roll_ref - state['roll'])) / RATE_GAIN
+                pr = sign_p * (KP * (pitch_ref - state['pitch'])) / RATE_GAIN
+                send_rate(max(-1.5, min(1.5, rr)), max(-1.5, min(1.5, pr)), cmd.yaw_rate_rad_s, HOVER)
+        elif fn is None:
             creep_cmd(VCREEP)
         else:
             out = fn(time.time() - t0)
