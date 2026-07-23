@@ -173,3 +173,48 @@ def load_estimator_reference(corpus: str, pre_tick_only: bool = False):
     uniq = np.array(sorted(keep), dtype=np.int64)
     idx = np.array([keep[int(n)] for n in uniq])
     return uniq, pos_arr[idx]
+
+
+def load_kf_pose(corpus: str, pre_tick_only: bool = False):
+    """Frame-cadence KF pose reference, keyed DIRECTLY by capture sim_ns.
+
+    Reads ``kf_pose`` rows — logged once per recorded frame by the vq2wp cam
+    thread (COR-147 g1 DR-bridge plumbing, 2026-07-23). Each row carries the
+    frame's own ``ns``, so unlike ``load_estimator_reference`` no t->ns clock
+    fit is needed and the reference covers the NOFIX blind leg where
+    ``kf_upd`` rows stop. Returns (ns[M] int64 strictly increasing,
+    xyz[M,3] float), or None when the log is absent, the corpus predates the
+    row kind (all corpora banked before 2026-07-23), or — with
+    ``pre_tick_only=True`` — no tick can be located to clip against.
+    """
+    lp = os.path.join(corpus, "livelog.jsonl")
+    if not os.path.exists(lp):
+        return None
+    rows = read_rows(lp)
+    hi_ns = None
+    if pre_tick_only:
+        clock = build_capture_clock(rows)
+        hi_ns = first_tick_capture_ns(rows, clock) if clock is not None else None
+        if hi_ns is None:
+            return None
+    ns_list, pos_list = [], []
+    for d in rows:
+        if d.get("kind") != "kf_pose":
+            continue
+        p, n = d.get("p"), d.get("ns")
+        if not (isinstance(p, list) and len(p) >= 3 and isinstance(n, (int, float))):
+            continue
+        n = int(n)
+        if hi_ns is not None and n > hi_ns:
+            continue
+        ns_list.append(n)
+        pos_list.append([float(x) for x in p[:3]])
+    if len(ns_list) < 2:
+        return None
+    ns_arr = np.asarray(ns_list, dtype=np.int64)
+    pos_arr = np.asarray(pos_list, dtype=float)
+    order = np.argsort(ns_arr, kind="stable")
+    ns_arr, pos_arr = ns_arr[order], pos_arr[order]
+    keep = np.ones(len(ns_arr), bool)
+    keep[1:] = ns_arr[1:] != ns_arr[:-1]
+    return ns_arr[keep], pos_arr[keep]

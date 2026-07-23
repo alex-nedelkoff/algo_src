@@ -17,6 +17,7 @@ from vq2.tools.livelog_join import (
     map_t_to_capture_s,
     first_tick_capture_ns,
     load_estimator_reference,
+    load_kf_pose,
     POS_KINDS,
 )
 
@@ -142,3 +143,51 @@ def test_pre_tick_clip_excludes_post_tick(tmp_path):
 def read_rows_or(tmp_path):
     from vq2.tools.livelog_join import read_rows
     return read_rows(str(tmp_path / "livelog.jsonl"))
+
+
+def _kf_pose(cap_s, p):
+    return {"kind": "kf_pose", "ns": int(round(cap_s * 1e9)), "p": list(p),
+            "v": [0.0, 0.0, 0.0], "t": 0.0}
+
+
+def test_load_kf_pose_direct_ns_join(tmp_path):
+    """kf_pose rows join by their own ns: no obs rows / clock fit needed,
+    out-of-order rows sort, duplicate ns keeps the first-sorted sample."""
+    rows = [
+        _kf_pose(9.2, [1.0, 0.0, 0.0]),
+        _kf_pose(9.0, [0.0, 0.0, 0.0]),          # out of order
+        _kf_pose(9.2, [1.5, 0.0, 0.0]),          # duplicate ns
+        _kf_pose(9.4, [2.0, 0.5, -0.1]),
+    ]
+    _write(tmp_path, rows)
+    ns, xyz = load_kf_pose(str(tmp_path))
+    assert ns.tolist() == [int(9.0e9), int(9.2e9), int(9.4e9)]
+    assert np.all(np.diff(ns) > 0)
+    assert xyz[0].tolist() == [0.0, 0.0, 0.0]
+    assert xyz[2].tolist() == [2.0, 0.5, -0.1]
+
+
+def test_load_kf_pose_pre_tick_clip(tmp_path):
+    """pre_tick_only clips at the first tick (located via the obs clock) and
+    covers the blind leg UP TO it — the whole point of the frame-cadence row."""
+    rows = [
+        _obs(10.0, 9.0), _obs(10.2, 9.2), _obs(10.4, 9.4),
+        _kf_pose(9.1, [0.5, 0, 0]),
+        _kf_pose(9.5, [2.0, 0, 0]),               # blind leg: no obs near here
+        {"kind": "tick_fix", "t": 10.6},          # tick at cap ~9.6
+        _obs(10.6, 9.6),
+        _kf_pose(9.8, [3.0, 5.0, 0]),             # post-tick -> clipped
+    ]
+    _write(tmp_path, rows)
+    ns, xyz = load_kf_pose(str(tmp_path), pre_tick_only=True)
+    assert ns.tolist() == [int(9.1e9), int(9.5e9)]
+    assert xyz[-1].tolist() == [2.0, 0.0, 0.0]
+
+
+def test_load_kf_pose_none_paths(tmp_path):
+    assert load_kf_pose(str(tmp_path / "missing")) is None
+    _write(tmp_path, [_kf_pose(9.0, [0, 0, 0])])          # < 2 rows
+    assert load_kf_pose(str(tmp_path)) is None
+    _write(tmp_path, [_kf_pose(9.0, [0, 0, 0]), _kf_pose(9.1, [1, 0, 0])])
+    # pre_tick_only with no locatable tick must refuse, not silently unclip
+    assert load_kf_pose(str(tmp_path), pre_tick_only=True) is None

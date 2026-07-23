@@ -594,6 +594,16 @@ def cam_loop():
                             rf.write(data)
                         rec_frames.write(json.dumps(
                             {'sim_ns': ns, 'fid': fid, 'rx_wall': time.time()}) + '\n')
+                        # kf_pose @ frame cadence (COR-147 g1 DR-bridge):
+                        # kf_upd rows stop at the pad under NOFIX, so banked
+                        # corpora carry NO metric position through the blind
+                        # leg. One row per recorded frame, keyed by the same
+                        # sim_ns as the jpg, joins offline without a t->ns
+                        # clock fit.
+                        with KF_LOCK:
+                            _kp, _kv = KF.p.copy(), KF.v.copy()
+                        jlog('kf_pose', ns=ns, p=_kp.round(3).tolist(),
+                             v=_kv.round(3).tolist())
                 seen.add(ns)
             del frames[fid]
 
