@@ -16,8 +16,8 @@ def test_center_pixel_ray_is_optical_axis():
 def test_bottom_center_ray_looks_below_horizon():
     r = camera.pixel_rays_body([[camera.CX, camera.H - 1.0]])[0]
     elev = math.degrees(math.asin(-r[2]))
-    # 20 up - atan(179.5/226)=38.45 down => ~-18.4 deg (floor visible)
-    assert -19.0 < elev < -17.9
+    # 20 up - atan(179.5/320)=29.29 down => ~-9.3 deg (floor visible)
+    assert -10.0 < elev < -8.5
 
 
 def test_rays_are_unit_norm():

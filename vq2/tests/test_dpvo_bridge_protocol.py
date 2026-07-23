@@ -14,11 +14,11 @@ from vq2.live.dpvo_bridge_protocol import (
 from vq2.live.dpvo_route import DpvoSessionConfig, calibration_identity
 
 
-def test_session_message_round_trip_uses_32_patches_and_226_fx():
+def test_session_message_round_trip_uses_32_patches_and_320_fx():
     cfg = DpvoSessionConfig(patches=32)
     parsed = parse_session_message(session_message(cfg, "abc"))
     assert parsed.config.patches == 32
-    assert parsed.config.intrinsics[0] == 226.0
+    assert parsed.config.intrinsics[0] == 320.0
     assert parsed.model_sha256 == "abc"
     assert parsed.identity == calibration_identity(cfg, "abc")
 

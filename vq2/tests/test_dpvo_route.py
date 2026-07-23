@@ -12,8 +12,8 @@ from vq2.live.dpvo_route import (
 
 def test_half_resolution_scales_calibrated_intrinsics():
     assert scale_intrinsics(
-        (226, 226, 319.5, 179.5), (640, 360), (320, 180)
-    ) == (113.0, 113.0, 159.75, 89.75)
+        (320, 320, 319.5, 179.5), (640, 360), (320, 180)
+    ) == (160.0, 160.0, 159.75, 89.75)
 
 
 def test_identity_changes_with_tracking_configuration():

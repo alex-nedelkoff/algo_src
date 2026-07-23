@@ -12,8 +12,17 @@ import math
 import numpy as np
 
 W, H = 640, 360
-FX = FY = 226.0  # px; GateNet PnP default (vq2/gatenet/postprocess.py)
+# fx=fy=width/2=320 @640x360 (90 deg HFOV, zero distortion). Adjudicated from
+# the 1.5 m G0 aperture geometry + certified 10.595 m depth and Janahan's Kalibr
+# chain (docs/handoff/g0_focal_adjudication.md); Alex GREEN-LIT 320 over the
+# old 226. GateNet PnP default (vq2/gatenet/postprocess.py) tracks this.
+FX = FY = 320.0
+# Pixel-centre convention (W-1)/2 = 319.5,179.5. The adjudication's 320.0/180.0
+# principal point is within corner-localization noise (~0.5 px) -- not churned.
 CX, CY = (W - 1) / 2.0, (H - 1) / 2.0
+# NOTE: CAM_TILT stays 20 deg. The adjudication found true cam->body tilt ~= 0,
+# but the flight-stack tilt fix is a SEPARATE deferred decision; do not change
+# it here. (COR-148 map math applies the corrected tilt=0 extrinsic locally.)
 CAM_TILT = math.radians(20.0)
 
 # Single source of the pinhole intrinsic for every mapping/estimator consumer.

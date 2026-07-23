@@ -13,13 +13,13 @@ from vq2.live.dpvo_route import RouteObservation, calibration_identity
 def test_client_defaults_to_32_patches_and_calibrated_intrinsics():
     config = config_from_env({})
     assert config.patches == 32
-    assert config.intrinsics == (226.0, 226.0, 319.5, 179.5)
+    assert config.intrinsics == (320.0, 320.0, 319.5, 179.5)
     assert config.cuda_fraction == 0.48
 
 
 def test_client_scales_intrinsics_for_half_resolution():
     config = config_from_env({"DPVO_WIDTH": "320", "DPVO_HEIGHT": "180"})
-    assert config.intrinsics == (113.0, 113.0, 159.75, 89.75)
+    assert config.intrinsics == (160.0, 160.0, 159.75, 89.75)
 
 
 def test_client_defaults_to_stock_keyframe_graph_window():

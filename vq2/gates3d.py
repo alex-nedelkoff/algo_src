@@ -7,7 +7,7 @@ Attitude is a trusted input (wfix chain), so H has only a position block
 and the existing PosVelKF absorbs corner updates without restructuring.
 
 Frames: spawn/world (x downcourse, y right, z down). Camera model from
-vq2/camera.py (nose cam, 20 deg up, fx=fy=226).
+vq2/camera.py (nose cam, 20 deg up, fx=fy=320).
 """
 from __future__ import annotations
 

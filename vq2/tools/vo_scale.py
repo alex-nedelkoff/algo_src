@@ -44,9 +44,29 @@ import os
 
 import numpy as np
 
+from vq2 import camera
 from vq2.tools.livelog_join import (
     read_rows, build_capture_clock, map_t_to_capture_s, first_tick_capture_ns,
 )
+
+# --- Logged-focal correction (intrinsics320) --------------------------------
+# The gate-anchored scale is metric_range / VO-unit-displacement. The metric
+# range is the GateNet PnP ||t_cam||, which is LINEAR in the focal length. Every
+# banked corpus here logged t_cam under the OLD fx=226 GateNet model, and the
+# frozen corpora cannot be re-run through GateNet, so a logged range must be
+# re-projected onto the adjudicated model before it can anchor scale:
+#     range_true = range_logged * (camera.FX / 226.0)
+# This is an explicit, documented correction (not a silent fudge). At the
+# green-lit fx=320 it multiplies every gate range by 320/226 = 1.416, moving the
+# gate-anchored VO scale from ~0.30 to ~0.42 m/unit. If corpora are ever
+# RE-CAPTURED under fx=camera.FX, set LOGGED_TCAM_FOCAL_PX to camera.FX so the
+# factor collapses to 1.0 (no double correction).
+LOGGED_TCAM_FOCAL_PX = 226.0
+
+
+def logged_range_focal_correction() -> float:
+    """Focal ratio that maps a logged (fx=226) PnP range onto camera.FX."""
+    return float(camera.FX) / float(LOGGED_TCAM_FOCAL_PX)
 
 
 def _interp_xyz(kf_ns, traj, ns):
@@ -173,6 +193,7 @@ def load_gate1_anchor(corpus):
     tk = first_tick_capture_ns(rows, clock)
     if tk is None:
         return None
+    corr = logged_range_focal_correction()
     pre = []
     for d in rows:
         if d.get("kind") == "obs" and isinstance(d.get("t_cam"), list) and len(d["t_cam"]) >= 3:
@@ -181,7 +202,7 @@ def load_gate1_anchor(corpus):
                 continue
             n = int(round(cs * 1e9))
             if n < tk:
-                pre.append((n, float(np.linalg.norm(d["t_cam"]))))
+                pre.append((n, float(np.linalg.norm(d["t_cam"])) * corr))
     if len(pre) < 1:
         return None
     pre.sort()
@@ -221,6 +242,7 @@ def load_gate_obs(corpus):
     if clock is None:
         return None
     tk = first_tick_capture_ns(rows, clock)
+    corr = logged_range_focal_correction()
     ns, rng = [], []
     for d in rows:
         if d.get("kind") == "obs" and isinstance(d.get("t_cam"), list) and len(d["t_cam"]) >= 3:
@@ -231,7 +253,7 @@ def load_gate_obs(corpus):
             if tk is not None and n < tk:
                 continue
             ns.append(n)
-            rng.append(float(np.linalg.norm(d["t_cam"])))
+            rng.append(float(np.linalg.norm(d["t_cam"])) * corr)
     if len(ns) < 2:
         return None
     order = np.argsort(ns)

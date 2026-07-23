@@ -53,7 +53,7 @@ def test_gpu_reader_rotates_boxes_back_and_keeps_unread_station_bearing():
 
 
 def test_station_text_pnp_recovers_metric_camera_translation():
-    K = np.array([[226.0, 0.0, 320.0], [0.0, 226.0, 180.0], [0.0, 0.0, 1.0]])
+    K = np.array([[320.0, 0.0, 320.0], [0.0, 320.0, 180.0], [0.0, 0.0, 1.0]])
     rvec = np.array([0.10, -0.18, 0.04])
     tvec = np.array([0.35, -0.12, 9.0])
     obj = np.array([[-2.503 / 2, -.475 / 2, 0], [2.503 / 2, -.475 / 2, 0],
