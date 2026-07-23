@@ -1,0 +1,227 @@
+{
+  "version": "pillar-candidate-1",
+  "frame": "reset-NED",
+  "units": "m",
+  "camera_calibration": {
+    "id": "cor142-vq2-320px",
+    "approved": true,
+    "sigma_px": 1.8
+  },
+  "text_panels": [
+    {
+      "candidate_id": "station-22-panel-1",
+      "number": "22",
+      "position_m": [
+        14.350942376866442,
+        3.2090834076874306,
+        -0.45790776332720373
+      ],
+      "covariance_m2": [
+        [
+          0.25322417254967267,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0475056432731327,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.25061113277118946
+        ]
+      ],
+      "observations": [
+        {
+          "frame": "1784683653186096700.jpg",
+          "station_number": "22",
+          "ocr_confidence": 0.953,
+          "pnp_rms_px": 1.6646639097657112,
+          "t_rx_wall": 1784683653.2314758,
+          "yaw_delta_rad": -0.2628103352822453,
+          "imu_max_gap_s": 0.015609264373779297,
+          "edge_fit": {
+            "center_u": 357.54880774962743,
+            "width_px": 66.72056631892701,
+            "quality": 1.0
+          },
+          "accepted": true,
+          "rejection": null
+        },
+        {
+          "frame": "1784683653529449600.jpg",
+          "station_number": "22",
+          "ocr_confidence": 0.987,
+          "pnp_rms_px": 1.6733950120491117,
+          "t_rx_wall": 1784683653.5472279,
+          "yaw_delta_rad": -0.3174856122300944,
+          "imu_max_gap_s": 0.015609264373779297,
+          "edge_fit": {
+            "center_u": 325.4089459022286,
+            "width_px": 55.19172358015817,
+            "quality": 1.0
+          },
+          "accepted": true,
+          "rejection": null
+        },
+        {
+          "frame": "1784683653877892400.jpg",
+          "station_number": "22",
+          "ocr_confidence": 0.999,
+          "pnp_rms_px": 1.601180673080796,
+          "t_rx_wall": 1784683653.9074035,
+          "yaw_delta_rad": -0.3794693668132332,
+          "imu_max_gap_s": 0.015609264373779297,
+          "edge_fit": {
+            "center_u": 310.19740335806324,
+            "width_px": 63.117883639203455,
+            "quality": 1.0
+          },
+          "accepted": true,
+          "rejection": null
+        }
+      ]
+    }
+  ],
+  "quarantined": [
+    {
+      "id": "station-22-pillar-axis-1",
+      "number": "22",
+      "reason": "text panel fused; panel-face-to-pillar-axis offset is uncalibrated",
+      "human_approved": false
+    }
+  ],
+  "provenance": {
+    "kind": "offline-quarantined-candidate",
+    "corpus": "C:\\Users\\Administrator\\Documents\\Codex\\2026-07-21\\go\\work\\pillar_g0_yawscan_20260722_0145",
+    "anchor": {
+      "frame_ns": 1784683645521293000,
+      "g0_datum_reset_ned_m": [
+        10.595,
+        0.051,
+        -0.2472
+      ],
+      "yaw_rad": 0.03235,
+      "t_cam_gate_m": [
+        -0.00028442443983105447,
+        -0.17198197795117762,
+        10.595
+      ],
+      "t_depth_locked_to_certified_m": 10.595,
+      "rotation_source": "yaw-scan GateNet PnP; retained as a gauge-fixed orientation",
+      "translation_sigma_m": 0.5
+    },
+    "camera": {
+      "evidence": "Janahan COR-142 VQ2 calibration",
+      "K": [
+        [
+          320.0,
+          0.0,
+          320.0
+        ],
+        [
+          0.0,
+          320.0,
+          180.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
+    },
+    "station22_inputs": [
+      {
+        "frame_ns": 1784683653186096700,
+        "ocr_confidence": 0.953,
+        "text_quad_xy": [
+          [
+            332.0,
+            283.0
+          ],
+          [
+            332.0,
+            209.0
+          ],
+          [
+            356.0,
+            209.0
+          ],
+          [
+            356.0,
+            283.0
+          ]
+        ],
+        "t_cam_text_m": [
+          0.47570622686996694,
+          1.4086642533919806,
+          6.350038779675691
+        ],
+        "pnp_rms_px": 1.6646639097657112,
+        "edge_quality": 1.0
+      },
+      {
+        "frame_ns": 1784683653529449600,
+        "ocr_confidence": 0.987,
+        "text_quad_xy": [
+          [
+            316.0,
+            283.0
+          ],
+          [
+            316.0,
+            209.0
+          ],
+          [
+            340.0,
+            209.0
+          ],
+          [
+            340.0,
+            283.0
+          ]
+        ],
+        "t_cam_text_m": [
+          0.15819709069270874,
+          1.4059773444577326,
+          6.335191946201803
+        ],
+        "pnp_rms_px": 1.6733950120491117,
+        "edge_quality": 1.0
+      },
+      {
+        "frame_ns": 1784683653877892400,
+        "ocr_confidence": 0.999,
+        "text_quad_xy": [
+          [
+            302.0,
+            285.0
+          ],
+          [
+            302.0,
+            207.0
+          ],
+          [
+            326.0,
+            207.0
+          ],
+          [
+            326.0,
+            285.0
+          ]
+        ],
+        "t_cam_text_m": [
+          -0.11863441863021115,
+          1.4068757264901475,
+          6.33437499353327
+        ],
+        "pnp_rms_px": 1.601180673080796,
+        "edge_quality": 1.0
+      }
+    ],
+    "warning": "Text-panel position only; pillar axis is quarantined. Anchor rotation and text-panel decal dimensions remain conservative error sources."
+  }
+}
