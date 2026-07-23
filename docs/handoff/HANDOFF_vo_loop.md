@@ -155,9 +155,86 @@ rather than freezing.
 ### PICKUP POINT
 `vq2/tools/vo_scale.py` (estimators A/B + p_est-fit + CLI),
 `vq2/tests/test_vo_scale.py`. Run: `python -m vq2.tools.vo_scale <corpus...>`.
-Next: once Alex rules on the scale model, wire the chosen scale into
-`vq2/live/vo_association.calibrate_scale` / the smoother push (Phase 3, live),
-behind a NEW flag; do NOT disturb the legacy DPVO path.
+See Phase 2b below for the resolution.
+
+═══════════════════════════════════════════════════════════════════
+## ⭐ COR-147 PHASE 2b — GATE-ANCHORED SCALE, incl. SINGLE-VIEW gate-1
+##   (branch feat/vo-loop-pest, banked 2026-07-23)
+═══════════════════════════════════════════════════════════════════
+
+**Alex's calls applied:** (1) adopt gate-scale, RETIRE climb-cal for the OpenCV
+VO; (2) fix scale-non-globality using KNOWN gate dimensions as the metric anchor.
+
+### STEP 1 — vo_cv.py magnitude handling (VERIFIED, decides the design)
+`vo_cv._solve`: recoverPose's up-to-scale translation is RE-NORMALIZED
+(`t_body_unit = t_body/|t_body|`); there is NO triangulation, NO shared 3D points
+across keyframes, NO scale propagation. => each OdomDelta is UNIT per keyframe
+pair, magnitude mathematically unobservable AND discarded, ZERO cross-keyframe
+scale link. **"Lock one scalar" is NOT viable** — it makes only the first pair
+metric; the chain drifts because each pair's true length varies with parallax.
+Global metric scale would need per-keyframe magnitude (triangulation/Sim3 + a
+relpose.py field) — AVOIDED here via per-gate re-anchoring.
+
+### STEP 2 — single-view gate-1 anchor (Alex's idea — WORKS)
+A known-size (1.5 m) gate seen ONCE at absolute PnP range R defines a metric
+baseline WITHOUT range closing: from that view the drone flies to CROSS the gate
+(range->0 at the tick), so it travels ~R. scale = R / ||VO(tick) - VO(pad view)||.
+`obs.t_cam` is already an absolute-metric PnP camera-frame gate position (gate
+size 1.5 m, `gates3d.py`; gate-1 range ~6.28 m == surveyed pad-lock). This scales
+the BLIND gate-1 leg that B (range-closing) structurally cannot reach.
+
+### RESULT (test95-99/46/140, scale unit->m)
+  corpus   A climb  B gate2  g1 view  s_pest   g1/B   g1/pest
+  test95    4.418    0.491    0.266    0.520   0.542   0.512
+  test96    4.198    0.316    0.266    0.403   0.843   0.660
+  test97    4.567    0.319    0.280    0.540   0.879   0.519
+  test98     n/a      n/a     0.290    0.935    n/a    0.311
+  test99    5.091    0.264    0.366    0.558   1.386   0.656
+  test46    4.089    0.266    0.272    0.632   1.020   0.430
+  test140    n/a     0.206    0.306    0.661   1.480   0.463
+  gate-1 single-view available: 7/7  |  gate-2 B: 6/7  |  climb-A viable: 0/7
+
+- **The gate-1 leg IS NOW SCALED on 7/7 corpora** (single-view anchor, 0.27-0.37).
+  B-alone reached 0/7 gate-1 legs (blind approach). This closes the Phase-2 gap.
+- **Two independent gate anchors AGREE**: gate-1 single-view vs gate-2 range-close
+  ratio median **0.949** [0.542..1.480] (n=6) — NO systematic bias; they measure
+  the same underlying scale. The ±48% per-corpus spread is the residual non-
+  globality (unit-per-keyframe), which PER-GATE RE-ANCHORING absorbs (each leg
+  uses its own gate => ~0 error at its anchor).
+- vs PRIMARY (gate/map): both anchors ARE the primary metric (surveyed 1.5 m gate
+  + 6.28 m pad range). vs SECONDARY (p_est-fit 0.40-0.66): gate anchors are ~half
+  (g1/pest 0.31-0.66) — p_est is DR and biases the scale HIGH; the two absolute
+  gate anchors agreeing with each other is the stronger evidence, so trust ~0.3.
+
+### CONTRACT (relpose.py) — NO change needed for the chosen scheme
+Per-gate re-anchoring keeps OdomDelta unit (scale_locked=False); the association
+layer applies the CURRENT leg's gate-anchored scale. A relpose.py per-keyframe-
+magnitude field is needed ONLY if Alex wants ONE globally-consistent scale
+instead of per-leg — that is a trunk-first change touching COR-148 and was NOT
+made here. Given gate1/gate2 agree at median 0.95, per-leg re-anchoring is
+sufficient; the global-scale contract change is NOT recommended now.
+
+### INTRINSICS caveat (out of lane — COR-148)
+All scales use the canonical `vq2.camera` fx=226 model (not re-solved). The gate
+anchors agreeing at median 0.95 says intrinsics are not the DOMINANT residual
+here, but any absolute-scale bias common to all views (e.g. fx=226 vs 320, or the
+11.18 vs 10.595 m gate-depth discrepancy COR-148 is calibrating) would scale ALL
+gate anchors together and would NOT show up in the g1/g2 ratio. Flagging, not
+fixing.
+
+### DECISION NEEDED FROM ALEX
+- Confirm per-gate re-anchoring (no relpose.py change) as the scale path, and
+  that ~0.3 (gate-anchored) not ~0.5 (p_est) is the scale to carry into Phase 3.
+- If a single global scale is later required, that needs the relpose.py
+  per-keyframe-magnitude field (trunk-first) — say the word.
+
+### PICKUP POINT
+`vq2/tools/vo_scale.py`: `gate1_anchor_scale` + `load_gate1_anchor` (gate-1
+single-view), `gate_scale` (gate-2 B), `climb_cal_scale` (retired, documents its
+failure), CLI prints the table. `vq2/tests/test_vo_scale.py` (9 tests). Suite 196
+pass / 11 skip. NEXT (Phase 3, live, NEW flag): wire per-gate gate-anchored scale
+into `vq2/live/vo_association.calibrate_scale` -> smoother push; do NOT disturb
+the legacy DPVO path. Not pushed — Alex pushes.
 
 ═══════════════════════════════════════════════════════════════════
 ## ⭐⭐ START HERE — SESSION BANKED 2026-07-22 (COR-147)

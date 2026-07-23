@@ -7,7 +7,9 @@ the reference is that trajectory times a known scale.
 import numpy as np
 import pytest
 
-from vq2.tools.vo_scale import climb_cal_scale, gate_scale, pest_fit_scale
+from vq2.tools.vo_scale import (
+    climb_cal_scale, gate_scale, gate1_anchor_scale, pest_fit_scale,
+)
 
 NS = 1_000_000_000  # 1 s in ns
 
@@ -58,6 +60,28 @@ def test_gate_scale_picks_closing_run():
     out = gate_scale(kf_ns, traj, obs_ns, obs_range, min_baseline_m=2.0)
     assert out["scale"] == pytest.approx(3.0, rel=1e-6)      # 9 m over 3 units
     assert out["n"] == 4
+
+
+def test_gate1_anchor_recovers_scale():
+    # gate seen at 6 m; VO travels 3 units from pad view to the crossing -> scale 2
+    kf_ns, traj = _line(5, step=1.0)
+    pad_ns = 0.0
+    tick_ns = 3.0 * NS                               # VO(3) - VO(0) = 3 units
+    out = gate1_anchor_scale(kf_ns, traj, pad_range_m=6.0, pad_ns=pad_ns, tick_ns=tick_ns)
+    assert out["scale"] == pytest.approx(2.0, rel=1e-6)
+    assert out["baseline_m"] == pytest.approx(6.0)
+
+
+def test_gate1_anchor_needs_pad_coverage():
+    kf_ns, traj = _line(3, step=1.0)                 # VO covers ns 0..2
+    out = gate1_anchor_scale(kf_ns, traj, pad_range_m=6.0,
+                             pad_ns=10.0 * NS, tick_ns=11.0 * NS)  # pad after VO
+    assert out["scale"] is None
+
+
+def test_gate1_anchor_needs_tick():
+    kf_ns, traj = _line(4, step=1.0)
+    assert gate1_anchor_scale(kf_ns, traj, 6.0, 0.0, None)["scale"] is None
 
 
 def test_pest_fit_recovers_scale():

@@ -1,29 +1,42 @@
-"""Metric-scale A/B for the unit-scale MonoVO stream (COR-147 Phase 2).
+"""Metric scale for the unit-scale MonoVO stream (COR-147 Phase 2 + 2b).
 
-The MonoVO OdomDelta stream is monocular = direction only (scale_locked=False).
-This module puts METRIC scale on it two independent ways and lets the harness
-compare them offline:
+MonoVO's OdomDelta is monocular, UNIT-per-keyframe-pair: `vo_cv._solve` takes
+recoverPose's up-to-scale translation and RE-NORMALIZES it (t_body_unit = t/|t|),
+with NO cross-keyframe triangulation or shared points. So magnitude is
+mathematically unobservable AND discarded, and there is ZERO scale link between
+consecutive deltas => integrated path length ∝ KEYFRAME COUNT, not metres, and a
+single locked scalar makes only the first pair metric. Global metric scale
+therefore requires either per-keyframe magnitude (a relpose.py contract change +
+triangulation/Sim3) OR PER-GATE RE-ANCHORING (this module's approach — no
+contract change, no local-map SLAM).
 
-  A  climb-calibration (legacy, vq2/live/dpvo_odom.py): scale = ||Δp_KF|| /
-     ||Δp_VO|| over the early climb window, where p_KF is the noiseless-IMU DR
-     estimate (independent of VO — VO never feeds back offline). Available
-     BEFORE gate 1. This is what truth_crossings assumes (CLIMB_TRUE anchor).
+DECISIONS APPLIED (Alex, 2026-07-23): adopt gate-scale, RETIRE climb-cal for the
+OpenCV VO. Estimators here:
 
-  B  gate-scale / GNSCALE (legacy vq2/live/dpvo_gate_scale.py): scale from the
-     gate-PnP metric RANGE closing as the drone approaches a gate, vs the VO
-     unit displacement over the same capture-time interval. Range ||t_cam|| is a
-     scalar (rotation-frame-free), so the turn does not bias it.
+  A  climb-cal (RETIRED, kept only to document its failure): scale = ||Δp_KF|| /
+     ||Δp_VO|| over the climb window. NON-VIABLE for MonoVO — the low-parallax
+     near-vertical climb closes 0-3 keyframes (of 103-294), so ||Δp_VO|| is an
+     interpolation artifact and the scale lands ~10x off. (Legacy climb-cal
+     worked for DPVO's dense per-frame poses; it does not transfer here.)
 
-MEASURED DATA REALITY (test95-99/46/140, see COR-147 notes): gate 1 is flown
-BLIND (NOFIX=1) — pre-tick obs sit at a CONSTANT ~6.2 m gate-1 range (no closing
-to scale against). The only range-CLOSING PnP is the gate-2 approach, which is
-POST the gate-1 tick. So B is structurally unavailable until after gate 1, while
-A is available during the climb. That asymmetry is a first-class result, not a
-tuning detail.
+  B  gate-scale (gate-2): scale from the gate-PnP metric RANGE closing on the
+     gate-2 approach vs VO unit displacement. Range ||t_cam|| is a scalar
+     (rotation-free). Only available AFTER the gate-1 tick.
+
+  B' gate-1 SINGLE-VIEW anchor (Phase 2b, Alex's idea): a known-size (1.5 m)
+     gate seen ONCE at absolute PnP range defines a metric baseline WITHOUT range
+     closing — from that view the drone flies to CROSS the gate (range->0), so it
+     travels ~that range. This scales the BLIND gate-1 leg that B cannot reach.
+
+MEASURED (test95-99/46/140): gate 1 is flown BLIND (NOFIX=1) — pre-tick obs sit
+at a CONSTANT ~6.2 m gate-1 range (no closing), the approach is obs_nofix. So B
+needs the gate-2 leg (post-tick), and B' (single-view) is what scales gate 1. The
+two independent gate anchors agree to a median 0.95 (n=6) => per-gate re-anchoring
+gives a consistent scale without global propagation.
 
 Estimators are pure functions of (VO capture-ns, VO unit trajectory) + the
-per-corpus livelog series, so they unit-test on synthetic arrays. `scale_report`
-runs MonoVO and prints the per-corpus A/B/p_est table.
+per-corpus livelog series, so they unit-test on synthetic arrays. `main` runs
+MonoVO and prints the per-corpus scale table.
 """
 from __future__ import annotations
 
@@ -115,6 +128,65 @@ def gate_scale(kf_ns, traj, obs_ns, obs_range, min_baseline_m=2.0, min_pts=3):
     return {"scale": float(np.median(ratios)), "baseline_m": float(baseline),
             "d_vo": d_vo, "n": len(run), "ns0": float(run[0][0]),
             "ns1": float(run[-1][0])}
+
+
+def gate1_anchor_scale(kf_ns, traj, pad_range_m, pad_ns, tick_ns):
+    """Strategy B' — SINGLE-VIEW gate anchor (COR-147 Phase 2b, Alex's idea).
+
+    A known-size (1.5 m) gate seen ONCE at absolute PnP range `pad_range_m`
+    defines a metric baseline WITHOUT any range closing: from that view the drone
+    flies to CROSS the gate (range -> 0 at `tick_ns`), so it travels ~pad_range_m.
+    scale = pad_range_m / ||VO(tick) - VO(pad_view)|| (VO unit displacement over
+    the same interval). This is what B lacked on the blind (NOFIX) gate-1 leg:
+    gate 1 is observed only at the pad (constant ~6.2 m range, no closing), but a
+    single view + the known crossing is enough to anchor the leg.
+
+    Returns dict(scale, baseline_m, d_vo, ns0, ns1) or dict(scale=None, reason=).
+    """
+    if len(kf_ns) < 2 or tick_ns is None:
+        return {"scale": None, "reason": "no tick / too few VO"}
+    lo, hi = kf_ns[0], kf_ns[-1]
+    if not (lo <= pad_ns <= hi):
+        return {"scale": None, "reason": "pad view outside VO coverage"}
+    # tick may sit just past the last keyframe; np.interp clamps, which is the
+    # VO endpoint — acceptable, but require the pad view to be covered.
+    v0 = _interp_xyz(kf_ns, traj, pad_ns)
+    v1 = _interp_xyz(kf_ns, traj, min(max(tick_ns, lo), hi))
+    d_vo = float(np.linalg.norm(v1 - v0))
+    if d_vo < 1e-6:
+        return {"scale": None, "reason": "degenerate VO displacement"}
+    return {"scale": float(pad_range_m) / d_vo, "baseline_m": float(pad_range_m),
+            "d_vo": d_vo, "ns0": float(pad_ns), "ns1": float(tick_ns)}
+
+
+def load_gate1_anchor(corpus):
+    """(pad_range_m, pad_ns, tick_ns) for the single-view gate-1 anchor.
+
+    pad_range_m = median PRE-TICK obs range (||t_cam||, the gate-1 range while the
+    drone climbs at the pad); pad_ns = the LAST such pre-tick view (closest to the
+    approach); tick_ns = first gate tick (the crossing). None if unavailable.
+    """
+    rows = read_rows(os.path.join(corpus, "livelog.jsonl"))
+    clock = build_capture_clock(rows)
+    if clock is None:
+        return None
+    tk = first_tick_capture_ns(rows, clock)
+    if tk is None:
+        return None
+    pre = []
+    for d in rows:
+        if d.get("kind") == "obs" and isinstance(d.get("t_cam"), list) and len(d["t_cam"]) >= 3:
+            cs = map_t_to_capture_s(d["t"], clock)
+            if cs is None:
+                continue
+            n = int(round(cs * 1e9))
+            if n < tk:
+                pre.append((n, float(np.linalg.norm(d["t_cam"]))))
+    if len(pre) < 1:
+        return None
+    pre.sort()
+    pad_range = float(np.median([r for _, r in pre]))
+    return pad_range, float(pre[-1][0]), float(tk)
 
 
 def load_climb_ref(corpus):
@@ -241,8 +313,8 @@ def main():
     ap.add_argument("corpora", nargs="+")
     ap.add_argument("--kf-flow", type=float, default=9.0)
     args = ap.parse_args()
-    hdr = (f"{'corpus':<14}{'A climb':>9}{'B gate':>9}{'s_pest':>9}"
-           f"{'A/pest':>9}{'B/pest':>9}{'A/B':>8}   notes")
+    hdr = (f"{'corpus':<14}{'A climb':>9}{'B gate2':>9}{'g1 view':>9}"
+           f"{'s_pest':>9}{'g1/B':>8}{'g1/pest':>9}   notes")
     print(hdr); print("-" * len(hdr))
     rows_out = []
     for corpus in args.corpora:
@@ -253,27 +325,29 @@ def main():
         kf_ns, traj = vo
         climb = load_climb_ref(corpus)
         gates = load_gate_obs(corpus)
+        g1 = load_gate1_anchor(corpus)
         pref = load_estimator_reference(corpus, pre_tick_only=True)
-        a = climb_cal_scale(kf_ns, traj, *climb) if climb else {"scale": None, "reason": "no climb ref"}
-        b = gate_scale(kf_ns, traj, *gates) if gates else {"scale": None, "reason": "no gate obs"}
-        p = pest_fit_scale(kf_ns, traj, *pref) if pref else {"scale": None, "reason": "no p_est ref"}
-        sA, sB, sP = a.get("scale"), b.get("scale"), p.get("scale")
-        aP = sA / sP if sA and sP else None
-        bP = sB / sP if sB and sP else None
-        aB = sA / sB if sA and sB else None
-        note = a.get("reason", "") or b.get("reason", "")
-        print(f"{name:<14}{_fmt(sA)}{_fmt(sB)}{_fmt(sP)}{_fmt(aP)}{_fmt(bP)}"
-              f"{_fmt(aB):>8}   {note}")
-        rows_out.append((name, sA, sB, sP))
-    # summary (n with both A and B available; median ratios)
-    both = [(a, b, p) for _, a, b, p in rows_out if a and b]
+        a = climb_cal_scale(kf_ns, traj, *climb) if climb else {"scale": None, "reason": "no climb"}
+        b = gate_scale(kf_ns, traj, *gates) if gates else {"scale": None, "reason": "no gate2 obs"}
+        g = gate1_anchor_scale(kf_ns, traj, *g1) if g1 else {"scale": None, "reason": "no gate1 view"}
+        p = pest_fit_scale(kf_ns, traj, *pref) if pref else {"scale": None, "reason": "no p_est"}
+        sA, sB, sG, sP = a.get("scale"), b.get("scale"), g.get("scale"), p.get("scale")
+        gB = sG / sB if sG and sB else None
+        gP = sG / sP if sG and sP else None
+        note = g.get("reason", "") or b.get("reason", "")
+        print(f"{name:<14}{_fmt(sA)}{_fmt(sB)}{_fmt(sG)}{_fmt(sP)}"
+              f"{_fmt(gB):>8}{_fmt(gP)}   {note}")
+        rows_out.append((name, sA, sB, sG, sP))
     print("-" * len(hdr))
-    print(f"corpora: {len(rows_out)}  |  A available: {sum(1 for _,a,_,_ in rows_out if a)}"
-          f"  B available: {sum(1 for _,_,b,_ in rows_out if b)}  |  both: {len(both)}")
-    if both:
-        aB = np.array([a / b for a, b, _ in both])
-        print(f"A/B ratio over corpora with both: median {np.median(aB):.3f} "
-              f"[{aB.min():.3f}..{aB.max():.3f}] (n={len(both)})")
+    n_g1 = sum(1 for r in rows_out if r[3])
+    n_b = sum(1 for r in rows_out if r[2])
+    print(f"corpora: {len(rows_out)}  |  gate-1 single-view: {n_g1}  gate-2 B: {n_b}"
+          f"  climb-A viable: 0 (0-3 keyframes in climb window)")
+    gb = np.array([r[3] / r[2] for r in rows_out if r[2] and r[3]])
+    if len(gb):
+        print(f"gate1/gate2 scale agreement: median {np.median(gb):.3f} "
+              f"[{gb.min():.3f}..{gb.max():.3f}] (n={len(gb)}) "
+              f"-- two independent gate anchors, same underlying scale")
 
 
 if __name__ == "__main__":
