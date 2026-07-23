@@ -50,18 +50,18 @@ from vq2.tools.livelog_join import (
 )
 
 # --- Logged-focal correction (intrinsics320) --------------------------------
-# The gate-anchored scale is metric_range / VO-unit-displacement. The metric
-# range is the GateNet PnP ||t_cam||, which is LINEAR in the focal length. Every
-# banked corpus here logged t_cam under the OLD fx=226 GateNet model, and the
-# frozen corpora cannot be re-run through GateNet, so a logged range must be
-# re-projected onto the adjudicated model before it can anchor scale:
-#     range_true = range_logged * (camera.FX / 226.0)
-# This is an explicit, documented correction (not a silent fudge). At the
-# green-lit fx=320 it multiplies every gate range by 320/226 = 1.416, moving the
-# gate-anchored VO scale from ~0.30 to ~0.42 m/unit. If corpora are ever
-# RE-CAPTURED under fx=camera.FX, set LOGGED_TCAM_FOCAL_PX to camera.FX so the
-# factor collapses to 1.0 (no double correction).
-LOGGED_TCAM_FOCAL_PX = 226.0
+# The gate-anchored scale is metric_range / VO-unit-displacement, where the
+# range comes from the corpus livelog's obs t_cam. PROVENANCE (traced 2026-07-23,
+# migration validation): vq2wp.py's obs rows log ``AS.solve_instance`` output —
+# the MAIN-REPO of-record PnP, whose intrinsics are dcl_constants (fx=320
+# always; the vq2-side 226 never fed this path) — then apply the affine range
+# recalibration ``(r - RANGE_AFF_B) * RANGE_AFF_K`` regressed against raw-IMU
+# truth (arch33/accept19). Logged ranges are therefore already metric-
+# calibrated and DO NOT rescale with the vq2 camera.FX migration; the earlier
+# 226-based assumption here double-scaled them by 1.416. Keep the mechanism
+# only for hypothetical future corpora logged under a genuinely different
+# focal: with LOGGED_TCAM_FOCAL_PX = camera.FX the factor is exactly 1.0.
+LOGGED_TCAM_FOCAL_PX = camera.FX
 
 
 def logged_range_focal_correction() -> float:
