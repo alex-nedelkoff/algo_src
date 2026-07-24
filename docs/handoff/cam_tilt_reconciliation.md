@@ -44,6 +44,25 @@ either reading the camera mount is near-level, and on the CURRENT build all
 three independent observables (rest accel, VP row, G0 gate projection) agree
 with each other to ≤3°.
 
+## Flight-run addendum (2026-07-24, vq2_mig1–3)
+
+The canned tilted gravity vector is CONFIRMED in the current build in the
+post-reset regime: all three migration flights printed `post-reset pitch
+-17.8` (the ESKF initializes attitude from the accel it sees at reset). This
+does NOT overturn the reconciliation — it completes it: the flight stack's
+attitude(−17.8, canned) + `CAM_TILT`(+20°) **cancel to ≈ +2.2°**, which
+matches the true rendered camera elevation (+2.25° VP). The stack has been
+self-consistently wrong-in-pairs; **flipping CAM_TILT alone would break the
+cancellation and mis-elevate every camera ray by ~18°.**
+
+Open regime question: the yaw-scan static-window median gave pitch −0.88°
+(level) while the post-reset accel reads −17.8° (canned). The two rest
+measurements disagree between regimes — when the stream switches (arming?
+race start?) is unresolved and belongs to the tilt/attitude experiment. A
+second measured input for that experiment: the G1 identity check carries a
+~20° systematic reprojection bias at the pad (uniform ~123/159px at fx=320
+across all 8 corners; banked in vq2_mig1's `obs_ident_fail` rows).
+
 ## Consequences
 
 1. The G0 focal adjudication's "20° tilt REJECTED, true tilt ≈ 0°" stands,
