@@ -367,6 +367,16 @@ def _load_npy(p):
 # bearing-only: consistent from the pad, metres wrong in depth)
 DECOY_C = _load_npy(r'C:\Users\alexj\decoy_corners_world.npy')
 G2RIB_C = _load_npy(r'C:\Users\alexj\g2rib_corners_world.npy')
+# G1 constellation (07-24 fix): the G1 identity branch was reprojecting
+# G2RIB_C -- the GATE-2 corners, bearing 23.9 deg off the pad view (measured
+# du +122 px) -- surviving only under the loose angular tol. Real G1 corners =
+# the same ribbon-triangulation shape shifted by the documented same-pipeline
+# g1->g2 delta [5.14, 5.26, 0] (bias-cancelling, same rationale as the GATE-2
+# SEGMENT MAP). Validated on mig1 pad frames: err med 122 -> 40 px, 19/20
+# within tol. Derive when the npy is absent so the fix cannot silently revert.
+G1RIB_C = _load_npy(r'C:\Users\alexj\g1rib_corners_world.npy')
+if G1RIB_C is None and G2RIB_C is not None:
+    G1RIB_C = G2RIB_C - np.array([5.14, 5.26, 0.0])
 IDENT_ON = OBS_POLICY in ('huber_area', 'huber') and \
     os.environ.get('NOIDENT', '0') != '1'
 HUBER_DELTA = 1.5               # m: miss below this = full-weight fix
@@ -910,7 +920,7 @@ def _det_loop():
             # strict course-context, non-G1-identified obs are junk unless
             # a genuinely far G2 sighting. Kills truss/fixture solves the
             # range gate can't (run-6 poison).
-            _cmap = (G2RIB_C if (match_g is G1_W or match_g is RIB_W) else
+            _cmap = (G1RIB_C if (match_g is G1_W or match_g is RIB_W) else
                      DECOY_C if match_g is DECOY_W else None)
             if IDENT_ON and _cmap is not None and best[3] is not None:
                 r_, p_, y_ = state['roll'], state['pitch'], state['yaw']
