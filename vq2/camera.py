@@ -20,9 +20,10 @@ FX = FY = 320.0
 # Pixel-centre convention (W-1)/2 = 319.5,179.5. The adjudication's 320.0/180.0
 # principal point is within corner-localization noise (~0.5 px) -- not churned.
 CX, CY = (W - 1) / 2.0, (H - 1) / 2.0
-# NOTE: CAM_TILT stays 20 deg. The adjudication found true cam->body tilt ~= 0,
-# but the flight-stack tilt fix is a SEPARATE deferred decision; do not change
-# it here. (COR-148 map math applies the corrected tilt=0 extrinsic locally.)
+# CAM_TILT 20 deg is REAL and correct (settled 2026-07-24,
+# docs/handoff/cam_tilt_pair_experiment.md): hover-VP measures cam-in-body
+# +18.6..+21.4 deg; the spawn sits ~-18 deg nose-down (honest rest accel),
+# which is why a pad view still sees the gate near image centre.
 CAM_TILT = math.radians(20.0)
 
 # Single source of the pinhole intrinsic for every mapping/estimator consumer.
