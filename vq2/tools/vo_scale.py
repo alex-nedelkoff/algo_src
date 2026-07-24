@@ -47,6 +47,7 @@ import numpy as np
 from vq2 import camera
 from vq2.tools.livelog_join import (
     read_rows, build_capture_clock, map_t_to_capture_s, first_tick_capture_ns,
+    load_kf_pose,
 )
 
 # --- Logged-focal correction (intrinsics320) --------------------------------
@@ -210,6 +211,97 @@ def load_gate1_anchor(corpus):
     return pad_range, float(pre[-1][0]), float(tk)
 
 
+def load_gate1_pad_obs(corpus):
+    """(pad_range_m, pad_ns, tick_ns, pad_g_lvl[3]) — superset of
+    ``load_gate1_anchor`` that also returns the LAST pre-tick obs row's
+    ``g_lvl`` (the gate offset in the level frame, logged live). ``g_lvl``
+    is what lets the DR bridge place the gate in the kf_pose frame:
+    gate_w = kf_pose(pad_ns) + g_lvl. None if unavailable.
+
+    Elevation caveat, measured 2026-07-24: live g_lvl is computed with
+    attitude(-17.8, canned) + M_BODY_CAM(+20 deg) which CANCEL to ~= the
+    true camera elevation (+2.2 vs +2.25 deg VP) — so g_lvl geometry is
+    sound despite both constants being individually wrong.
+    """
+    rows = read_rows(os.path.join(corpus, "livelog.jsonl"))
+    clock = build_capture_clock(rows)
+    if clock is None:
+        return None
+    tk = first_tick_capture_ns(rows, clock)
+    if tk is None:
+        return None
+    corr = logged_range_focal_correction()
+    pre = []
+    for d in rows:
+        if (d.get("kind") == "obs" and isinstance(d.get("t_cam"), list)
+                and len(d["t_cam"]) >= 3 and isinstance(d.get("g_lvl"), list)
+                and len(d["g_lvl"]) >= 3):
+            cs = map_t_to_capture_s(d["t"], clock)
+            if cs is None:
+                continue
+            n = int(round(cs * 1e9))
+            if n < tk:
+                pre.append((n, float(np.linalg.norm(d["t_cam"])) * corr,
+                            np.asarray(d["g_lvl"][:3], dtype=float)))
+    if len(pre) < 1:
+        return None
+    pre.sort(key=lambda r: r[0])
+    pad_range = float(np.median([r for _, r, _ in pre]))
+    return pad_range, float(pre[-1][0]), float(tk), pre[-1][2] * corr
+
+
+def gate1_anchor_bridged(kf_ns, traj, pad_range_m, pad_ns, tick_ns, pad_g_lvl,
+                         dr_ns, dr_xyz, max_dr_gap_s=0.5):
+    """B'-bridged — single-view gate-1 anchor when VO coverage starts AFTER
+    the pad view (fx=320 VO correctly rejects the degenerate pad/climb solves
+    that used to fake coverage).
+
+    Metric DR (frame-cadence ``kf_pose`` rows, 2026-07-24+) carries the pad
+    view forward to VO-coverage start t0: the gate sits at
+    gate_w = DR(pad_ns) + pad_g_lvl, the remaining metric chord is
+    r' = ||gate_w - DR(t0)||, and scale = r' / ||VO(tick) - VO(t0)||. DR is
+    trusted only over the SHORT bridge span [pad_ns, t0] (0.5-2.5 s of
+    climb) — the vision range stays the metric baseline, which is the whole
+    point of B' vs a plain DR fit.
+
+    Returns dict(scale, baseline_m, d_vo, ns0, ns1, bridge_s, bridge_m) or
+    dict(scale=None, reason=...).
+    """
+    if len(kf_ns) < 2 or tick_ns is None:
+        return {"scale": None, "reason": "no tick / too few VO"}
+    lo, hi = kf_ns[0], kf_ns[-1]
+    if pad_ns > hi:
+        return {"scale": None, "reason": "pad view after VO coverage"}
+    if pad_ns >= lo:
+        # pad view covered: no bridge needed, defer to the plain anchor
+        return gate1_anchor_scale(kf_ns, traj, pad_range_m, pad_ns, tick_ns)
+    if dr_ns is None or len(dr_ns) < 2:
+        return {"scale": None, "reason": "no kf_pose rows (corpus predates 55dd6210)"}
+    t0 = float(lo)
+    if not (dr_ns[0] <= pad_ns and dr_ns[-1] >= t0):
+        return {"scale": None, "reason": "kf_pose does not span the bridge"}
+    span = (dr_ns >= pad_ns) & (dr_ns <= t0)
+    idx = np.flatnonzero(span)
+    seg_ns = np.concatenate(([pad_ns], dr_ns[idx].astype(float), [t0]))
+    if np.max(np.diff(seg_ns)) > max_dr_gap_s * 1e9:
+        return {"scale": None, "reason": f"kf_pose gap > {max_dr_gap_s}s in bridge"}
+    p_pad = _interp_xyz(dr_ns.astype(float), dr_xyz, pad_ns)
+    p_t0 = _interp_xyz(dr_ns.astype(float), dr_xyz, t0)
+    gate_w = p_pad + np.asarray(pad_g_lvl, dtype=float)
+    r_prime = float(np.linalg.norm(gate_w - p_t0))
+    if r_prime < 1.0:
+        return {"scale": None, "reason": "bridge consumed the baseline"}
+    v0 = _interp_xyz(kf_ns, traj, t0)
+    v1 = _interp_xyz(kf_ns, traj, min(max(tick_ns, lo), hi))
+    d_vo = float(np.linalg.norm(v1 - v0))
+    if d_vo < 1e-6:
+        return {"scale": None, "reason": "degenerate VO displacement"}
+    return {"scale": r_prime / d_vo, "baseline_m": r_prime, "d_vo": d_vo,
+            "ns0": float(pad_ns), "ns1": float(tick_ns),
+            "bridge_s": float((t0 - pad_ns) / 1e9),
+            "bridge_m": float(np.linalg.norm(p_t0 - p_pad))}
+
+
 def load_climb_ref(corpus):
     """(ns[K], xyz[K,3]) from PRE-TICK kf_upd rows = the climb cluster (metric DR)."""
     rows = read_rows(os.path.join(corpus, "livelog.jsonl"))
@@ -347,16 +439,24 @@ def main():
         kf_ns, traj = vo
         climb = load_climb_ref(corpus)
         gates = load_gate_obs(corpus)
-        g1 = load_gate1_anchor(corpus)
+        g1 = load_gate1_pad_obs(corpus)
         pref = load_estimator_reference(corpus, pre_tick_only=True)
         a = climb_cal_scale(kf_ns, traj, *climb) if climb else {"scale": None, "reason": "no climb"}
         b = gate_scale(kf_ns, traj, *gates) if gates else {"scale": None, "reason": "no gate2 obs"}
-        g = gate1_anchor_scale(kf_ns, traj, *g1) if g1 else {"scale": None, "reason": "no gate1 view"}
+        if g1:
+            dr = load_kf_pose(corpus)
+            g = gate1_anchor_bridged(
+                kf_ns, traj, g1[0], g1[1], g1[2], g1[3],
+                dr[0] if dr else None, dr[1] if dr else None)
+        else:
+            g = {"scale": None, "reason": "no gate1 view"}
         p = pest_fit_scale(kf_ns, traj, *pref) if pref else {"scale": None, "reason": "no p_est"}
         sA, sB, sG, sP = a.get("scale"), b.get("scale"), g.get("scale"), p.get("scale")
         gB = sG / sB if sG and sB else None
         gP = sG / sP if sG and sP else None
         note = g.get("reason", "") or b.get("reason", "")
+        if sG and g.get("bridge_s"):
+            note = f"g1 DR-bridged {g['bridge_s']:.1f}s/{g['bridge_m']:.2f}m"
         print(f"{name:<14}{_fmt(sA)}{_fmt(sB)}{_fmt(sG)}{_fmt(sP)}"
               f"{_fmt(gB):>8}{_fmt(gP)}   {note}")
         rows_out.append((name, sA, sB, sG, sP))

@@ -90,3 +90,66 @@ def test_pest_fit_recovers_scale():
     ref_xyz = np.zeros((4, 3)); ref_xyz[:, 0] = np.arange(4) * 2.0
     out = pest_fit_scale(kf_ns, traj, ref_ns, ref_xyz)
     assert out["scale"] == pytest.approx(2.0, rel=1e-3)
+
+
+# --- gate1_anchor_bridged (DR bridge over the VO-uncovered climb) -----------
+
+def _bridge_scene(scale=0.5):
+    """Gate at [6,0,0]. Pad view at t=1s from the origin; VO coverage starts
+    at t=3s with the drone at [0.5,0,-1] (climb happened off-VO); tick at
+    t=9s at the gate. VO traj = metric truth / scale, covering 3..9s."""
+    gate = np.array([6.0, 0.0, 0.0])
+    p_t0 = np.array([0.5, 0.0, -1.0])
+    # DR: dense 20 Hz from 0.5s to 4s covering [pad_ns, t0]
+    dr_ns = (np.arange(0.5, 4.0, 0.05) * NS)
+    dr_xyz = np.zeros((len(dr_ns), 3))
+    m = dr_ns >= 1.0 * NS                            # static until the pad view
+    f = (dr_ns[m] - 1.0 * NS) / (2.0 * NS)           # linear climb 1s -> 3s
+    dr_xyz[m] = np.clip(f, 0, 1)[:, None] * p_t0
+    # VO: t0=3s at truth [0.5,0,-1] -> tick 9s at the gate, in VO units
+    kf_ns = np.linspace(3.0, 9.0, 13) * NS
+    fvo = (kf_ns - 3.0 * NS) / (6.0 * NS)
+    truth = p_t0 + fvo[:, None] * (gate - p_t0)
+    traj = truth / scale
+    pad_g_lvl = gate - np.zeros(3)                   # gate offset seen at the pad
+    return kf_ns, traj, 1.0 * NS, 9.0 * NS, pad_g_lvl, dr_ns.astype(np.int64), dr_xyz
+
+
+def test_gate1_bridged_recovers_scale():
+    from vq2.tools.vo_scale import gate1_anchor_bridged
+    kf_ns, traj, pad_ns, tick_ns, g_lvl, dr_ns, dr_xyz = _bridge_scene(scale=0.5)
+    out = gate1_anchor_bridged(kf_ns, traj, 6.0, pad_ns, tick_ns, g_lvl,
+                               dr_ns, dr_xyz)
+    assert out["scale"] == pytest.approx(0.5, rel=1e-6)
+    # r' = ||gate - p_t0|| = sqrt(5.5^2 + 1)
+    assert out["baseline_m"] == pytest.approx(np.hypot(5.5, 1.0), rel=1e-6)
+    assert out["bridge_s"] == pytest.approx(2.0, rel=1e-6)
+    assert out["bridge_m"] == pytest.approx(np.linalg.norm([0.5, 0, -1]), rel=1e-3)
+
+
+def test_gate1_bridged_falls_back_when_pad_covered():
+    from vq2.tools.vo_scale import gate1_anchor_bridged
+    kf_ns, traj = _line(10, step=1.0)                # coverage 0..9s
+    out = gate1_anchor_bridged(kf_ns, traj, 6.0, pad_ns=2.0 * NS,
+                               tick_ns=8.0 * NS, pad_g_lvl=np.array([6.0, 0, 0]),
+                               dr_ns=None, dr_xyz=None)
+    ref = gate1_anchor_scale(kf_ns, traj, 6.0, 2.0 * NS, 8.0 * NS)
+    assert out["scale"] == pytest.approx(ref["scale"])
+
+
+def test_gate1_bridged_fails_closed():
+    from vq2.tools.vo_scale import gate1_anchor_bridged
+    kf_ns, traj, pad_ns, tick_ns, g_lvl, dr_ns, dr_xyz = _bridge_scene()
+    # no DR rows (pre-55dd6210 corpus)
+    out = gate1_anchor_bridged(kf_ns, traj, 6.0, pad_ns, tick_ns, g_lvl, None, None)
+    assert out["scale"] is None and "kf_pose" in out["reason"]
+    # DR does not span the bridge (starts after the pad view)
+    late = dr_ns > 1.5 * NS
+    out = gate1_anchor_bridged(kf_ns, traj, 6.0, pad_ns, tick_ns, g_lvl,
+                               dr_ns[late], dr_xyz[late])
+    assert out["scale"] is None and "span" in out["reason"]
+    # DR gap inside the bridge span
+    keep = (dr_ns < 1.2 * NS) | (dr_ns > 2.6 * NS)
+    out = gate1_anchor_bridged(kf_ns, traj, 6.0, pad_ns, tick_ns, g_lvl,
+                               dr_ns[keep], dr_xyz[keep])
+    assert out["scale"] is None and "gap" in out["reason"]
