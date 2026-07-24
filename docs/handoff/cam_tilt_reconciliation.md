@@ -1,5 +1,14 @@
 # Camera-tilt reconciliation: COR-142 T2a "18.6°" vs G0 adjudication "≈0°"
 
+> **SUPERSEDED (2026-07-24) — tilt conclusions in this file are WRONG.**
+> See `cam_tilt_pair_experiment.md` (corrected verdict): the spawn attitude
+> is REALLY ≈ −18° nose-down (rest accel honest), camera-in-body tilt is
+> REALLY ≈ +20° (hover-VP 18.6–21.4 measured), T2a's 18.6° was a correct
+> direct measurement, and the flight stack is correct as built. This file's
+> "camera-in-body ≈ +1–3°, T2a double-counted" story assumed the disarmed
+> rest gravity was fake; it is not. The VP measurements and method here
+> remain valid as data; only their decomposition was wrong.
+
 **Date:** 2026-07-23. **Verdict: no contradiction — the two numbers live in
 different reference frames.** Camera-in-body tilt is ~+1–3° up, in BOTH
 epochs, once the body-pitch term is made explicit. The 20° `CAM_TILT` nominal
