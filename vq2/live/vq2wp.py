@@ -928,7 +928,12 @@ def _det_loop():
                         continue
                     uv_ = np.array([rel_[k_, 0] / rel_[k_, 2] * CAM_FX + CAM_CX,
                                     rel_[k_, 1] / rel_[k_, 2] * CAM_FY + CAM_CY])
-                    tol_ = 60.0 * 11.0 / max(rng_meas, 3.0)  # angular-constant
+                    # tol is ANGULAR: 60px@11m was tuned when CAM_FX was 226;
+                    # the same angle at fx=320 is 60*320/226 = 85px. Without
+                    # the rescale the check rejects every pad obs (a real
+                    # ~20deg systematic reproj bias sits just under the
+                    # 226-scaled tol) -> NO PAD ACQUISITION (mig1, 07-24).
+                    tol_ = 85.0 * 11.0 / max(rng_meas, 3.0)  # angular-constant
                     if np.linalg.norm(uv_ - best[2][k_]) < tol_:
                         n_match += 1
                 is_g1 = n_match >= 2
