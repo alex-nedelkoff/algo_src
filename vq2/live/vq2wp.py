@@ -2592,15 +2592,18 @@ while not aborted:
                                     state['_mf_wr_c'] = _c
                                     jlog('mf_wrange_cal', c=round(_c, 1),
                                          w=round(_fgw, 0))
-                            else:
+                            elif state.get('fg_wall', 0.0) != state.get(
+                                    '_mf_wr_seen', 0.0):
+                                # ONE correction per NEW detection: the gate is
+                                # only in view 9-41% of the leg (mig9: 9.2%),
+                                # so a per-update gain silently under-applies.
+                                state['_mf_wr_seen'] = state.get('fg_wall', 0.0)
                                 _wdx, _wdy, _wd = MFWR.step(
                                     state['_mf_p'], _g, _fgw, _fgage,
                                     state['_mf_wr_c'])
                                 state['_mf_p'][0] += _wdx
                                 state['_mf_p'][1] += _wdy
-                                if now - state.get('_mf_wr_log', 0) > 0.5:
-                                    state['_mf_wr_log'] = now
-                                    jlog('mf_wrange', **_wd)
+                                jlog('mf_wrange', **_wd)
                         # RELATIVE altitude hold (07-15, fg66 frames: zero
                         # vertical control on the corridor drifted the drone
                         # into the CEILING over 20 s). Kinematic DR knows no
@@ -2631,19 +2634,51 @@ while not aborted:
                             _gx, _gy, _gz = (float(_g[0]), float(_g[1]),
                                              float(_g[2]))
                             _stgb = float(os.environ.get('MF_STAGE_BACK', '3.0'))
-                            if float(_pp[0]) < _gx - _stgb + 0.5:
+                            # NORMAL-AWARE STAGING (COR-147, 2026-07-25).
+                            # These waypoints were built from axis-aligned
+                            # offsets (_gx +/- c, _gy +/- c), so the staging
+                            # point always sat straight back along -x no matter
+                            # what the map said: N2 was NEVER read here, even
+                            # though the release print below claims "staged on
+                            # gate normal". Along-normal (a) / cross-normal (c)
+                            # coordinates; reduces EXACTLY to the old
+                            # axis-aligned expressions when the normal is
+                            # [1,0,0] (proved before flight).
+                            _nv = np.asarray(
+                                THRU[min(ticks, len(THRU) - 1)], dtype=float)
+                            _nl = float(math.hypot(_nv[0], _nv[1]))
+                            _nx, _ny = ((_nv[0] / _nl, _nv[1] / _nl)
+                                        if _nl > 1e-6 else (1.0, 0.0))
+                            _cx, _cy = -_ny, _nx      # cross-normal (+y at n=x)
+
+                            def _wp(a, c, _gx=_gx, _gy=_gy, _gz=_gz,
+                                    _nx=_nx, _ny=_ny, _cx=_cx, _cy=_cy):
+                                return np.array([_gx + a * _nx + c * _cx,
+                                                 _gy + a * _ny + c * _cy, _gz])
+                            _dpx = float(_pp[0]) - _gx
+                            _dpy = float(_pp[1]) - _gy
+                            _sp = _dpx * _nx + _dpy * _ny   # along-normal
+                            _tp = _dpx * _cx + _dpy * _cy   # cross-normal
+                            if _sp < -_stgb + 0.5:
                                 # already WEST of the staging plane (short
                                 # dash, 07-15 fg60): direct +y corridor to
                                 # the staging point -- hugs x~8, clear of
                                 # the pillar row (x>=10). No loop needed.
+                                state['_mf_wps'] = [_wp(-_stgb, 0.0)]
+                            elif _sp < 0.0:
+                                # pre-gate abort (deployed lineage): retreat
+                                # BACK ALONG THE NORMAL holding the current
+                                # cross-normal offset, then onto the stage
                                 state['_mf_wps'] = [
-                                    np.array([_gx - _stgb, _gy, _gz])]
+                                    _wp(-_stgb - 1.5, _tp),
+                                    _wp(-_stgb, 0.0),
+                                ]
                             else:
                                 state['_mf_wps'] = [
-                                    np.array([_gx + 2.5, _gy - 2.3, _gz]),
-                                    np.array([_gx - 0.2, _gy + 2.0, _gz]),
-                                    np.array([_gx - _stgb - 1.7, _gy + 1.3, _gz]),
-                                    np.array([_gx - _stgb, _gy, _gz]),
+                                    _wp(2.5, -2.3),
+                                    _wp(-0.2, 2.0),
+                                    _wp(-_stgb - 1.7, 1.3),
+                                    _wp(-_stgb, 0.0),
                                 ]
                             state['_mf_wpi'] = 0
                         _wps = state['_mf_wps']

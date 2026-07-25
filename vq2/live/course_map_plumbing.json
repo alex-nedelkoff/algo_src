@@ -17,7 +17,8 @@
       "id": "G2-ribbon",
       "route_order": 2,
       "pos": [11.04, 6.16, -1.1],
-      "normal": [1.0, 0.0, 0.0],
+      "normal": [0.601, 0.800, 0.0],
+      "normal_note": "2026-07-25 UNDER TEST (mig16/17/18, n=3): set to 53.1 deg from the procedural-course-rule check. The 2026-07-24 revert rationale below is SUPERSEDED - its 'mirrored post-tick turn' reading was kf_pose estimator divergence + tick_fix reseating, and the _mf_p reversal was an intentionally COMMANDED pre-gate go-around after the miss/off-normal abort (COR-147 comment 2026-07-25). DERIVATION: Janahan's synth_gen/course_layout.py builds the course by rule - station_id(col,r)={A:r,B:21-r,C:20+r} so Station 22 = column C row 2; ROUNDS contains (C,2) so it is a ROUNDED pillar; R_TURN=3.0 m gate-center radius; C-pillar arc base 90 deg span +/-60 deg; gate psi = polyline tangent. Against OUR judge-verified gate-2 [11.7,5.2] and the COR-148 Station-22 candidate [14.351,3.209]: range 3.32 m (vs R_TURN 3.0) and bearing 143.1 deg (inside the 30-150 arc) - BOTH rules pass on data they were not fitted to. Arc tangent => normal 53.1 deg = [0.601,0.800,0]. CAVEATS: synth_gen is a TRAINING generator not a survey (rules tested, coordinates NOT imported); the chain runs through the COR-148 candidate whose sigma_y ~1.02 m widens the normal to a 35-73 deg band; planar two-fold ambiguity (53 or 233 deg). Corroboration: winner test111 held terminal obliquity 4.5 deg while every failure sat 20-35 deg while faithfully following the [1,0,0] staging point. PRIOR VALUES: [1,0,0] (flown baseline, 0 deg); [0.866,0.5,0] (30 deg, mig5, never reached staging = inconclusive). REVERT to [1,0,0] if n=3 does not improve terminal obliquity.",
       "aperture_m": 1.5,
       "confidence": "ticked",
       "pos_sigma_m": 0.3

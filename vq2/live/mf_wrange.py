@@ -43,14 +43,18 @@ import math
 # loop, so a bad detection must never be able to teleport the DR.
 W_MIN = 30.0        # px: below this the width estimate is noise
 MAX_AGE = 0.4       # s: same freshness the vision-release gate uses
-# The caller runs at CMD_HZ = 50, and a detection persists for several updates,
-# so the per-update gain sets a time constant of 1/(50*GAIN). The drift being
-# corrected accumulates over ~5 s, so the correction must be SLOWER than the
-# detection cadence, not faster -- at 0.15 it would be 0.13 s and would slave
-# the DR to every individual width reading, throwing away the DR's smoothing
-# and letting one bad detection dominate. 0.02 gives ~1 s.
-GAIN = 0.02         # fraction of the residual applied per update
-MAX_STEP = 0.05     # m per update: 2.5 m/s slew cap at 50 Hz
+# EVENT-DRIVEN, one correction per NEW detection -- NOT per control update.
+# First flight (vq2_mig9) measured the reason: across the staging leg the gate
+# carries a fresh detection only 9-41% of the time (mig9 9.2%, 10 detections
+# over a 43 s leg), because the staging teardrop points the camera away from
+# the gate for most of it -- which is exactly why the leg is dead-reckoned.
+# The original per-update tuning (0.02 at CMD_HZ=50) silently assumed
+# continuous availability and applied ~0.2 m against a 2-3 m error.
+# At ~10-30 detections per leg, 0.3 per detection converges in ~5 samples
+# (0.7^5 = 17% of the initial residual) while keeping any single bad
+# detection bounded by MAX_STEP.
+GAIN = 0.30         # fraction of the residual applied per DETECTION
+MAX_STEP = 0.75     # m per detection: bounds one bad lock
 MAX_ERR = 15.0      # m: larger residual = wrong object, not drift
 MIN_RANGE = 0.5     # m: below this the bearing unit vector is unstable
 
@@ -73,7 +77,11 @@ def calibrate(mf_p, gate_w, fg_w, fg_age, *, w_min=W_MIN, max_age=MAX_AGE):
 
 def step(mf_p, gate_w, fg_w, fg_age, cal_c, *, gain=GAIN, max_step=MAX_STEP,
          w_min=W_MIN, max_age=MAX_AGE, max_err=MAX_ERR):
-    """One correction step. Returns (dx, dy, diag).
+    """One correction step, to be called ONCE PER NEW DETECTION.
+
+    The caller must gate this on the detection timestamp changing; calling it
+    every control update applies GAIN at CMD_HZ and slaves the DR to a single
+    width reading. Returns (dx, dy, diag).
 
     diag carries the reason and, when it fired, the measured residual so the
     correction is auditable offline from the livelog alone.
