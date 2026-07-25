@@ -32,6 +32,10 @@ for _fp8 in ('float8_e8m0fnu', 'float8_e4m3fn', 'float8_e5m2'):
         setattr(torch, _fp8, torch.uint8)
 from pymavlink import mavutil
 from eskf import PosVelKF, accel_level
+try:                                    # flat deploy layout
+    import mf_wrange as MFWR
+except ImportError:                     # repo/test layout is the vq2 package
+    from vq2.live import mf_wrange as MFWR
 from gate_traj import GateTrajectory
 from scripts.dcl import vq1_detect_overlay as OV
 from perception.training import train_gatenet as TG
@@ -1991,6 +1995,9 @@ while not aborted:
             with KF_LOCK:
                 state['_mf_z0'] = float(KF.x[2])   # relative-altitude baseline
             state.pop('_mf_zerr', None)
+            # each leg re-calibrates width->range from its own seed (the
+            # detector may lock a different feature run to run)
+            state['_mf_wr_c'] = None
             jlog('mfdr_seed', p=[round(float(x), 2) for x in state['_mf_p']])
         if (os.environ.get('MAPFOLLOW') == '1'
                 and os.environ.get('MF_DR') != '1'):
@@ -2566,6 +2573,34 @@ while not aborted:
                             else 0.35
                         state['_mf_p'][0] += _vn * math.cos(state['yaw']) / CMD_HZ
                         state['_mf_p'][1] += _vn * math.sin(state['yaw']) / CMD_HZ
+                        # WIDTH-AS-RANGE (COR-147, 2026-07-25, MF_WRANGE=1):
+                        # the commanded-speed DR above OVER-CREDITS forward
+                        # motion -- measured over the banked legs it believed
+                        # it closed 1.4-4.3x more of the distance than the
+                        # imagery supports (mig8: DR 68% closed while the
+                        # gate got 14% FURTHER). It then parks on its staging
+                        # waypoint while the gate is still too far to pass the
+                        # vision-release width, and the leg dies in the staged
+                        # go-around. The detector's apparent width measures
+                        # exactly the quantity that is wrong. Range only,
+                        # never lateral; bounded per update; fails closed.
+                        if os.environ.get('MF_WRANGE') == '1':
+                            if state.get('_mf_wr_c') is None:
+                                _c, _why = MFWR.calibrate(
+                                    state['_mf_p'], _g, _fgw, _fgage)
+                                if _c is not None:
+                                    state['_mf_wr_c'] = _c
+                                    jlog('mf_wrange_cal', c=round(_c, 1),
+                                         w=round(_fgw, 0))
+                            else:
+                                _wdx, _wdy, _wd = MFWR.step(
+                                    state['_mf_p'], _g, _fgw, _fgage,
+                                    state['_mf_wr_c'])
+                                state['_mf_p'][0] += _wdx
+                                state['_mf_p'][1] += _wdy
+                                if now - state.get('_mf_wr_log', 0) > 0.5:
+                                    state['_mf_wr_log'] = now
+                                    jlog('mf_wrange', **_wd)
                         # RELATIVE altitude hold (07-15, fg66 frames: zero
                         # vertical control on the corridor drifted the drone
                         # into the CEILING over 20 s). Kinematic DR knows no
