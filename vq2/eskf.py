@@ -30,6 +30,9 @@ class PosVelKF:
     sigma_meas_base: float = 0.35    # m at close range
     sigma_meas_per_m: float = 0.06   # + per metre of gate range
     maha_gate: float = 11.34         # chi2 0.99, 3 dof
+    # COR-147 2026-07-25: True = pre-fix gate (validate against the
+    # huber-inflated R + short-form covariance update). Kept for A/B only.
+    legacy_gate: bool = False
 
     x: np.ndarray = field(default_factory=lambda: np.zeros(6))  # [p(3), v(3)]
     P: np.ndarray = field(default_factory=lambda: np.diag([0.01] * 3 + [0.01] * 3))
@@ -62,30 +65,64 @@ class PosVelKF:
                         r_scale: float = 1.0) -> bool:
         """Direct drone-position measurement (map gate minus gate-relative obs).
 
-        r_scale inflates the measurement sigma (Huber-style soft acceptance).
-        Diagnostics: after any call, `last_nis` holds the normalized innovation
-        squared (chi2, 3 dof) and `last_innovation` the raw residual -- NIS
-        consistency is the filter-health metric the playbook mandated.
-        Returns True if accepted (passed the Mahalanobis gate)."""
-        sig = (self.sigma_meas_base + self.sigma_meas_per_m * rng) * r_scale
-        R = np.eye(3) * (sig ** 2)
+        r_scale inflates the measurement sigma for the GAIN (Huber-style soft
+        acceptance). Diagnostics: after any call, `last_nis` holds the
+        normalized innovation squared (chi2, 3 dof) and `last_innovation` the
+        raw residual -- NIS consistency is the filter-health metric the
+        playbook mandated.
+        Returns True if accepted (passed the Mahalanobis gate).
+
+        VALIDATION vs ROBUSTIFICATION (COR-147, 2026-07-25) -- the gate is now
+        tested against the TRUE measurement covariance, not the huber-inflated
+        one. Testing it against the inflated R made the gate undefeatable:
+        r_scale is derived from the same innovation the gate tests, so
+
+            d2 -> HUBER_DELTA^2 / (sigma_base + per_m*rng)^2
+
+        saturates below maha_gate at every operational range no matter how
+        large the miss. Measured across the banked corpora: 162 accepted
+        updates with miss >= 10 m, worst 90.89 m at nis 0.29. Negative d2
+        (only reachable once P has lost positive-definiteness -- 70 events
+        across 70 corpora, worst -133.44) is rejected rather than applied.
+        The covariance update is Joseph form, which is definiteness-preserving
+        where the short form (I-KH)P is not.
+
+        legacy_gate=True restores the pre-fix behaviour for A/B comparison.
+
+        NOTE this module and vq2/live/eskf.py (the flown lineage) carry
+        DIFFERENT constants -- q_vel 0.12 vs 0.40, maha_gate 11.34 vs 16.27.
+        Deliberately not unified here: that is a separate variable needing its
+        own flight re-validation."""
+        sig_true = self.sigma_meas_base + self.sigma_meas_per_m * rng
+        R_gain = np.eye(3) * ((sig_true * r_scale) ** 2)
+        R_val = R_gain if self.legacy_gate else np.eye(3) * (sig_true ** 2)
+        r = z - self.x[:3]
+        self.last_innovation = r.copy()
         # H = [I 0]
-        S = self.P[:3, :3] + R
+        try:
+            S_val_inv = np.linalg.inv(self.P[:3, :3] + R_val)
+        except np.linalg.LinAlgError:
+            return False
+        d2 = float(r @ S_val_inv @ r)
+        self.last_nis = d2
+        if self.legacy_gate:
+            if d2 > self.maha_gate:
+                return False
+        elif not 0.0 <= d2 <= self.maha_gate:
+            return False
+        S = self.P[:3, :3] + R_gain
         try:
             Sinv = np.linalg.inv(S)
         except np.linalg.LinAlgError:
-            return False
-        r = z - self.x[:3]
-        d2 = float(r @ Sinv @ r)
-        self.last_innovation = r.copy()
-        self.last_nis = d2
-        if d2 > self.maha_gate:
             return False
         K = self.P[:, :3] @ Sinv            # (6,3)
         self.x += K @ r
         IKH = np.eye(6)
         IKH[:, :3] -= K
-        self.P = IKH @ self.P
+        if self.legacy_gate:
+            self.P = IKH @ self.P
+        else:
+            self.P = IKH @ self.P @ IKH.T + K @ R_gain @ K.T
         self.P = 0.5 * (self.P + self.P.T)
         return True
 
